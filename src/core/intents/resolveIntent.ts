@@ -51,9 +51,13 @@ function applyStatusWithDates(currentLine: string, statusChar: string, date?: Is
 
 export function resolveLineTransform(intent: Intent, currentLine: string): string | null {
 	switch (intent.type) {
-		case "set-date":
+		case "set-date": {
 			// time: undefined — сохранить время поля, null — снять, строка — установить
-			return setField(currentLine, intent.field, intent.date, intent.time);
+			let line = setField(currentLine, intent.field, intent.date, intent.time);
+			// «🛫 и 📅 взаимоисключающие»: планирование снимает отложенность разом
+			if (intent.clearStart === true && intent.field === "due") line = setField(line, "start", null);
+			return line;
+		}
 
 		case "set-text":
 			return setDescription(currentLine, intent.text);
@@ -74,8 +78,12 @@ export function resolveLineTransform(intent: Intent, currentLine: string): strin
 			return line;
 		}
 
-		case "defer":
-			return setField(currentLine, "start", intent.until);
+		case "defer": {
+			let line = setField(currentLine, "start", intent.until);
+			// «🛫 и 📅 взаимоисключающие»: откладывание снимает план разом
+			if (intent.clearDue === true) line = setField(line, "due", null);
+			return line;
+		}
 
 		case "set-id":
 			return setValueField(currentLine, "id", intent.taskId);

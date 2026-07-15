@@ -17,6 +17,8 @@ import type { ProjectSummary } from "../../services/ProjectService";
 import type { IntentDispatcher, IntentResult } from "../../services/WritebackService";
 import type { GtdFlowSettings } from "../../settings/Settings";
 import type GtdFlowPlugin from "../../main";
+import { localTodayIso } from "../../services/snapshotHelpers";
+import { confirm } from "./ConfirmModal";
 import { openTaskInFile } from "./openTask";
 import { pickBoardColumn, pickDate, pickProject } from "./pickers";
 import {
@@ -141,22 +143,38 @@ async function dispatchNoticing(
  * Defer с явным откликом: карточка после отложки исчезает из текущего вида
  * (или вовсе не меняется видимо, если 🛫 уже стоял на эту дату) — без Notice
  * это читалось как «кнопка ничего не делает».
+ *
+ * Политика «🛫 и 📅 взаимоисключающие»: отложить запланированную задачу
+ * можно только сняв её с плана — конфликт решает пользователь диалогом,
+ * запись обоих полей атомарна (defer + clearDue в одной трансформации).
  */
-async function dispatchDefer(
-	dispatcher: IntentDispatcher,
-	key: string,
-	until: IsoDate,
-): Promise<void> {
-	const res = await dispatchNoticing(dispatcher, { type: "defer", key, until });
-	if (res.ok) new Notice(`Отложена до ${until}`);
+async function dispatchDefer(ctx: TaskMenuCtx, until: IsoDate): Promise<void> {
+	let clearDue = false;
+	if (ctx.task.due !== null) {
+		const ok = await confirm(
+			ctx.app,
+			"Снять с плана?",
+			`Задача запланирована на ${ctx.task.due}. Отложенная задача не может ` +
+				`оставаться в плане: отложить до ${until} и снять с плана?`,
+			"Отложить и снять план",
+		);
+		if (!ok) return;
+		clearDue = true;
+	}
+	const res = await dispatchNoticing(ctx.dispatcher, {
+		type: "defer",
+		key: ctx.task.key,
+		until,
+		clearDue,
+	});
+	if (res.ok) new Notice(clearDue ? `Отложена до ${until}, план снят` : `Отложена до ${until}`);
 }
 
 async function runMenuAction(ctx: TaskMenuCtx, action: MenuAction): Promise<void> {
 	const ports = ctx.ports ?? null;
 	switch (action.kind) {
 		case "intent":
-			if (action.intent.type === "defer")
-				return dispatchDefer(ctx.dispatcher, action.intent.key, action.intent.until);
+			if (action.intent.type === "defer") return dispatchDefer(ctx, action.intent.until);
 			return void (await dispatchNoticing(ctx.dispatcher, action.intent));
 
 		case "pick-due": {
@@ -170,10 +188,26 @@ async function runMenuAction(ctx: TaskMenuCtx, action: MenuAction): Promise<void
 				ctx.task.dueTime,
 			);
 			if (choice === null) return;
+			// «🛫 и 📅 взаимоисключающие»: планирование реально отложенной задачи
+			// (🛫 в будущем) возвращает её из отложенных — с подтверждением.
+			// Инертный 🛫 в прошлом конфликтом не считается.
+			let clearStart = false;
+			if (ctx.task.start !== null && ctx.task.start > localTodayIso(new Date())) {
+				const ok = await confirm(
+					ctx.app,
+					"Вернуть из отложенных?",
+					`Задача отложена до ${ctx.task.start}. Запланированная задача не может ` +
+						`оставаться отложенной: запланировать на ${choice.date} и вернуть из отложенных?`,
+					"Запланировать и вернуть",
+				);
+				if (!ok) return;
+				clearStart = true;
+			}
 			return void (await dispatchNoticing(ctx.dispatcher, {
 				type: "set-date",
 				key: ctx.task.key,
 				field: "due",
+				clearStart,
 				date: choice.date,
 				time: choice.time,
 			}));
@@ -182,7 +216,7 @@ async function runMenuAction(ctx: TaskMenuCtx, action: MenuAction): Promise<void
 		case "pick-defer": {
 			const date = await pickDate(ctx.app, "Отложить до", ctx.task.start ?? undefined);
 			if (date === null) return;
-			return dispatchDefer(ctx.dispatcher, ctx.task.key, date);
+			return dispatchDefer(ctx, date);
 		}
 
 		case "pick-column": {

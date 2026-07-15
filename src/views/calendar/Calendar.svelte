@@ -7,12 +7,15 @@
 	import { calendarRangeStore } from "../../stores/derived/queryStore";
 	import type { TaskStore } from "../../stores/taskStore";
 	import { addDaysIso } from "../common/dates";
+	import { confirm } from "../common/ConfirmModal";
 	import type { TaskMenuPorts } from "../common/taskMenu";
 	import type { DndPort } from "../dnd/types";
 	import DayCell from "./DayCell.svelte";
 	import EventChip from "./EventChip.svelte";
+	import TimeGrid from "./TimeGrid.svelte";
 	import {
 		AGENDA_PAGE_DAYS,
+		DAYS3_PAGE_DAYS,
 		agendaDays,
 		agendaLabel,
 		appendLine,
@@ -82,6 +85,8 @@
 	const range = $derived.by(() => {
 		if (mode === "month") return grid.daysInView;
 		if (mode === "week") return weekRange(anchor, settings.firstDayOfWeek);
+		if (mode === "3days") return { from: anchor, to: addDaysIso(anchor, DAYS3_PAGE_DAYS - 1) };
+		if (mode === "day") return { from: anchor, to: anchor };
 		return { from: anchor, to: addDaysIso(anchor, AGENDA_PAGE_DAYS - 1) };
 	});
 
@@ -124,13 +129,19 @@
 	);
 
 	const title = $derived(
-		mode === "month" ? monthTitle(anchor) : `${range.from} — ${range.to}`,
+		mode === "month"
+			? monthTitle(anchor)
+			: mode === "day"
+				? agendaLabel(anchor)
+				: `${range.from} — ${range.to}`,
 	);
 
 	const MODE_ORDER: readonly { id: CalendarMode; label: string }[] = [
 		{ id: "month", label: "Месяц" },
 		{ id: "week", label: "Неделя" },
 		{ id: "agenda", label: "Агенда" },
+		{ id: "3days", label: "3 дня" },
+		{ id: "day", label: "День" },
 	];
 
 	function persistNow(): void {
@@ -147,41 +158,74 @@
 		persistNow();
 	}
 
+	/** Шаг листания: день — ±1, «3 дня» — ±3 (страницей, без перекрытия). */
 	function goPrev(): void {
 		anchor =
-			mode === "month" ? prevMonth(anchor) : mode === "week" ? prevWeek(anchor) : prevAgenda(anchor);
+			mode === "month"
+				? prevMonth(anchor)
+				: mode === "week"
+					? prevWeek(anchor)
+					: mode === "agenda"
+						? prevAgenda(anchor)
+						: addDaysIso(anchor, mode === "day" ? -1 : -DAYS3_PAGE_DAYS);
 		persistNow();
 	}
 
 	function goNext(): void {
 		anchor =
-			mode === "month" ? nextMonth(anchor) : mode === "week" ? nextWeek(anchor) : nextAgenda(anchor);
+			mode === "month"
+				? nextMonth(anchor)
+				: mode === "week"
+					? nextWeek(anchor)
+					: mode === "agenda"
+						? nextAgenda(anchor)
+						: addDaysIso(anchor, mode === "day" ? 1 : DAYS3_PAGE_DAYS);
 		persistNow();
 	}
 
-	/** Drop на день (ТЗ §8): двигаем поле, по которому задача видна в календаре,
-	 *  иначе первое из settings.calendarPlacement. */
-	async function dropTask(taskKey: string, date: IsoDate): Promise<void> {
+	/** Drop на день/слот (ТЗ §8): двигаем поле, по которому задача видна в
+	 *  календаре, иначе первое из settings.calendarPlacement.
+	 *  time: undefined — drop на день (существующее время поля сохраняется,
+	 *  контракт SetDate/setField: undefined = не трогать, перенос «14:30-задачи»
+	 *  на другой день оставляет 14:30); строка — слот time-grid (точное время);
+	 *  null — полоса «Весь день» time-grid (время снимается). */
+	async function dropTask(taskKey: string, date: IsoDate, time?: string | null): Promise<void> {
 		const task = taskStore.index().get(taskKey);
 		if (task === undefined) {
 			new Notice("GTD Flow: задача не найдена");
 			return;
 		}
+		const field = dropDateField(task, settings.calendarPlacement);
+		// «🛫 и 📅 взаимоисключающие»: планирование реально отложенной задачи
+		// (🛫 в будущем) возвращает её из отложенных — с подтверждением и одной
+		// атомарной записью. Инертный 🛫 в прошлом конфликтом не считается.
+		let clearStart = false;
+		if (field === "due" && task.start !== null && task.start > $today) {
+			const ok = await confirm(
+				app,
+				"Вернуть из отложенных?",
+				`Задача отложена до ${task.start}. Запланированная задача не может ` +
+					`оставаться отложенной: запланировать на ${date} и вернуть из отложенных?`,
+				"Запланировать и вернуть",
+			);
+			if (!ok) return;
+			clearStart = true;
+		}
 		const res = await dispatcher.dispatch({
 			type: "set-date",
 			key: taskKey,
-			field: dropDateField(task, settings.calendarPlacement),
+			field,
 			date,
-			// time намеренно НЕ передаём (undefined) — существующее время поля
-			// сохраняется (контракт SetDate/setField: undefined = не трогать время,
-			// null = снять). Перенос «14:30-задачи» на другой день оставляет 14:30.
+			time,
+			clearStart,
 		});
 		if (!res.ok) new Notice(`GTD Flow: ${res.reason}`);
+		else if (clearStart) new Notice(`Запланирована на ${date}, возвращена из отложенных`);
 	}
 
-	/** Быстрый ввод: `- [ ] <текст> 📅 <дата>` в первый источник входящих. */
-	async function quickAdd(date: IsoDate, text: string): Promise<void> {
-		const line = quickAddLine(text, date);
+	/** Быстрый ввод: `- [ ] <текст> 📅 <дата>[ HH:mm]` в первый источник входящих. */
+	async function quickAdd(date: IsoDate, text: string, time: string | null = null): Promise<void> {
+		const line = quickAddLine(text, date, time);
 		if (line === null) return;
 		const target = settings.inboxSources[0];
 		if (target === undefined) {
@@ -257,6 +301,19 @@
 				/>
 			{/each}
 		</div>
+	{:else if mode === "day" || mode === "3days"}
+		<TimeGrid
+			days={agendaDays(range.from, mode === "day" ? 1 : DAYS3_PAGE_DAYS)}
+			today={$today}
+			{byDay}
+			{dnd}
+			{dispatcher}
+			{app}
+			{settings}
+			{menuPorts}
+			onDropTask={dropTask}
+			onQuickAdd={quickAdd}
+		/>
 	{:else}
 		<div class="gtd-cal-weekdays">
 			{#each weekdayNames(settings.firstDayOfWeek) as name (name)}

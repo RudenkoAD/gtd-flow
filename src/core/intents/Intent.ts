@@ -23,6 +23,10 @@ export interface SetDate {
 	field: SettableDateField;
 	/** null — удалить поле (вместе со временем). */
 	date: IsoDate | null;
+	/** Политика «🛫 и 📅 взаимоисключающие»: снять 🛫 той же атомарной
+	 *  записью (учитывается только при field === "due"; UI ставит после
+	 *  подтверждения пользователем). */
+	clearStart?: boolean;
 	/** Время «HH:mm» — только для due/scheduled/start (семантика setField):
 	 *  undefined — сохранить существующее время поля, null — снять, строка — установить. */
 	time?: string | null;
@@ -79,6 +83,9 @@ export interface Defer {
 	type: "defer";
 	key: string;
 	until: IsoDate;
+	/** Политика «🛫 и 📅 взаимоисключающие»: снять 📅 (и его время) той же
+	 *  атомарной записью (UI ставит после подтверждения пользователем). */
+	clearDue?: boolean;
 }
 
 /** Ленивая вставка 🆔 при первой структурной правке (autoInjectId). */

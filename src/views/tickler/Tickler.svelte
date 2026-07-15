@@ -4,6 +4,7 @@
 	import type { GtdFlowSettings } from "../../settings/Settings";
 	import { ticklerStore } from "../../stores/derived/queryStore";
 	import type { TaskStore } from "../../stores/taskStore";
+	import { confirm } from "../common/ConfirmModal";
 	import TaskCard from "../common/TaskCard.svelte";
 	import type { TaskMenuPorts } from "../common/taskMenu";
 	import type { DndPort } from "../dnd/types";
@@ -63,12 +64,30 @@
 					el,
 					accepts: (p) => p.taskKey !== "",
 					drop: async (p) => {
+						const until = bucketDeferDate(bucket.id, $today, settings.firstDayOfWeek);
+						// «🛫 и 📅 взаимоисключающие»: отложить запланированную —
+						// только сняв план, с подтверждением (атомарная запись).
+						const task = taskStore.index().get(p.taskKey);
+						let clearDue = false;
+						if (task !== undefined && task.due !== null) {
+							const ok = await confirm(
+								app,
+								"Снять с плана?",
+								`Задача запланирована на ${task.due}. Отложенная задача не может ` +
+									`оставаться в плане: отложить до ${until} и снять с плана?`,
+								"Отложить и снять план",
+							);
+							if (!ok) return;
+							clearDue = true;
+						}
 						const res = await dispatcher.dispatch({
 							type: "defer",
 							key: p.taskKey,
-							until: bucketDeferDate(bucket.id, $today, settings.firstDayOfWeek),
+							until,
+							clearDue,
 						});
 						if (!res.ok) new Notice(`GTD Flow: ${res.reason}`);
+						else if (clearDue) new Notice(`Отложена до ${until}, план снят`);
 					},
 				}),
 			);

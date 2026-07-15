@@ -140,6 +140,42 @@ describe("resolveLineTransform — однострочные intents", () => {
 		expect(out).toContain("🛫 2026-08-01");
 	});
 
+	it("defer + clearDue: 🛫 ставится, 📅 (со временем) снимается одной трансформацией", () => {
+		const out = resolveLineTransform(
+			{ type: "defer", key: "k", until: "2026-08-01", clearDue: true },
+			"- [ ] Позвонить маме 📅 2026-07-20 14:30 #tag",
+		);
+		expect(out).toContain("🛫 2026-08-01");
+		expect(out).not.toContain("📅");
+		expect(out).not.toContain("14:30");
+		expect(out).toContain("#tag");
+	});
+
+	it("defer без clearDue: 📅 не трогаем (конфликт не подтверждён)", () => {
+		const out = resolveLineTransform(
+			{ type: "defer", key: "k", until: "2026-08-01" },
+			"- [ ] Позвонить маме 📅 2026-07-20",
+		);
+		expect(out).toContain("📅 2026-07-20");
+	});
+
+	it("set-date due + clearStart: 📅 ставится, 🛫 снимается одной трансформацией", () => {
+		const out = resolveLineTransform(
+			{ type: "set-date", key: "k", field: "due", date: "2026-07-20", clearStart: true },
+			"- [ ] Позвонить маме 🛫 2026-09-01",
+		);
+		expect(out).toContain("📅 2026-07-20");
+		expect(out).not.toContain("🛫");
+	});
+
+	it("set-date scheduled + clearStart: флаг игнорируется (политика только для 📅)", () => {
+		const out = resolveLineTransform(
+			{ type: "set-date", key: "k", field: "scheduled", date: "2026-07-20", clearStart: true },
+			"- [ ] Позвонить маме 🛫 2026-09-01",
+		);
+		expect(out).toContain("🛫 2026-09-01");
+	});
+
 	it("set-id: пишет 🆔", () => {
 		const out = resolveLineTransform(
 			{ type: "set-id", key: "k", taskId: "abc123" },

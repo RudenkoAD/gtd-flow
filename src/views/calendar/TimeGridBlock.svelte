@@ -83,6 +83,10 @@
 			? `${minutesToTime(block.startMin)}–${minutesToTime(endMinEff)}`
 			: null,
 	);
+	/** Короткий блок (≤30 мин): шапка с временем прячется — место названию
+	 *  (фидбек). Во время resize шапка видна всегда: это live-индикатор конца.
+	 *  Время остаётся в title-подсказке блока. */
+	const compact = $derived(!resizing && endMinEff - block.startMin <= 30);
 
 	/** Высота колонки (родитель блока, position: relative) — конверсия px → минуты. */
 	function colRect(): DOMRect | null {
@@ -143,9 +147,10 @@
 	class:has-range={rangeLabel !== null}
 	class:is-resizing={resizing}
 	bind:this={el}
+	title={compact ? rangeLabel : null}
 	style="top:{block.topPct}%; height:{heightPctEff}%; left:{leftPct}%; width:{widthPct}%"
 >
-	{#if rangeLabel !== null}
+	{#if rangeLabel !== null && !compact}
 		<div class="gtd-tg-block-range">{rangeLabel}</div>
 	{/if}
 	<EventChip {ev} {today} {dnd} {dispatcher} {app} {settings} {menuPorts} dragAnchor={el} />
@@ -200,9 +205,17 @@
 		border: 1px solid var(--background-modifier-border);
 		box-shadow: var(--shadow-s, none);
 	}
-	/* строка-диапазон уже показывает начало-конец — бейдж "14:30" чипа лишний */
+	/* строка-диапазон уже показывает начало-конец — бейдж "14:30" чипа лишний;
+	   в компактном режиме шапки нет, но время живёт в title-подсказке блока */
 	.gtd-tg-block.has-range :global(.gtd-cal-chip-time) {
 		display: none;
+	}
+	/* Внутри блока (в отличие от чипов месяца) названию есть куда расти —
+	   переносим строки вместо обрезания; клип по низу блока даёт overflow чипа */
+	.gtd-tg-block :global(.gtd-cal-chip-text) {
+		white-space: normal;
+		overflow-wrap: anywhere;
+		line-height: 1.25;
 	}
 	.gtd-tg-block-resize {
 		position: absolute;

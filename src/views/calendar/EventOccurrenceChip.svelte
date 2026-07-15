@@ -28,6 +28,13 @@
 	const rangeLabel = $derived(
 		block !== null && block.hasEnd && occ.timeEnd !== null ? `${occ.time}–${occ.timeEnd}` : null,
 	);
+	/** Короткий блок (≤30 мин): шапка времени прячется — место названию
+	 *  (та же логика, что у блоков задач; время остаётся в title-подсказке). */
+	const compact = $derived(block !== null && block.endMin - block.startMin <= 30);
+	const tooltip = $derived(
+		`Повторяющееся событие: ${occ.title}` +
+			(compact && occ.time !== null ? ` (${rangeLabel ?? occ.time})` : ""),
+	);
 
 	function openEdit(): void {
 		const { rule, time } = splitEventRule(occ.task.recurrence ?? "");
@@ -73,17 +80,28 @@
 	class="gtd-cal-chip gtd-cal-event"
 	class:is-block={block !== null}
 	style={block !== null ? `top:${block.topPct}%; height:${block.heightPct}%; left:${leftPct}%; width:${widthPct}%` : ""}
-	title="Повторяющееся событие: {occ.title}"
+	title={tooltip}
 	oncontextmenu={onContextMenu}
 >
-	{#if rangeLabel !== null}
-		<span class="gtd-cal-chip-time">{rangeLabel}</span>
+	{#if block !== null}
+		<!-- блок тайм-сетки: шапка-время сверху (прячется у коротких), название с переносами -->
+		{#if rangeLabel !== null && !compact}
+			<div class="gtd-tg-ev-range">{rangeLabel}</div>
+		{/if}
+		<div class="gtd-tg-ev-body">
+			<span class="gtd-cal-event-mark" aria-label="Повторяющееся событие">⟳</span>
+			<span class="gtd-cal-chip-text is-wrapping">{occ.title}</span>
+		</div>
+	{:else}
+		{#if rangeLabel !== null}
+			<span class="gtd-cal-chip-time">{rangeLabel}</span>
+		{/if}
+		<span class="gtd-cal-event-mark" aria-label="Повторяющееся событие">⟳</span>
+		{#if rangeLabel === null && occ.time !== null}
+			<span class="gtd-cal-chip-time">{occ.time}</span>
+		{/if}
+		<span class="gtd-cal-chip-text">{occ.title}</span>
 	{/if}
-	<span class="gtd-cal-event-mark" aria-label="Повторяющееся событие">⟳</span>
-	{#if rangeLabel === null && occ.time !== null}
-		<span class="gtd-cal-chip-time">{occ.time}</span>
-	{/if}
-	<span class="gtd-cal-chip-text">{occ.title}</span>
 </div>
 
 <style>
@@ -106,9 +124,35 @@
 		position: absolute;
 		box-sizing: border-box;
 		min-height: 20px;
-		align-items: flex-start;
+		flex-direction: column;
+		align-items: stretch;
+		gap: 0;
+		padding: 0;
 		overflow: hidden;
 		z-index: 1; /* под реальными задачами (их блоки z-index:2) */
+	}
+	.gtd-tg-ev-range {
+		flex: none;
+		padding: 0 4px;
+		color: var(--text-muted);
+		font-variant-numeric: tabular-nums;
+		line-height: 1.2;
+		border-bottom: 1px dashed var(--background-modifier-border);
+		white-space: nowrap;
+		overflow: hidden;
+	}
+	.gtd-tg-ev-body {
+		display: flex;
+		gap: 4px;
+		align-items: flex-start;
+		padding: 1px 4px;
+		min-height: 0;
+		overflow: hidden;
+	}
+	.gtd-cal-chip-text.is-wrapping {
+		white-space: normal;
+		overflow-wrap: anywhere;
+		line-height: 1.25;
 	}
 	.gtd-cal-event-mark {
 		flex: none;

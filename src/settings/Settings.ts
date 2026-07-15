@@ -22,6 +22,8 @@ export interface GtdFlowSettings {
 	firstDayOfWeek: number; // 0=вс … 6=сб
 	/** Кастомные символы статуса → GTD-состояние (переопределения). */
 	statusMap: Record<string, string>;
+	/** Доска по умолчанию для вида Kanban; пусто — первая найденная. */
+	defaultBoardPath: string;
 	autoInjectId: boolean;
 	debounceMs: { fileReindex: number; queryRecompute: number };
 	virtualizeThreshold: number;
@@ -47,6 +49,7 @@ export const DEFAULT_SETTINGS: GtdFlowSettings = {
 	],
 	firstDayOfWeek: 1,
 	statusMap: {},
+	defaultBoardPath: "",
 	autoInjectId: true,
 	debounceMs: { fileReindex: 150, queryRecompute: 50 },
 	virtualizeThreshold: 100,

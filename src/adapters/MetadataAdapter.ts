@@ -58,6 +58,22 @@ export class MetadataAdapter implements VaultEvents {
 		}
 	}
 
+	/**
+	 * Плоская копия frontmatter файла из кэша метаданных; null — файла нет,
+	 * он не markdown или frontmatter отсутствует. Служебный ключ `position`
+	 * (артефакт кэша Obsidian) вырезается — потребители (parseBoardFrontmatter)
+	 * ждут чистый YAML-объект.
+	 */
+	frontmatter(path: string): Record<string, unknown> | null {
+		const file = this.app.vault.getFileByPath(path);
+		if (file === null || !isMarkdownFile(file)) return null;
+		const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+		if (fm === undefined || fm === null) return null;
+		const copy: Record<string, unknown> = { ...fm };
+		delete copy["position"];
+		return copy;
+	}
+
 	async snapshotFile(file: TFile): Promise<FileSnapshot> {
 		const content = await this.app.vault.cachedRead(file);
 		const cache = this.app.metadataCache.getFileCache(file);

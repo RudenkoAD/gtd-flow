@@ -6,8 +6,10 @@ import { VaultAdapter } from "./adapters/VaultAdapter";
 import { ObsidianClock } from "./adapters/ObsidianClock";
 import { IndexerService } from "./services/IndexerService";
 import { WritebackService } from "./services/WritebackService";
+import { BoardService } from "./services/BoardService";
 import { createTaskStore, type TaskStore } from "./stores/taskStore";
 import { createGtdView } from "./views/createView";
+import { DndService } from "./views/dnd/DndService";
 
 export default class GtdFlowPlugin extends Plugin {
 	settings: GtdFlowSettings = DEFAULT_SETTINGS;
@@ -15,6 +17,8 @@ export default class GtdFlowPlugin extends Plugin {
 	vaultAdapter!: VaultAdapter;
 	taskStore!: TaskStore;
 	dispatcher!: WritebackService;
+	boards!: BoardService;
+	dnd!: DndService;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
@@ -33,6 +37,15 @@ export default class GtdFlowPlugin extends Plugin {
 			feed: this.indexer,
 			autoInjectId: this.settings.autoInjectId,
 		});
+		this.boards = new BoardService({
+			feed: this.indexer,
+			readFrontmatter: (path) => metadata.frontmatter(path),
+			patchFrontmatter: async (path, fn) => {
+				await this.vaultAdapter.processFrontmatter(path, fn);
+			},
+			dispatcher: this.dispatcher,
+		});
+		this.dnd = new DndService(this);
 		// Первичная сборка — вне критического пути старта (ТЗ §2).
 		this.app.workspace.onLayoutReady(() => void this.indexer.start());
 

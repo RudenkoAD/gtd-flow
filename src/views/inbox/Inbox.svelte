@@ -6,6 +6,7 @@
 	import { inboxStore } from "../../stores/derived/queryStore";
 	import type { TaskStore } from "../../stores/taskStore";
 	import TaskCard from "../common/TaskCard.svelte";
+	import type { TaskMenuPorts } from "../common/taskMenu";
 	import VirtualList from "../common/VirtualList.svelte";
 	import type { DndPort } from "../dnd/types";
 	import { VIEW_TYPES } from "../registry";
@@ -17,6 +18,7 @@
 		settings,
 		app,
 		dnd = null,
+		menuPorts = null,
 	}: {
 		taskStore: TaskStore;
 		dispatcher: IntentDispatcher;
@@ -24,6 +26,8 @@
 		app: App;
 		/** null — drag выключен (телефон / сервис недоступен). */
 		dnd?: DndPort | null;
+		/** Порты паритета без drag (меню/пикеры/карточка), ТЗ §8 слой 3. */
+		menuPorts?: TaskMenuPorts | null;
 	} = $props();
 
 	// props фиксированы на время монтирования (вид пересоздаётся с leaf) —
@@ -69,6 +73,7 @@
 					today={$today}
 					{dnd}
 					dragPayload={{ taskKey: task.key, sourceViewType: VIEW_TYPES.inbox }}
+					{menuPorts}
 				/>
 			{/snippet}
 		</VirtualList>

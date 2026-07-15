@@ -2,6 +2,8 @@
 	import type { App } from "obsidian";
 	import type { IsoDate } from "../../core/model/Task";
 	import type { IntentDispatcher } from "../../services/WritebackService";
+	import type { GtdFlowSettings } from "../../settings/Settings";
+	import type { TaskMenuPorts } from "../common/taskMenu";
 	import type { DndPort } from "../dnd/types";
 	import EventChip from "./EventChip.svelte";
 	import type { PlacedEvent } from "./calendarLogic";
@@ -13,6 +15,8 @@
 		dnd,
 		dispatcher,
 		app,
+		settings,
+		menuPorts = null,
 		muted = false,
 		compact = false,
 		label = null,
@@ -25,6 +29,9 @@
 		dnd: DndPort | null;
 		dispatcher: IntentDispatcher;
 		app: App;
+		settings: GtdFlowSettings;
+		/** Порты паритета без drag (меню/пикеры/карточка), ТЗ §8 слой 3. */
+		menuPorts?: TaskMenuPorts | null;
 		/** День соседнего месяца в сетке месяца. */
 		muted?: boolean;
 		/** Месяц — компактные ячейки; неделя/агенда — растянутые. */
@@ -93,7 +100,7 @@
 	</div>
 	<div class="gtd-cal-events">
 		{#each events as ev (ev.task.key)}
-			<EventChip {ev} {today} {dnd} {dispatcher} {app} />
+			<EventChip {ev} {today} {dnd} {dispatcher} {app} {settings} {menuPorts} />
 		{/each}
 		{#if adding}
 			<input

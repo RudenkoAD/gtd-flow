@@ -5,6 +5,7 @@
 	import type { IntentDispatcher } from "../../services/WritebackService";
 	import type { GtdFlowSettings } from "../../settings/Settings";
 	import type { TaskStore } from "../../stores/taskStore";
+	import type { TaskMenuPorts } from "../common/taskMenu";
 	import type { DndPort } from "../dnd/types";
 	import Column from "./Column.svelte";
 	import {
@@ -21,6 +22,7 @@
 		app,
 		boards,
 		dnd,
+		menuPorts = null,
 		persisted,
 		persist,
 	}: {
@@ -32,6 +34,8 @@
 		boards: BoardService | null;
 		/** null — drag выключен (plugin.dnd ещё не подключён / телефон). */
 		dnd: DndPort | null;
+		/** Порты паритета без drag (меню/пикеры/карточка), ТЗ §8 слой 3. */
+		menuPorts?: TaskMenuPorts | null;
 		/** Состояние из workspace-раскладки; приходит ПОСЛЕ монтирования. */
 		persisted: Readable<KanbanPersistedState>;
 		persist: (s: KanbanPersistedState) => void;
@@ -134,6 +138,7 @@
 					{app}
 					{settings}
 					today={$today}
+					{menuPorts}
 					{onToggle}
 				/>
 			{/each}

@@ -1,10 +1,11 @@
 <script lang="ts">
-	import { Menu, Notice, type App } from "obsidian";
+	import { Notice, Platform, type App } from "obsidian";
 	import type { Intent } from "../../core/intents/Intent";
 	import type { IsoDate } from "../../core/model/Task";
 	import type { IntentDispatcher } from "../../services/WritebackService";
+	import type { GtdFlowSettings } from "../../settings/Settings";
 	import { PRIORITY_ICONS, PRIORITY_LABELS } from "../common/cardFormat";
-	import { openTaskInFile } from "../common/openTask";
+	import { buildTaskMenu, type TaskMenuPorts } from "../common/taskMenu";
 	import type { DndPort } from "../dnd/types";
 	import { VIEW_TYPES } from "../registry";
 	import type { PlacedEvent } from "./calendarLogic";
@@ -15,6 +16,8 @@
 		dnd,
 		dispatcher,
 		app,
+		settings,
+		menuPorts = null,
 		showDate = null,
 	}: {
 		ev: PlacedEvent;
@@ -22,11 +25,16 @@
 		dnd: DndPort | null;
 		dispatcher: IntentDispatcher;
 		app: App;
+		settings: GtdFlowSettings;
+		/** Порты паритета без drag (меню/пикеры/карточка), ТЗ §8 слой 3. */
+		menuPorts?: TaskMenuPorts | null;
 		/** Показать дату в самом chip'е (секция просроченных в агенде). */
 		showDate?: IsoDate | null;
 	} = $props();
 
 	const isDone = $derived(ev.task.statusChar === "x" || ev.task.statusChar === "X");
+	// ТЗ §8: на телефоне кросс-видовой drag выключен — меню/пикеры вместо него
+	const draggable = $derived(dnd !== null && !Platform.isPhone);
 
 	async function run(intent: Intent): Promise<void> {
 		const res = await dispatcher.dispatch(intent);
@@ -42,7 +50,7 @@
 	}
 
 	function onPointerDown(e: PointerEvent): void {
-		if (dnd === null || e.button !== 0) return;
+		if (!draggable || dnd === null || e.button !== 0) return;
 		// клик по точке-статусу — не начало drag
 		if (e.target instanceof Element && e.target.closest("input, button, a, select, textarea")) return;
 		dnd.startDrag(
@@ -53,20 +61,8 @@
 	}
 
 	function openMenu(e: MouseEvent): void {
-		const menu = new Menu();
-		menu.addItem((item) =>
-			item
-				.setTitle(isDone ? "Открыть заново" : "Выполнено")
-				.setIcon(isDone ? "rotate-ccw" : "check")
-				.onClick(() => toggleStatus()),
-		);
-		menu.addItem((item) =>
-			item
-				.setTitle("Открыть в файле")
-				.setIcon("file-text")
-				.onClick(() => void openTaskInFile(app, ev.task)),
-		);
-		menu.showAtMouseEvent(e);
+		buildTaskMenu({ task: ev.task, app, dispatcher, settings, today, ports: menuPorts })
+			.showAtMouseEvent(e);
 	}
 </script>
 
@@ -74,7 +70,7 @@
 <div
 	class="gtd-cal-chip"
 	class:is-done={isDone}
-	class:is-draggable={dnd !== null}
+	class:is-draggable={draggable}
 	title={ev.task.description}
 	onpointerdown={onPointerDown}
 	onclick={openMenu}

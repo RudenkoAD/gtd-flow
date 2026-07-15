@@ -5,6 +5,7 @@
 	import { ticklerStore } from "../../stores/derived/queryStore";
 	import type { TaskStore } from "../../stores/taskStore";
 	import TaskCard from "../common/TaskCard.svelte";
+	import type { TaskMenuPorts } from "../common/taskMenu";
 	import type { DndPort } from "../dnd/types";
 	import { VIEW_TYPES } from "../registry";
 	import { BUCKET_ORDER, bucketDeferDate, bucketize, type BucketId } from "./buckets";
@@ -15,6 +16,7 @@
 		settings,
 		app,
 		dnd = null,
+		menuPorts = null,
 	}: {
 		taskStore: TaskStore;
 		dispatcher: IntentDispatcher;
@@ -22,6 +24,8 @@
 		app: App;
 		/** null — drag выключен (телефон / сервис недоступен). */
 		dnd?: DndPort | null;
+		/** Порты паритета без drag (меню/пикеры/карточка), ТЗ §8 слой 3. */
+		menuPorts?: TaskMenuPorts | null;
 	} = $props();
 
 	// props фиксированы на время монтирования (вид пересоздаётся с leaf) —
@@ -100,6 +104,7 @@
 						inTickler={true}
 						{dnd}
 						dragPayload={{ taskKey: task.key, sourceViewType: VIEW_TYPES.tickler }}
+						{menuPorts}
 					/>
 				{:else}
 					<div class="gtd-bucket-empty">Пусто</div>

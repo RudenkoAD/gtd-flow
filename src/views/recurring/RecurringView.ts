@@ -1,5 +1,6 @@
 import type { Component } from "svelte";
 import type GtdFlowPlugin from "../../main";
+import type { CardPort } from "../../services/CardService";
 import type { RecurrencePort } from "../../services/RecurrenceService";
 import { GtdView } from "../GtdView";
 import Recurring from "./Recurring.svelte";
@@ -15,14 +16,18 @@ export class RecurringView extends GtdView {
 	}
 
 	protected override props(): Record<string, unknown> {
-		// recurrence появляется на плагине при интеграции этапа 6 в main.ts;
-		// без него вид работает read-only с подсказкой
-		const plugin = this.plugin as GtdFlowPlugin & { recurrence?: RecurrencePort };
+		// recurrence появляется на плагине при интеграции этапа 6 в main.ts,
+		// cards — при связке CardService (этап 8); без них — read-only/без пункта
+		const plugin = this.plugin as GtdFlowPlugin & {
+			recurrence?: RecurrencePort;
+			cards?: CardPort;
+		};
 		return {
 			taskStore: plugin.taskStore,
 			settings: plugin.settings,
 			app: plugin.app,
 			recurrence: plugin.recurrence ?? null,
+			cards: plugin.cards ?? null,
 		};
 	}
 }

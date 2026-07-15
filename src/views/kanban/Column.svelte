@@ -1,11 +1,12 @@
 <script lang="ts">
-	import { Notice, type App } from "obsidian";
+	import { Notice, Platform, type App } from "obsidian";
 	import type { BoardDef } from "../../core/board/boardFile";
 	import type { IsoDate } from "../../core/model/Task";
 	import type { BoardService } from "../../services/BoardService";
 	import type { IntentDispatcher } from "../../services/WritebackService";
 	import type { GtdFlowSettings } from "../../settings/Settings";
 	import TaskCard from "../common/TaskCard.svelte";
+	import type { TaskMenuPorts } from "../common/taskMenu";
 	import { insertIndexByY, type FlatRect } from "../dnd/dndCore";
 	import type { DndPort } from "../dnd/types";
 	import { VIEW_TYPES } from "../registry";
@@ -21,6 +22,7 @@
 		app,
 		settings,
 		today,
+		menuPorts = null,
 		onToggle,
 	}: {
 		column: ColumnVM;
@@ -32,8 +34,13 @@
 		app: App;
 		settings: GtdFlowSettings;
 		today: IsoDate;
+		/** Порты паритета без drag (меню/пикеры/карточка), ТЗ §8 слой 3. */
+		menuPorts?: TaskMenuPorts | null;
 		onToggle: (colId: string) => void;
 	} = $props();
+
+	// ТЗ §8: на телефоне drag не инициируем — жест уходит длинному тапу карточки
+	const cardDraggable = $derived(dnd !== null && !Platform.isPhone);
 
 	let colEl: HTMLElement | null = $state(null);
 	let listEl: HTMLElement | null = $state(null);
@@ -64,7 +71,7 @@
 	});
 
 	function onCardPointerDown(e: PointerEvent, taskKey: string): void {
-		if (dnd === null || e.button !== 0) return;
+		if (!cardDraggable || dnd === null || e.button !== 0) return;
 		// клики по контролам карточки (чекбокс, меню) — не начало drag
 		if (e.target instanceof Element && e.target.closest("input, button, a, select, textarea")) return;
 		dnd.startDrag({ taskKey, sourceViewType: VIEW_TYPES.kanban }, e, e.currentTarget as HTMLElement);
@@ -107,9 +114,10 @@
 					<!-- svelte-ignore a11y_no_static_element_interactions -->
 					<div
 						class="gtd-kanban-card"
+						class:is-draggable={cardDraggable}
 						onpointerdown={(e) => onCardPointerDown(e, task.key)}
 					>
-						<TaskCard {task} {dispatcher} {app} {settings} {today} />
+						<TaskCard {task} {dispatcher} {app} {settings} {today} {menuPorts} />
 					</div>
 				{/each}
 			</div>
@@ -198,12 +206,15 @@
 		font-size: var(--font-ui-smaller, 0.85em);
 	}
 	.gtd-kanban-card {
-		/* без touch-action: none тач отдаст жест нативному скроллу до long-press */
-		touch-action: none;
-		cursor: grab;
 		background: var(--background-primary);
 	}
-	.gtd-kanban-card:active {
+	.gtd-kanban-card.is-draggable {
+		/* без touch-action: none тач отдаст жест нативному скроллу до long-press;
+		   на телефоне drag выключен — скролл и длинный тап остаются нативными */
+		touch-action: none;
+		cursor: grab;
+	}
+	.gtd-kanban-card.is-draggable:active {
 		cursor: grabbing;
 	}
 </style>

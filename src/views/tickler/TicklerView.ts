@@ -1,6 +1,7 @@
 import type { Component } from "svelte";
 import type GtdFlowPlugin from "../../main";
 import type { IntentDispatcher } from "../../services/WritebackService";
+import { taskMenuPortsFromPlugin } from "../common/taskMenu";
 import type { DndPort } from "../dnd/types";
 import { GtdView } from "../GtdView";
 import Tickler from "./Tickler.svelte";
@@ -26,6 +27,7 @@ export class TicklerView extends GtdView {
 			settings: plugin.settings,
 			app: plugin.app,
 			dnd: plugin.dnd ?? null,
+			menuPorts: taskMenuPortsFromPlugin(plugin),
 		};
 	}
 }

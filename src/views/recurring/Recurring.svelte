@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { Menu, Notice, type App } from "obsidian";
 	import { isParseError } from "../../core/recurrence/grammar";
+	import type { CardPort } from "../../services/CardService";
 	import type { RecurrencePort, SpawnReport } from "../../services/RecurrenceService";
 	import type { GtdFlowSettings } from "../../settings/Settings";
 	import { templatesStore } from "../../stores/derived/queryStore";
@@ -20,12 +21,15 @@
 		settings,
 		app,
 		recurrence = null,
+		cards = null,
 	}: {
 		taskStore: TaskStore;
 		settings: GtdFlowSettings;
 		app: App;
 		/** null — движок повторов не подключён: карточки read-only + подсказка. */
 		recurrence?: RecurrencePort | null;
+		/** null — сервис карточек не подключён: пункт «Открыть карточку» скрыт. */
+		cards?: CardPort | null;
 	} = $props();
 
 	// props фиксированы на время монтирования (вид пересоздаётся с leaf) —
@@ -132,6 +136,21 @@
 					.setIcon("pencil")
 					.setTitle("Изменить правило…")
 					.onClick(() => editRule(port, vm)),
+			);
+		}
+		const cardPort = cards;
+		if (cardPort !== null) {
+			menu.addItem((item) =>
+				item
+					.setSection("nav")
+					.setIcon("panel-right")
+					.setTitle("Открыть карточку")
+					.onClick(() =>
+						void (async () => {
+							const res = await cardPort.openOrCreate(vm.key);
+							if (!res.ok) new Notice(`GTD Flow: ${res.reason ?? "карточка недоступна"}`);
+						})(),
+					),
 			);
 		}
 		menu.addItem((item) =>

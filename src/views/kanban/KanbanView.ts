@@ -4,6 +4,7 @@ import { writable, type Writable } from "svelte/store";
 import type GtdFlowPlugin from "../../main";
 import type { BoardService } from "../../services/BoardService";
 import type { IntentDispatcher } from "../../services/WritebackService";
+import { taskMenuPortsFromPlugin } from "../common/taskMenu";
 import type { DndPort } from "../dnd/types";
 import { GtdView } from "../GtdView";
 import Kanban from "./Kanban.svelte";
@@ -36,6 +37,7 @@ export class KanbanView extends GtdView {
 			app: plugin.app,
 			boards: plugin.boards ?? null,
 			dnd: plugin.dnd ?? null,
+			menuPorts: taskMenuPortsFromPlugin(plugin),
 			persisted: { subscribe: this.persisted.subscribe },
 			persist: (s: KanbanPersistedState) => {
 				this.lastState = s;

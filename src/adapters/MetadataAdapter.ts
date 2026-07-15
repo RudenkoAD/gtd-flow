@@ -74,6 +74,26 @@ export class MetadataAdapter implements VaultEvents {
 		return copy;
 	}
 
+	/**
+	 * Первый markdown-файл, чей frontmatter[key] совпадает со value; null — нет.
+	 * При нескольких носителях — лексикографически наименьший путь (детерминизм:
+	 * два вызова/устройства сходятся к одному файлу без координации).
+	 * YAML читает голые скаляры типизированно (`gtd-card-of: 123` → число),
+	 * поэтому сравниваем и строго, и через String() — id "123" находит оба.
+	 */
+	findByFrontmatterValue(key: string, value: unknown): string | null {
+		let best: string | null = null;
+		for (const file of this.app.vault.getMarkdownFiles()) {
+			if (best !== null && file.path >= best) continue;
+			const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+			if (fm === undefined || fm === null) continue;
+			const v: unknown = fm[key];
+			if (v === undefined || v === null) continue;
+			if (v === value || String(v) === String(value)) best = file.path;
+		}
+		return best;
+	}
+
 	async snapshotFile(file: TFile): Promise<FileSnapshot> {
 		const content = await this.app.vault.cachedRead(file);
 		const cache = this.app.metadataCache.getFileCache(file);

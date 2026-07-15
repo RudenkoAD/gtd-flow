@@ -3,6 +3,7 @@ import type { Component } from "svelte";
 import { writable, type Writable } from "svelte/store";
 import type GtdFlowPlugin from "../../main";
 import type { IntentDispatcher } from "../../services/WritebackService";
+import { taskMenuPortsFromPlugin } from "../common/taskMenu";
 import { GtdView } from "../GtdView";
 import Project from "./Project.svelte";
 import type { ProjectPersistedState } from "./projectGraphLogic";
@@ -33,6 +34,8 @@ export class ProjectView extends GtdView {
 			dispatcher: plugin.dispatcher,
 			app: plugin.app,
 			projects: plugin.projects ?? null,
+			settings: plugin.settings,
+			menuPorts: taskMenuPortsFromPlugin(plugin),
 			persisted: { subscribe: this.persisted.subscribe },
 			persist: (s: ProjectPersistedState) => {
 				this.lastState = s;

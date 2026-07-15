@@ -9,6 +9,8 @@ import { WritebackService } from "./services/WritebackService";
 import { BoardService } from "./services/BoardService";
 import { RecurrenceService } from "./services/RecurrenceService";
 import { ProjectService } from "./services/ProjectService";
+import { CardService } from "./services/CardService";
+import { registerCommands } from "./commands";
 import { createTaskStore, type TaskStore } from "./stores/taskStore";
 import { createGtdView } from "./views/createView";
 import { DndService } from "./views/dnd/DndService";
@@ -23,6 +25,7 @@ export default class GtdFlowPlugin extends Plugin {
 	dnd!: DndService;
 	recurrence!: RecurrenceService;
 	projects!: ProjectService;
+	cards!: CardService;
 	private indexReadyFlag = false;
 
 	async onload(): Promise<void> {
@@ -77,6 +80,22 @@ export default class GtdFlowPlugin extends Plugin {
 			dispatcher: this.dispatcher,
 			todayIso: () => clock.todayIso(),
 		});
+		this.cards = new CardService({
+			feed: this.indexer,
+			write: this.vaultAdapter,
+			dispatcher: this.dispatcher,
+			ensureFile: (path) => this.vaultAdapter.ensureFile(path),
+			settings: () => ({
+				cardsFolder: this.settings.cardsFolder,
+				cardLinkInLine: this.settings.cardLinkInLine,
+			}),
+			openFile: async (path) => {
+				const file = this.app.vault.getFileByPath(path);
+				if (file !== null) await this.app.workspace.getLeaf(true).openFile(file);
+			},
+			findCardFile: (taskId) => metadata.findByFrontmatterValue("gtd-card-of", taskId),
+		});
+		registerCommands(this);
 		// Первичная сборка — вне критического пути старта (ТЗ §2).
 		this.app.workspace.onLayoutReady(() => void this.indexer.start());
 

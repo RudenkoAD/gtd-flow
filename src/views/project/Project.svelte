@@ -4,8 +4,10 @@
 	import { SvelteFlowProvider } from "@xyflow/svelte";
 	import type { ProjectStatus, Task } from "../../core/model/Task";
 	import type { IntentDispatcher } from "../../services/WritebackService";
+	import type { GtdFlowSettings } from "../../settings/Settings";
 	import type { TaskStore } from "../../stores/taskStore";
 	import { openTaskInFile } from "../common/openTask";
+	import { buildTaskMenu, type TaskMenuPorts } from "../common/taskMenu";
 	import ProjectGraph from "./ProjectGraph.svelte";
 	import type { ProjectPort } from "../../services/ProjectService";
 	import {
@@ -21,6 +23,8 @@
 		dispatcher,
 		app,
 		projects,
+		settings,
+		menuPorts = null,
 		persisted,
 		persist,
 	}: {
@@ -29,6 +33,9 @@
 		app: App;
 		/** null до интеграции сервиса проектов в main.ts (plugin.projects). */
 		projects: ProjectPort | null;
+		settings: GtdFlowSettings;
+		/** Порты паритета без drag (меню/пикеры/карточка), ТЗ §8 слой 3. */
+		menuPorts?: TaskMenuPorts | null;
 		/** Состояние из workspace-раскладки; приходит ПОСЛЕ монтирования. */
 		persisted: Readable<ProjectPersistedState>;
 		persist: (s: ProjectPersistedState) => void;
@@ -106,6 +113,12 @@
 		);
 		if (!res.ok) new Notice(`GTD Flow: ${res.reason}`);
 	}
+
+	/** Паритет без drag на телефоне (ТЗ §8): общее меню задачи из списка. */
+	function openItemMenu(e: MouseEvent, task: Task): void {
+		buildTaskMenu({ task, app, dispatcher, settings, today: $today, ports: menuPorts })
+			.showAtMouseEvent(e);
+	}
 </script>
 
 <div class="gtd-project">
@@ -179,6 +192,15 @@
 								{n.task.description}
 							</button>
 							<span class="gtd-project-mstate">{n.state}</span>
+							{#if !n.ghost}
+								<button
+									class="gtd-project-mmore"
+									aria-label="Меню задачи"
+									onclick={(e) => openItemMenu(e, n.task)}
+								>
+									⋯
+								</button>
+							{/if}
 						</div>
 					{/each}
 				</div>
@@ -290,5 +312,19 @@
 		flex: none;
 		font-size: var(--font-ui-smaller, 0.85em);
 		color: var(--text-muted);
+	}
+	.gtd-project-mmore {
+		flex: none;
+		border: none;
+		box-shadow: none;
+		background: transparent;
+		color: var(--text-muted);
+		cursor: pointer;
+		padding: 0 6px;
+		border-radius: var(--radius-s, 4px);
+	}
+	.gtd-project-mmore:hover {
+		color: var(--text-normal);
+		background: var(--background-modifier-hover);
 	}
 </style>

@@ -1,17 +1,14 @@
 <script lang="ts">
-	import { Menu, Notice, type App } from "obsidian";
+	import { Notice, Platform, type App } from "obsidian";
 	import type { Intent } from "../../core/intents/Intent";
 	import type { IsoDate, Task } from "../../core/model/Task";
 	import type { IntentDispatcher } from "../../services/WritebackService";
 	import type { GtdFlowSettings } from "../../settings/Settings";
 	import type { DndPort, DragPayload } from "../dnd/types";
-	import { DatePromptModal } from "./DatePromptModal";
-	import { addDaysIso } from "./dates";
-	import { openTaskInFile } from "./openTask";
+	import { buildTaskMenu, type TaskMenuPorts } from "./taskMenu";
 	import {
 		PRIORITY_ICONS,
 		PRIORITY_LABELS,
-		PRIORITY_ORDER,
 		dateBadges,
 		segmentDescription,
 	} from "./cardFormat";
@@ -25,6 +22,7 @@
 		inTickler = false,
 		dnd = null,
 		dragPayload,
+		menuPorts = null,
 	}: {
 		task: Task;
 		dispatcher: IntentDispatcher;
@@ -37,20 +35,91 @@
 		 *  (kanban оборачивает карточку своим drag-контейнером). */
 		dnd?: DndPort | null;
 		dragPayload?: DragPayload;
+		/** Порты паритета (меню/карточка/прогресс); null — базовое меню. */
+		menuPorts?: TaskMenuPorts | null;
 	} = $props();
 
-	const draggable = $derived(dnd !== null && dragPayload !== undefined);
+	// ТЗ §8: на телефоне кросс-видовой drag выключен — startDrag не инициируем,
+	// touch-action возвращается нативному скроллу, длинный тап открывает карточку
+	const draggable = $derived(dnd !== null && dragPayload !== undefined && !Platform.isPhone);
+
+	function isControl(target: EventTarget | null): boolean {
+		return target instanceof Element && target.closest("input, button, a, select, textarea") !== null;
+	}
 
 	function onCardPointerDown(e: PointerEvent): void {
+		if (isControl(e.target)) return; // клики по контролам — не drag и не long-press
+		if (Platform.isPhone) {
+			startLongPress(e);
+			return;
+		}
 		if (dnd === null || dragPayload === undefined || e.button !== 0) return;
-		// клики по контролам карточки (чекбокс, меню) — не начало drag
-		if (e.target instanceof Element && e.target.closest("input, button, a, select, textarea")) return;
 		dnd.startDrag(dragPayload, e, e.currentTarget as HTMLElement);
+	}
+
+	// --- длинный тап (только телефон) = открыть карточку ---
+
+	const LONG_TAP_MS = 450;
+	const LONG_TAP_SLOP_PX = 10;
+	let lpTimer: number | null = null;
+	let lpX = 0;
+	let lpY = 0;
+
+	function startLongPress(e: PointerEvent): void {
+		cancelLongPress();
+		lpX = e.clientX;
+		lpY = e.clientY;
+		lpTimer = window.setTimeout(() => {
+			lpTimer = null;
+			void openCard();
+		}, LONG_TAP_MS);
+	}
+
+	function onCardPointerMove(e: PointerEvent): void {
+		if (lpTimer === null) return;
+		if (Math.hypot(e.clientX - lpX, e.clientY - lpY) > LONG_TAP_SLOP_PX) cancelLongPress();
+	}
+
+	function cancelLongPress(): void {
+		if (lpTimer !== null) {
+			window.clearTimeout(lpTimer);
+			lpTimer = null;
+		}
 	}
 
 	const isDone = $derived(task.statusChar === "x" || task.statusChar === "X");
 	const segments = $derived(segmentDescription(task.description));
 	const badges = $derived(dateBadges(task));
+
+	// --- прогресс карточки n/m (CardPort.progressOf) ---
+	// чек-строки живут в файле-карточке, а не в задаче: их правка НЕ пересоздаёт
+	// объект task — пересчёт цепляем к epoch индекса
+	let epochVal = $state(0);
+	$effect(() => {
+		const store = menuPorts?.epoch ?? null;
+		if (store == null) return;
+		return store.subscribe((v) => {
+			epochVal = v;
+		});
+	});
+	const progress = $derived.by(() => {
+		void epochVal;
+		const cards = menuPorts?.cards ?? null;
+		if (cards == null || task.taskId === null) return null;
+		return cards.progressOf(task.taskId);
+	});
+
+	async function openCard(): Promise<void> {
+		const cards = menuPorts?.cards ?? null;
+		if (cards == null) return; // порт не подключён — карточек нет
+		const res = await cards.openOrCreate(task.key);
+		if (!res.ok) new Notice(`GTD Flow: ${res.reason ?? "карточка недоступна"}`);
+	}
+
+	function onCardDblClick(e: MouseEvent): void {
+		if (isControl(e.target)) return;
+		void openCard();
+	}
 
 	// единая точка write-back: отказ — уведомление, а не тихо съеденный клик
 	async function run(intent: Intent): Promise<void> {
@@ -66,66 +135,9 @@
 		);
 	}
 
-	function deferTo(until: IsoDate): void {
-		void run({ type: "defer", key: task.key, until });
-	}
-
 	function openMenu(e: MouseEvent): void {
-		const menu = new Menu();
-		menu.addItem((item) =>
-			item
-				.setSection("status")
-				.setTitle(isDone ? "Открыть заново" : "Выполнено")
-				.setIcon(isDone ? "rotate-ccw" : "check")
-				.onClick(() => toggleStatus()),
-		);
-		// setSubmenu нет в публичных типах API — плоские пункты с секциями
-		for (const p of PRIORITY_ORDER) {
-			menu.addItem((item) =>
-				item
-					.setSection("priority")
-					.setTitle(`Приоритет: ${PRIORITY_LABELS[p]}`)
-					.setChecked(task.priority === p)
-					.onClick(() => void run({ type: "set-priority", key: task.key, priority: p })),
-			);
-		}
-		for (const preset of settings.deferPresets) {
-			menu.addItem((item) =>
-				item
-					.setSection("defer")
-					.setIcon("alarm-clock")
-					.setTitle(`Отложить: ${preset.label}`)
-					.onClick(() => deferTo(addDaysIso(today, preset.offsetDays))),
-			);
-		}
-		menu.addItem((item) =>
-			item
-				.setSection("defer")
-				.setIcon("calendar")
-				.setTitle("Отложить: дата…")
-				.onClick(() =>
-					new DatePromptModal(app, "Отложить до", deferTo, task.start ?? undefined).open(),
-				),
-		);
-		if (inTickler) {
-			menu.addItem((item) =>
-				item
-					.setSection("defer")
-					.setIcon("inbox")
-					.setTitle("Вернуть во входящие")
-					.onClick(() =>
-						void run({ type: "set-date", key: task.key, field: "start", date: null }),
-					),
-			);
-		}
-		menu.addItem((item) =>
-			item
-				.setSection("nav")
-				.setIcon("file-text")
-				.setTitle("Открыть в файле")
-				.onClick(() => void openTaskInFile(app, task)),
-		);
-		menu.showAtMouseEvent(e);
+		buildTaskMenu({ task, app, dispatcher, settings, today, inTickler, ports: menuPorts })
+			.showAtMouseEvent(e);
 	}
 </script>
 
@@ -135,6 +147,11 @@
 	class:is-done={isDone}
 	class:is-draggable={draggable}
 	onpointerdown={onCardPointerDown}
+	onpointermove={onCardPointerMove}
+	onpointerup={cancelLongPress}
+	onpointercancel={cancelLongPress}
+	onpointerleave={cancelLongPress}
+	ondblclick={onCardDblClick}
 >
 	<input
 		type="checkbox"
@@ -165,6 +182,16 @@
 			</div>
 		{/if}
 	</div>
+	{#if progress !== null}
+		<button
+			class="gtd-task-progress"
+			title="Открыть карточку"
+			aria-label="Чеклист карточки: {progress.done} из {progress.total}"
+			onclick={() => void openCard()}
+		>
+			{progress.done}/{progress.total}
+		</button>
+	{/if}
 	<button class="gtd-task-more" aria-label="Меню задачи" onclick={openMenu}>⋯</button>
 </div>
 
@@ -221,6 +248,22 @@
 	.gtd-task-badge {
 		font-size: var(--font-ui-smaller, 0.85em);
 		color: var(--text-muted);
+	}
+	.gtd-task-progress {
+		flex: none;
+		border: none;
+		box-shadow: none;
+		background: var(--background-secondary-alt);
+		color: var(--text-muted);
+		cursor: pointer;
+		padding: 0 6px;
+		border-radius: var(--radius-s, 4px);
+		font-size: var(--font-ui-smaller, 0.85em);
+		font-variant-numeric: tabular-nums;
+	}
+	.gtd-task-progress:hover {
+		color: var(--text-normal);
+		background: var(--background-modifier-hover);
 	}
 	.gtd-task-more {
 		flex: none;

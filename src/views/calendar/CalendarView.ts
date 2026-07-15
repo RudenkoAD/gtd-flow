@@ -3,6 +3,7 @@ import type { Component } from "svelte";
 import { writable, type Writable } from "svelte/store";
 import type GtdFlowPlugin from "../../main";
 import type { IntentDispatcher } from "../../services/WritebackService";
+import { taskMenuPortsFromPlugin } from "../common/taskMenu";
 import type { DndPort } from "../dnd/types";
 import { GtdView } from "../GtdView";
 import Calendar from "./Calendar.svelte";
@@ -33,6 +34,7 @@ export class CalendarView extends GtdView {
 			settings: plugin.settings,
 			app: plugin.app,
 			dnd: plugin.dnd ?? null,
+			menuPorts: taskMenuPortsFromPlugin(plugin),
 			// структурный порт CalendarWritePort — совместим с VaultAdapter
 			vault: plugin.vaultAdapter,
 			persisted: { subscribe: this.persisted.subscribe },

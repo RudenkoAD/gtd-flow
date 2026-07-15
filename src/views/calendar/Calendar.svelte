@@ -7,6 +7,7 @@
 	import { calendarRangeStore } from "../../stores/derived/queryStore";
 	import type { TaskStore } from "../../stores/taskStore";
 	import { addDaysIso } from "../common/dates";
+	import type { TaskMenuPorts } from "../common/taskMenu";
 	import type { DndPort } from "../dnd/types";
 	import DayCell from "./DayCell.svelte";
 	import EventChip from "./EventChip.svelte";
@@ -41,6 +42,7 @@
 		app,
 		dnd,
 		vault,
+		menuPorts = null,
 		persisted,
 		persist,
 	}: {
@@ -50,6 +52,8 @@
 		app: App;
 		/** null — drag выключен (телефон / сервис недоступен). */
 		dnd: DndPort | null;
+		/** Порты паритета без drag (меню/пикеры/карточка), ТЗ §8 слой 3. */
+		menuPorts?: TaskMenuPorts | null;
 		/** Быстрый ввод пишет в inboxSources[0] (структурный порт VaultAdapter). */
 		vault: CalendarWritePort;
 		/** Состояние из workspace-раскладки; приходит ПОСЛЕ монтирования. */
@@ -219,7 +223,16 @@
 					<div class="gtd-cal-agenda-overdue-list">
 						{#each overdueEntries as [date, list] (date)}
 							{#each list as ev (ev.task.key)}
-								<EventChip {ev} today={$today} {dnd} {dispatcher} {app} showDate={date} />
+								<EventChip
+									{ev}
+									today={$today}
+									{dnd}
+									{dispatcher}
+									{app}
+									{settings}
+									{menuPorts}
+									showDate={date}
+								/>
 							{/each}
 						{/each}
 					</div>
@@ -234,6 +247,8 @@
 					{dnd}
 					{dispatcher}
 					{app}
+					{settings}
+					{menuPorts}
 					onDropTask={dropTask}
 					onQuickAdd={quickAdd}
 				/>
@@ -258,6 +273,8 @@
 							{dnd}
 							{dispatcher}
 							{app}
+							{settings}
+							{menuPorts}
 							onDropTask={dropTask}
 							onQuickAdd={quickAdd}
 						/>
@@ -274,6 +291,8 @@
 						{dnd}
 						{dispatcher}
 						{app}
+						{settings}
+						{menuPorts}
 						onDropTask={dropTask}
 						onQuickAdd={quickAdd}
 					/>

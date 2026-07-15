@@ -12,6 +12,8 @@
 	import type { IntentDispatcher } from "../../services/WritebackService";
 	import type { TaskStore } from "../../stores/taskStore";
 	import { openTaskInFile } from "../common/openTask";
+	import { displayText } from "../common/cardFormat";
+	import type { TaskMenuPorts } from "../common/taskMenu";
 	import { elkAutoLayout } from "./elkLayout";
 	import { ensureFlowStyles } from "./flowStyles.css";
 	import type { ProjectModel, ProjectPort } from "../../services/ProjectService";
@@ -31,12 +33,15 @@
 		dispatcher,
 		taskStore,
 		app,
+		menuPorts = null,
 	}: {
 		path: string;
 		port: ProjectPort;
 		dispatcher: IntentDispatcher;
 		taskStore: TaskStore;
 		app: App;
+		/** Порты паритета (нужен cards): null — граф без бейджа и пункта карточки. */
+		menuPorts?: TaskMenuPorts | null;
 	} = $props();
 
 	// props фиксированы на время монтирования (вид пересоздаётся с leaf)
@@ -91,8 +96,16 @@
 
 	function buildFlowNodes(m: ProjectModel): Node[] {
 		const crit = criticalOn ? criticalPathIds(m) : null;
+		// прогресс пересчитывается здесь: buildFlowNodes перезапускается из $effect
+		// при смене model, а model пересобирается на $epoch — правки карточки видны
+		const cards = menuPorts?.cards ?? null;
 		return toFlowNodes(m).map((vm) => {
 			const sessionPos = vm.data.ghost ? ghostPos[vm.id] : undefined;
+			const taskId = vm.data.task.taskId;
+			// призраки — строго read-only: без бейджа и openCard (openOrCreate может
+			// дописать [[ссылку]] в строку задачи ЧУЖОГО файла, см. cardLinkInLine)
+			const progress =
+				!vm.data.ghost && cards !== null && taskId !== null ? cards.progressOf(taskId) : null;
 			return {
 				id: vm.id,
 				type: "task",
@@ -104,9 +117,18 @@
 					...vm.data,
 					critical: crit?.has(vm.id) ?? false,
 					toggle: () => void toggleStatus(vm.data.task),
+					progress,
+					openCard: vm.data.ghost ? () => {} : () => void openCardFor(vm.data.task),
 				},
 			};
 		});
+	}
+
+	async function openCardFor(task: Task): Promise<void> {
+		const cards = menuPorts?.cards ?? null;
+		if (cards === null) return; // порт не подключён — карточек нет
+		const res = await cards.openOrCreate(task.key);
+		if (!res.ok) new Notice(`GTD Flow: ${res.reason ?? "карточка недоступна"}`);
 	}
 
 	function buildFlowEdges(m: ProjectModel): Edge[] {
@@ -204,6 +226,16 @@
 					.onClick(() => void toggleStatus(data.task)),
 			);
 		}
+		// «Открыть карточку» — паритет с доской; только для членов и при живом порте
+		if (!data.ghost && menuPorts?.cards != null) {
+			menu.addItem((item) =>
+				item
+					.setSection("nav")
+					.setIcon("panel-right")
+					.setTitle("Открыть карточку")
+					.onClick(() => void openCardFor(data.task)),
+			);
+		}
 		menu.addItem((item) =>
 			item
 				.setSection("nav")
@@ -227,7 +259,7 @@
 
 	function confirmDeleteNode(id: string, task: Task, est: number): void {
 		const text =
-			`Удалить «${task.description}» из проекта? Строка будет удалена из файла, ` +
+			`Удалить «${displayText(task)}» из проекта? Строка будет удалена из файла, ` +
 			`id вычищен из всех ⛔ и layout.` +
 			(est > 0 ? ` Это разблокирует задач: ${est}.` : "");
 		new ConfirmModal(app, "Удалить узел", text, "Удалить", () => {

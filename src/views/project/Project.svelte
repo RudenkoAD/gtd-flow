@@ -7,6 +7,7 @@
 	import type { GtdFlowSettings } from "../../settings/Settings";
 	import type { TaskStore } from "../../stores/taskStore";
 	import { openTaskInFile } from "../common/openTask";
+	import { displayText } from "../common/cardFormat";
 	import { buildTaskMenu, type TaskMenuPorts } from "../common/taskMenu";
 	import ProjectGraph from "./ProjectGraph.svelte";
 	import type { ProjectPort } from "../../services/ProjectService";
@@ -189,7 +190,7 @@
 								class:is-struck={n.state === "done" || n.state === "cancelled"}
 								onclick={() => void openTaskInFile(app, n.task)}
 							>
-								{n.task.description}
+								{displayText(n.task)}
 							</button>
 							<span class="gtd-project-mstate">{n.state}</span>
 							{#if !n.ghost}
@@ -209,7 +210,7 @@
 	{:else}
 		{#key shownPath}
 			<SvelteFlowProvider>
-				<ProjectGraph path={shownPath} port={projects} {dispatcher} {taskStore} {app} />
+				<ProjectGraph path={shownPath} port={projects} {dispatcher} {taskStore} {app} {menuPorts} />
 			</SvelteFlowProvider>
 		{/key}
 	{/if}

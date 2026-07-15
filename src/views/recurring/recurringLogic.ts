@@ -58,6 +58,15 @@ export function buildTemplateVM(task: Task, today: IsoDate): TemplateVM {
 	};
 }
 
+/**
+ * Тело подтверждения удаления шаблона: удаляется только строка-шаблон, а уже
+ * созданные копии (носители 🧬) остаются самостоятельными задачами — их история
+ * не рвётся. Модельная часть пункта «Удалить шаблон…» (сам вид не монтируем).
+ */
+export function deleteTemplateBody(description: string): string {
+	return `Удалить шаблон «${description}»? Уже созданные копии останутся.`;
+}
+
 export interface TemplateGroup {
 	filePath: string;
 	heading: string | null;

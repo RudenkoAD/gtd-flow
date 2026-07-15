@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 import type { Task } from "../../core/model/Task";
 import { isParseError } from "../../core/recurrence/grammar";
 import { makeTask } from "../../stores/testSupport";
-import { buildTemplateVM, groupByFileAndHeading, historyOf } from "./recurringLogic";
+import {
+	buildTemplateVM,
+	deleteTemplateBody,
+	groupByFileAndHeading,
+	historyOf,
+} from "./recurringLogic";
 
 const TODAY = "2026-07-15";
 
@@ -128,5 +133,13 @@ describe("historyOf", () => {
 		const a2 = makeTask({ filePath: "a.md", lineStart: 2, spawnedFrom: "rev", created: "2026-07-01" });
 		const a1 = makeTask({ filePath: "a.md", lineStart: 1, spawnedFrom: "rev", created: "2026-07-01" });
 		expect(historyOf([b, a2, a1], "rev")).toEqual([a1, a2, b]);
+	});
+});
+
+describe("deleteTemplateBody", () => {
+	it("подставляет имя и обещает сохранить копии", () => {
+		expect(deleteTemplateBody("Ревью недели")).toBe(
+			"Удалить шаблон «Ревью недели»? Уже созданные копии останутся.",
+		);
 	});
 });

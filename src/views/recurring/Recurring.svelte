@@ -3,14 +3,17 @@
 	import { isParseError } from "../../core/recurrence/grammar";
 	import type { CardPort } from "../../services/CardService";
 	import type { RecurrencePort, SpawnReport } from "../../services/RecurrenceService";
+	import type { IntentDispatcher } from "../../services/WritebackService";
 	import type { GtdFlowSettings } from "../../settings/Settings";
 	import { templatesStore } from "../../stores/derived/queryStore";
 	import type { TaskStore } from "../../stores/taskStore";
 	import { segmentDescription } from "../common/cardFormat";
+	import { confirm } from "../common/ConfirmModal";
 	import { openTaskInFile } from "../common/openTask";
 	import { RuleEditModal } from "./RuleEditModal";
 	import {
 		buildTemplateVM,
+		deleteTemplateBody,
 		groupByFileAndHeading,
 		historyOf,
 		type TemplateVM,
@@ -18,12 +21,15 @@
 
 	let {
 		taskStore,
+		dispatcher,
 		settings,
 		app,
 		recurrence = null,
 		cards = null,
 	}: {
 		taskStore: TaskStore;
+		/** Удаление строки-шаблона идёт штатным delete-line, а не RecurrencePort. */
+		dispatcher: IntentDispatcher;
 		settings: GtdFlowSettings;
 		app: App;
 		/** null — движок повторов не подключён: карточки read-only + подсказка. */
@@ -112,6 +118,20 @@
 		}).open();
 	}
 
+	async function deleteTemplate(vm: TemplateVM): Promise<void> {
+		const ok = await confirm(
+			app,
+			"Удалить шаблон?",
+			deleteTemplateBody(vm.description),
+			"Удалить шаблон",
+		);
+		if (!ok) return;
+		// delete-line сверяет rawLine — для строки из индекса совпадение гарантировано
+		const res = await dispatcher.dispatch({ type: "delete-line", key: vm.key });
+		if (res.ok) new Notice("GTD Flow: шаблон удалён");
+		else new Notice(`GTD Flow: ${res.reason}`);
+	}
+
 	function openMenu(e: MouseEvent, vm: TemplateVM): void {
 		const menu = new Menu();
 		const port = recurrence;
@@ -159,6 +179,15 @@
 				.setIcon("file-text")
 				.setTitle("Открыть в файле")
 				.onClick(() => void openTaskInFile(app, vm.task)),
+		);
+		// Удаление строки — обычный delete-line через dispatcher, независимо от того,
+		// подключён ли движок повторов (симметрия к «Удалить серию» у событий).
+		menu.addItem((item) =>
+			item
+				.setSection("danger")
+				.setIcon("trash-2")
+				.setTitle("Удалить шаблон…")
+				.onClick(() => void deleteTemplate(vm)),
 		);
 		menu.showAtMouseEvent(e);
 	}

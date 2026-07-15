@@ -2,6 +2,7 @@ import type { Component } from "svelte";
 import type GtdFlowPlugin from "../../main";
 import type { CardPort } from "../../services/CardService";
 import type { RecurrencePort } from "../../services/RecurrenceService";
+import type { IntentDispatcher } from "../../services/WritebackService";
 import { GtdView } from "../GtdView";
 import { VIEW_META } from "../registry";
 import Recurring from "./Recurring.svelte";
@@ -28,6 +29,7 @@ export class RecurringView extends GtdView {
 		};
 		return {
 			taskStore: plugin.taskStore,
+			dispatcher: plugin.dispatcher,
 			settings: plugin.settings,
 			app: plugin.app,
 			recurrence: plugin.recurrence ?? null,

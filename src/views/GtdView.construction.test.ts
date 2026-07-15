@@ -9,6 +9,7 @@ import { InboxView } from "./inbox/InboxView";
 import { KanbanView } from "./kanban/KanbanView";
 import { TicklerView } from "./tickler/TicklerView";
 import { RecurringView } from "./recurring/RecurringView";
+import { ProjectsOverviewView } from "./projects/ProjectsOverviewView";
 import { VIEW_META } from "./registry";
 import type GtdFlowPlugin from "../main";
 
@@ -26,6 +27,12 @@ describe("конструирование видов: getViewType до присв
 		expect(new TicklerView(leaf, plugin, VIEW_META.tickler).getViewType()).toBe(VIEW_META.tickler.type);
 		expect(new RecurringView(leaf, plugin, VIEW_META.recurring).getViewType()).toBe(
 			VIEW_META.recurring.type,
+		);
+	});
+
+	it("ProjectsOverviewView конструируется и отвечает правильным типом", () => {
+		expect(new ProjectsOverviewView(leaf, plugin, VIEW_META.projects).getViewType()).toBe(
+			VIEW_META.projects.type,
 		);
 	});
 });

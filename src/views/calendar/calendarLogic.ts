@@ -313,12 +313,19 @@ export function openTasks(tasks: readonly Task[]): Task[] {
 // Быстрый ввод (клик по пустой области дня)
 // ---------------------------------------------------------------------------
 
-/** Строка захвата `- [ ] <текст> 📅 <дата>[ HH:mm]`; пустой текст — null (не пишем).
- *  time приходит из клика по слоту time-grid — формат хвоста тот же, что у парсера. */
-export function quickAddLine(text: string, date: IsoDate, time: string | null = null): string | null {
+/** Строка захвата `- [ ] <текст> 📅 <дата>[ HH:mm[-HH:mm]]`; пустой текст — null.
+ *  time/timeEnd приходят из клика или click-drag по слоту time-grid — формат хвоста
+ *  тот же, что у парсера (конец интервала только вместе со временем начала). */
+export function quickAddLine(
+	text: string,
+	date: IsoDate,
+	time: string | null = null,
+	timeEnd: string | null = null,
+): string | null {
 	const trimmed = text.trim();
 	if (trimmed === "") return null;
-	return `- [ ] ${trimmed} 📅 ${date}${time !== null ? ` ${time}` : ""}`;
+	const timePart = time !== null ? ` ${time}${timeEnd !== null ? `-${timeEnd}` : ""}` : "";
+	return `- [ ] ${trimmed} 📅 ${date}${timePart}`;
 }
 
 /** Append строки в конец файла — тот же паттерн '\n', что у WritebackService.moveLine. */

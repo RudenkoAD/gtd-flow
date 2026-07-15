@@ -48,7 +48,12 @@
 		menuPorts?: TaskMenuPorts | null;
 		/** time: строка — слот сетки, null — полоса «Весь день» (снять время). */
 		onDropTask: (taskKey: string, date: IsoDate, time: string | null) => Promise<void>;
-		onQuickAdd: (date: IsoDate, text: string, time: string | null) => Promise<void>;
+		onQuickAdd: (
+			date: IsoDate,
+			text: string,
+			time: string | null,
+			timeEnd?: string | null,
+		) => Promise<void>;
 		/** ПКМ по пустому слоту/полосе — создать событие. */
 		onCreateEvent?: ((date: IsoDate, time: string | null) => void) | null;
 		/** Перенос блока-вхождения события на дату колонки + время слота. */

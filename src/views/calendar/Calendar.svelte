@@ -263,10 +263,16 @@
 		else if (clearStart) new Notice(`Запланирована на ${date}, возвращена из отложенных`);
 	}
 
-	/** Быстрый ввод: `- [ ] <текст> 📅 <дата>[ HH:mm]` в первый файл захвата
-	 *  (gtd-inbox, фолбэк inboxSources[0]); цель вычисляется В МОМЕНТ ввода. */
-	async function quickAdd(date: IsoDate, text: string, time: string | null = null): Promise<void> {
-		const line = quickAddLine(text, date, time);
+	/** Быстрый ввод: `- [ ] <текст> 📅 <дата>[ HH:mm[-HH:mm]]` в первый файл захвата
+	 *  (gtd-inbox, фолбэк inboxSources[0]); цель вычисляется В МОМЕНТ ввода.
+	 *  timeEnd — из click-drag по слоту сетки (задаёт длительность события сразу). */
+	async function quickAdd(
+		date: IsoDate,
+		text: string,
+		time: string | null = null,
+		timeEnd: string | null = null,
+	): Promise<void> {
+		const line = quickAddLine(text, date, time, timeEnd);
 		if (line === null) return;
 		const target = captureTarget(taskStore.index().all(), settings.inboxSources);
 		if (target === undefined) {

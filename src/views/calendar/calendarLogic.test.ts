@@ -363,6 +363,16 @@ describe("quickAddLine / appendLine", () => {
 		expect(quickAddLine("   ", "2026-07-20", "14:30")).toBeNull();
 	});
 
+	it("click-drag — хвост «📅 <дата> HH:mm-HH:mm»", () => {
+		expect(quickAddLine("Созвон", "2026-07-20", "14:30", "16:00")).toBe(
+			"- [ ] Созвон 📅 2026-07-20 14:30-16:00",
+		);
+		// конец без начала невозможен: timeEnd игнорируется, если time === null
+		expect(quickAddLine("Ничего", "2026-07-20", null, "16:00")).toBe(
+			"- [ ] Ничего 📅 2026-07-20",
+		);
+	});
+
 	it("append в пустой/непустой файл — ровно один перевод строки в конце", () => {
 		expect(appendLine("", "- [ ] х")).toBe("- [ ] х\n");
 		expect(appendLine("\n", "- [ ] х")).toBe("- [ ] х\n");

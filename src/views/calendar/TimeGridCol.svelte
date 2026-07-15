@@ -10,6 +10,7 @@
 	import type { CalendarWritePort, EventOccurrence, PlacedEvent } from "./calendarLogic";
 	import {
 		MINUTES_PER_DAY,
+		SNAP_STEP_MIN,
 		minutesFromOffsetY,
 		minutesToTime,
 		snapMinutes,
@@ -47,8 +48,14 @@
 		menuPorts?: TaskMenuPorts | null;
 		/** Drop на слот: дата колонки + время по позиции (снап 15 мин). */
 		onDropTask: (taskKey: string, date: IsoDate, time: string | null) => Promise<void>;
-		/** Quick-add из клика по пустому слоту — с датой и временем слота. */
-		onQuickAdd: (date: IsoDate, text: string, time: string | null) => Promise<void>;
+		/** Quick-add из клика/протяжки по пустому слоту — дата, время начала и, при
+		 *  click-drag, конец интервала (задаёт длительность события сразу). */
+		onQuickAdd: (
+			date: IsoDate,
+			text: string,
+			time: string | null,
+			timeEnd?: string | null,
+		) => Promise<void>;
 		/** ПКМ по пустому слоту — создать событие с временем слота. */
 		onCreateEvent?: ((date: IsoDate, time: string | null) => void) | null;
 		/** Drop блока-вхождения события: перенос на дату колонки + время слота. */
@@ -58,9 +65,36 @@
 	} = $props();
 
 	let colEl: HTMLElement | null = $state(null);
-	/** Минуты слота открытого quick-add; null — не редактируем. */
+	/** Минуты начала открытого quick-add; null — не редактируем. */
 	let addingMin = $state<number | null>(null);
+	/** Минуты конца интервала quick-add (из click-drag); null — без длительности. */
+	let addingEndMin = $state<number | null>(null);
 	let draft = $state("");
+
+	// --- click-drag создание: тянем по вертикали → начало+конец за один жест ---
+	// Отдельный pointer-жест на колонке (по образцу ресайза блока), а не DnD-сервис:
+	// тот двигает существующий элемент, здесь же создаём новый.
+	const CREATE_DRAG_THRESHOLD_PX = 4;
+	/** Начало выделения (минуты) во время жеста; null — жест не идёт. */
+	let selFromMin = $state<number | null>(null);
+	let selToMin = $state<number | null>(null);
+	/** Жест пересёк порог — это протяжка, а не клик. */
+	let dragging = $state(false);
+	let pointerDownY = 0;
+	let capturedPointer: number | null = null;
+
+	function isBlockOrControl(target: EventTarget | null): boolean {
+		return (
+			target instanceof Element &&
+			target.closest(".gtd-tg-block, .gtd-cal-chip, button, input, a, select, textarea") !== null
+		);
+	}
+
+	/** Снапнутые минуты по вертикальной позиции курсора в колонке. */
+	function minAtClientY(clientY: number): number {
+		const rect = colEl!.getBoundingClientRect();
+		return snapMinutes(minutesFromOffsetY(clientY - rect.top, rect.height));
+	}
 
 	// Колонка — drop-цель на все 24ч: время из вертикальной позиции отпускания.
 	// grabOffsetY (блоки time-grid) восстанавливает верх блока — чисто
@@ -85,17 +119,55 @@
 		});
 	});
 
-	/** ЛКМ по пустому слоту — quick-add с временем слота; клики по блокам/контролам — их дело. */
-	function onColClick(e: MouseEvent): void {
-		if (
-			e.target instanceof Element &&
-			e.target.closest(".gtd-tg-block, .gtd-cal-chip, button, input, a, select, textarea")
-		)
-			return;
-		if (colEl === null) return;
-		const rect = colEl.getBoundingClientRect();
-		addingMin = snapMinutes(minutesFromOffsetY(e.clientY - rect.top, rect.height));
+	/** ЛКМ по пустому слоту: pointerdown стартует жест (клик или протяжка);
+	 *  клики по блокам/контролам — их дело. */
+	function onColPointerDown(e: PointerEvent): void {
+		if (e.button !== 0 || isBlockOrControl(e.target) || colEl === null) return;
+		pointerDownY = e.clientY;
+		selFromMin = minAtClientY(e.clientY);
+		selToMin = selFromMin;
+		dragging = false;
+		capturedPointer = e.pointerId;
+		colEl.setPointerCapture(e.pointerId);
+	}
+
+	function onColPointerMove(e: PointerEvent): void {
+		if (capturedPointer !== e.pointerId || selFromMin === null) return;
+		if (!dragging && Math.abs(e.clientY - pointerDownY) < CREATE_DRAG_THRESHOLD_PX) return;
+		dragging = true;
+		selToMin = minAtClientY(e.clientY);
+	}
+
+	function onColPointerUp(e: PointerEvent): void {
+		if (capturedPointer !== e.pointerId) return;
+		const from = selFromMin;
+		const to = selToMin;
+		const wasDrag = dragging;
+		colEl?.releasePointerCapture(e.pointerId);
+		capturedPointer = null;
+		selFromMin = null;
+		selToMin = null;
+		dragging = false;
+		if (from === null || to === null) return;
 		draft = "";
+		if (wasDrag && to !== from) {
+			// протяжка: начало = верх выделения, конец = низ (минимум шаг снапа)
+			addingMin = Math.min(from, to);
+			addingEndMin = Math.max(Math.max(from, to), addingMin + SNAP_STEP_MIN);
+		} else {
+			// простой клик — прежнее поведение: точка без длительности
+			addingMin = from;
+			addingEndMin = null;
+		}
+	}
+
+	function onColPointerCancel(e: PointerEvent): void {
+		if (capturedPointer !== e.pointerId) return;
+		colEl?.releasePointerCapture(e.pointerId);
+		capturedPointer = null;
+		selFromMin = null;
+		selToMin = null;
+		dragging = false;
 	}
 
 	/** ПКМ по пустому слоту — меню «Повторяющееся событие…» с временем слота (§события). */
@@ -126,15 +198,17 @@
 
 	function cancelDraft(): void {
 		addingMin = null;
+		addingEndMin = null;
 		draft = "";
 	}
 
 	function submitDraft(): void {
 		const min = addingMin;
+		const endMin = addingEndMin;
 		const text = draft;
 		cancelDraft();
 		if (min === null || text.trim() === "") return;
-		void onQuickAdd(date, text, minutesToTime(min));
+		void onQuickAdd(date, text, minutesToTime(min), endMin !== null ? minutesToTime(endMin) : null);
 	}
 </script>
 
@@ -143,7 +217,10 @@
 	class="gtd-tg-col"
 	class:is-today={date === today}
 	bind:this={colEl}
-	onclick={onColClick}
+	onpointerdown={onColPointerDown}
+	onpointermove={onColPointerMove}
+	onpointerup={onColPointerUp}
+	onpointercancel={onColPointerCancel}
 	oncontextmenu={onColContextMenu}
 >
 	{#each blocks as b (b.ev.task.key)}
@@ -164,13 +241,31 @@
 			<EventOccurrenceChip occ={eb.occ} block={eb.block} {app} {dispatcher} {vault} {dnd} />
 		{/if}
 	{/each}
+	{#if dragging && selFromMin !== null && selToMin !== null}
+		<!-- живое выделение диапазона во время протяжки (pointer-events:none) -->
+		<div
+			class="gtd-tg-createsel"
+			style="top:{(Math.min(selFromMin, selToMin) / MINUTES_PER_DAY) * 100}%;
+			       height:{(Math.abs(selToMin - selFromMin) / MINUTES_PER_DAY) * 100}%"
+		>
+			<span class="gtd-tg-createsel-label"
+				>{minutesToTime(Math.min(selFromMin, selToMin))}–{minutesToTime(
+					Math.max(selFromMin, selToMin),
+				)}</span
+			>
+		</div>
+	{/if}
 	{#if addingMin !== null}
 		<input
 			class="gtd-tg-quickadd"
 			style="top:{(addingMin / MINUTES_PER_DAY) * 100}%"
 			type="text"
-			placeholder="Новая задача…"
-			aria-label="Новая задача на {date} {minutesToTime(addingMin)}"
+			placeholder={addingEndMin !== null
+				? `Новое событие ${minutesToTime(addingMin)}–${minutesToTime(addingEndMin)}…`
+				: "Новая задача…"}
+			aria-label="Новая задача на {date} {minutesToTime(addingMin)}{addingEndMin !== null
+				? `–${minutesToTime(addingEndMin)}`
+				: ''}"
 			bind:value={draft}
 			use:focusInput
 			onkeydown={(e) => {
@@ -209,5 +304,26 @@
 		width: calc(100% - 4px);
 		z-index: 3; /* над блоками — редактируем именно его */
 		font-size: var(--font-ui-smaller, 0.85em);
+	}
+	.gtd-tg-createsel {
+		position: absolute;
+		left: 1px;
+		right: 1px;
+		z-index: 2;
+		box-sizing: border-box;
+		min-height: 2px;
+		background: color-mix(in srgb, var(--interactive-accent) 25%, transparent);
+		border: 1px solid var(--interactive-accent);
+		border-radius: var(--radius-s, 4px);
+		pointer-events: none;
+	}
+	.gtd-tg-createsel-label {
+		position: absolute;
+		top: 1px;
+		left: 4px;
+		font-size: var(--font-ui-smaller, 0.8em);
+		color: var(--text-on-accent, var(--text-normal));
+		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
 	}
 </style>

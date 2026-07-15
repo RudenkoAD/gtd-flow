@@ -2,12 +2,32 @@ import { Plugin, WorkspaceLeaf } from "obsidian";
 import { GtdView } from "./views/GtdView";
 import { VIEW_META, VIEW_TYPES, type GtdViewKind } from "./views/registry";
 import { DEFAULT_SETTINGS, type GtdFlowSettings } from "./settings/Settings";
+import { MetadataAdapter } from "./adapters/MetadataAdapter";
+import { VaultAdapter } from "./adapters/VaultAdapter";
+import { ObsidianClock } from "./adapters/ObsidianClock";
+import { IndexerService } from "./services/IndexerService";
+import { createTaskStore, type TaskStore } from "./stores/taskStore";
 
 export default class GtdFlowPlugin extends Plugin {
 	settings: GtdFlowSettings = DEFAULT_SETTINGS;
+	indexer!: IndexerService;
+	vaultAdapter!: VaultAdapter;
+	taskStore!: TaskStore;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
+
+		const metadata = new MetadataAdapter(this);
+		this.vaultAdapter = new VaultAdapter(this.app);
+		this.indexer = new IndexerService({
+			events: metadata,
+			clock: new ObsidianClock(this),
+			initialScan: () => metadata.initialScan(),
+			debounceMs: this.settings.debounceMs.fileReindex,
+		});
+		this.taskStore = createTaskStore(this.indexer);
+		// Первичная сборка — вне критического пути старта (ТЗ §2).
+		this.app.workspace.onLayoutReady(() => void this.indexer.start());
 
 		for (const meta of Object.values(VIEW_META)) {
 			this.registerView(meta.type, (leaf) => new GtdView(leaf, this, meta));
@@ -32,6 +52,8 @@ export default class GtdFlowPlugin extends Plugin {
 
 	onunload(): void {
 		// Виды/события/интервалы зарегистрированы через register* — снимаются автоматически.
+		this.taskStore.dispose();
+		this.indexer.dispose();
 	}
 
 	/** Открыть (или показать существующий) вид в основной области. */

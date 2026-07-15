@@ -6,6 +6,8 @@
 import type { IsoDate, Priority, Task } from "../../core/model/Task";
 import { taskToCalendarEvent, type CalendarField } from "../../core/model/projections";
 import { isInTickler } from "../../core/query/QueryEngine";
+import { isParseError, parseRule } from "../../core/recurrence/grammar";
+import { expandOccurrences } from "../../core/recurrence/occurrences";
 import { addDaysIso, dayOfWeekSun0, startOfWeek } from "../common/dates";
 
 export type CalendarMode = "month" | "week" | "agenda" | "3days" | "day";
@@ -33,10 +35,12 @@ export interface MonthGrid {
 	daysInView: DateRange;
 }
 
-/** Структурный порт записи для быстрого ввода; совместим с VaultAdapter. */
+/** Структурный порт записи для быстрого ввода и событий; совместим с VaultAdapter. */
 export interface CalendarWritePort {
 	ensureFile(path: string): Promise<void>;
 	processFile(path: string, transform: (content: string) => string | null): Promise<boolean>;
+	/** Создание/правка frontmatter файла событий (gtd-events: true). */
+	processFrontmatter(path: string, fn: (fm: Record<string, unknown>) => void): Promise<unknown>;
 }
 
 /** Первое число месяца, в котором лежит anchor. */
@@ -194,6 +198,68 @@ export function placeEvents(
 			const da = a.task.description;
 			const db = b.task.description;
 			return da < db ? -1 : da > db ? 1 : 0;
+		});
+	}
+	return out;
+}
+
+// ---------------------------------------------------------------------------
+// Повторяющиеся события (виртуальные вхождения, §события)
+// ---------------------------------------------------------------------------
+
+/**
+ * Одно виртуальное вхождение серии-события на конкретную дату. Не задача в файле:
+ * рендерится, но не кликается чекбоксом, не перетаскивается, не редактируется по
+ * дабл-клику. `task` — строка-серия (container events), источник меню серии.
+ */
+export interface EventOccurrence {
+	/** Строка-серия (container events) — якорь для «Изменить/Удалить серию». */
+	task: Task;
+	date: IsoDate;
+	/** Название = описание серии. */
+	title: string;
+	/** "HH:mm" начала (rule.eventTime) или null — «Весь день». */
+	time: string | null;
+	/** "HH:mm" конца интервала (rule.eventTimeEnd) или null. */
+	timeEnd: string | null;
+}
+
+/**
+ * Развернуть серии-события в виртуальные вхождения по видимому диапазону.
+ * Битое/пустое правило серии молча пропускается (бейдж ошибки — v2). Внутри дня
+ * сортировка как у placeEvents: со временем по времени asc, без времени — в хвост,
+ * затем по названию. Ключ вхождения для рендера — task.key (одна серия даёт не
+ * более одного вхождения на дату).
+ */
+export function expandEventOccurrences(
+	series: readonly Task[],
+	from: IsoDate,
+	to: IsoDate,
+): Map<IsoDate, EventOccurrence[]> {
+	const out = new Map<IsoDate, EventOccurrence[]>();
+	for (const task of series) {
+		if (task.recurrence === null) continue;
+		const rule = parseRule(task.recurrence);
+		if (isParseError(rule)) continue;
+		const time = rule.eventTime ?? null;
+		const timeEnd = rule.eventTimeEnd ?? null;
+		for (const date of expandOccurrences(rule, from, to)) {
+			let list = out.get(date);
+			if (list === undefined) {
+				list = [];
+				out.set(date, list);
+			}
+			list.push({ task, date, title: task.description, time, timeEnd });
+		}
+	}
+	for (const list of out.values()) {
+		list.sort((a, b) => {
+			if (a.time !== null || b.time !== null) {
+				if (a.time === null) return 1;
+				if (b.time === null) return -1;
+				if (a.time !== b.time) return a.time < b.time ? -1 : 1;
+			}
+			return a.title < b.title ? -1 : a.title > b.title ? 1 : 0;
 		});
 	}
 	return out;

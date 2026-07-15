@@ -20,6 +20,7 @@
 		agendaLabel,
 		appendLine,
 		dropDateField,
+		expandEventOccurrences,
 		monthGrid,
 		monthTitle,
 		nextAgenda,
@@ -39,6 +40,8 @@
 		type CalendarPersistedState,
 		type CalendarWritePort,
 	} from "./calendarLogic";
+	import { createEventSeries } from "./eventSeries";
+	import { EventSeriesModal } from "./EventSeriesModal";
 	import { preservedTimeEnd } from "./timeGrid";
 
 	let {
@@ -123,6 +126,19 @@
 			overdueRaw = v;
 		});
 	});
+
+	// Серии-события (container events) — из индекса, реактивно по epoch.
+	// В calendar-range QueryEngine их не отдаёт: рендерим ОТДЕЛЬНО как виртуальные
+	// вхождения (expandEventOccurrences), пере-сборка при смене видимого диапазона.
+	let eventSeries = $state<Task[]>([]);
+	$effect(() =>
+		taskStore.epoch.subscribe(() => {
+			const out: Task[] = [];
+			for (const t of taskStore.index().all()) if (t.container === "events") out.push(t);
+			eventSeries = out;
+		}),
+	);
+	const eventsByDay = $derived(expandEventOccurrences(eventSeries, range.from, range.to));
 
 	const byDay = $derived(placeEvents(rangeTasks, settings.calendarPlacement));
 	const overdue = $derived(openTasks(overdueRaw));
@@ -250,6 +266,27 @@
 		const ok = await vault.processFile(target, (content) => appendLine(content, line));
 		if (!ok) new Notice(`GTD Flow: не удалось записать в ${target}`);
 	}
+
+	/** ПКМ по пустому месту → «Повторяющееся событие…»: модал → createEventSeries.
+	 *  time — из слота тайм-сетки (prefill), null для DayCell (месяц/неделя/агенда). */
+	function createEvent(date: IsoDate, time: string | null): void {
+		new EventSeriesModal(
+			app,
+			{ name: "", rule: "", time: time ?? "" },
+			`Новое событие · ${date}`,
+			(name, ruleText) => {
+				void createEventSeries({
+					vault,
+					eventsFile: settings.eventsFile,
+					name,
+					ruleText,
+				}).then((res) => {
+					if (res.ok) new Notice("GTD Flow: событие создано");
+					else new Notice(`GTD Flow: ${res.reason}`);
+				});
+			},
+		).open();
+	}
 </script>
 
 <div class="gtd-cal">
@@ -305,13 +342,16 @@
 					today={$today}
 					label={agendaLabel(date)}
 					events={byDay.get(date) ?? []}
+					eventOccurrences={eventsByDay.get(date) ?? []}
 					{dnd}
 					{dispatcher}
 					{app}
 					{settings}
+					{vault}
 					{menuPorts}
 					onDropTask={dropTask}
 					onQuickAdd={quickAdd}
+					onCreateEvent={createEvent}
 				/>
 			{/each}
 		</div>
@@ -320,13 +360,16 @@
 			days={agendaDays(range.from, mode === "day" ? 1 : DAYS3_PAGE_DAYS)}
 			today={$today}
 			{byDay}
+			{eventsByDay}
 			{dnd}
 			{dispatcher}
 			{app}
 			{settings}
+			{vault}
 			{menuPorts}
 			onDropTask={dropTask}
 			onQuickAdd={quickAdd}
+			onCreateEvent={createEvent}
 		/>
 	{:else}
 		<div class="gtd-cal-weekdays">
@@ -344,13 +387,16 @@
 							muted={date.slice(0, 7) !== anchor.slice(0, 7)}
 							compact={true}
 							events={byDay.get(date) ?? []}
+							eventOccurrences={eventsByDay.get(date) ?? []}
 							{dnd}
 							{dispatcher}
 							{app}
 							{settings}
+							{vault}
 							{menuPorts}
 							onDropTask={dropTask}
 							onQuickAdd={quickAdd}
+							onCreateEvent={createEvent}
 						/>
 					{/each}
 				{/each}
@@ -362,13 +408,16 @@
 						{date}
 						today={$today}
 						events={byDay.get(date) ?? []}
+						eventOccurrences={eventsByDay.get(date) ?? []}
 						{dnd}
 						{dispatcher}
 						{app}
 						{settings}
+						{vault}
 						{menuPorts}
 						onDropTask={dropTask}
 						onQuickAdd={quickAdd}
+						onCreateEvent={createEvent}
 					/>
 				{/each}
 			</div>

@@ -1,35 +1,43 @@
 <script lang="ts">
-	import type { App } from "obsidian";
+	import { Menu, type App } from "obsidian";
 	import type { IsoDate } from "../../core/model/Task";
 	import type { IntentDispatcher } from "../../services/WritebackService";
 	import type { GtdFlowSettings } from "../../settings/Settings";
 	import type { TaskMenuPorts } from "../common/taskMenu";
 	import type { DndPort } from "../dnd/types";
 	import EventChip from "./EventChip.svelte";
-	import type { PlacedEvent } from "./calendarLogic";
+	import EventOccurrenceChip from "./EventOccurrenceChip.svelte";
+	import type { CalendarWritePort, EventOccurrence, PlacedEvent } from "./calendarLogic";
 
 	let {
 		date,
 		today,
 		events,
+		eventOccurrences = [],
 		dnd,
 		dispatcher,
 		app,
 		settings,
+		vault = null,
 		menuPorts = null,
 		muted = false,
 		compact = false,
 		label = null,
 		onDropTask,
 		onQuickAdd,
+		onCreateEvent = null,
 	}: {
 		date: IsoDate;
 		today: IsoDate;
 		events: PlacedEvent[];
+		/** Виртуальные вхождения серий-событий на этот день (§события). */
+		eventOccurrences?: EventOccurrence[];
 		dnd: DndPort | null;
 		dispatcher: IntentDispatcher;
 		app: App;
 		settings: GtdFlowSettings;
+		/** Порт файла событий — для правки серии из меню вхождения. */
+		vault?: CalendarWritePort | null;
 		/** Порты паритета без drag (меню/пикеры/карточка), ТЗ §8 слой 3. */
 		menuPorts?: TaskMenuPorts | null;
 		/** День соседнего месяца в сетке месяца. */
@@ -42,6 +50,8 @@
 		onDropTask: (taskKey: string, date: IsoDate) => Promise<void>;
 		/** Быстрый ввод задачи с датой этого дня. */
 		onQuickAdd: (date: IsoDate, text: string) => Promise<void>;
+		/** ПКМ по пустому месту — создать повторяющееся событие (time=null для дня). */
+		onCreateEvent?: ((date: IsoDate, time: string | null) => void) | null;
 	} = $props();
 
 	let cellEl: HTMLElement | null = $state(null);
@@ -59,9 +69,7 @@
 		});
 	});
 
-	/** ЛКМ по пустой области дня — быстрый ввод; клики по chip/контролам — их дело.
-	 *  ПКМ намеренно не обрабатываем: `click` стреляет только основной кнопкой,
-	 *  contextmenu-обработчика нет — правый клик по пустому месту ничему не мешает. */
+	/** ЛКМ по пустой области дня — быстрый ввод; клики по chip/контролам — их дело. */
 	function onCellClick(e: MouseEvent): void {
 		if (
 			e.target instanceof Element &&
@@ -69,6 +77,26 @@
 		)
 			return;
 		adding = true;
+	}
+
+	/** ПКМ по пустому месту дня — меню «Повторяющееся событие…» (§события).
+	 *  Клики по chip обрабатывают сами chip'ы (stopPropagation). */
+	function onCellContextMenu(e: MouseEvent): void {
+		if (onCreateEvent === null) return;
+		if (
+			e.target instanceof Element &&
+			e.target.closest(".gtd-cal-chip, button, input, a, select, textarea")
+		)
+			return;
+		e.preventDefault();
+		const menu = new Menu();
+		menu.addItem((mi) =>
+			mi
+				.setTitle("Повторяющееся событие…")
+				.setIcon("repeat")
+				.onClick(() => onCreateEvent?.(date, null)),
+		);
+		menu.showAtMouseEvent(e);
 	}
 
 	function focusInput(el: HTMLInputElement): void {
@@ -96,6 +124,7 @@
 	class:is-compact={compact}
 	bind:this={cellEl}
 	onclick={onCellClick}
+	oncontextmenu={onCellContextMenu}
 >
 	<div class="gtd-cal-daynum" class:is-today={date === today}>
 		{label ?? Number(date.slice(8, 10))}
@@ -103,6 +132,11 @@
 	<div class="gtd-cal-events">
 		{#each events as ev (ev.task.key)}
 			<EventChip {ev} {today} {dnd} {dispatcher} {app} {settings} {menuPorts} />
+		{/each}
+		{#each eventOccurrences as occ (occ.task.key)}
+			{#if vault !== null}
+				<EventOccurrenceChip {occ} {app} {dispatcher} {vault} />
+			{/if}
 		{/each}
 		{#if adding}
 			<input

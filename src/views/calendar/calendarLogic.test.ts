@@ -8,6 +8,7 @@ import {
 	appendLine,
 	deferredUntil,
 	dropDateField,
+	expandEventOccurrences,
 	monthGrid,
 	monthStart,
 	monthTitle,
@@ -415,5 +416,47 @@ describe("sanitizeCalendarState", () => {
 		expect(sanitizeCalendarState(null)).toBeNull();
 		expect(sanitizeCalendarState("month")).toBeNull();
 		expect(sanitizeCalendarState([1])).toBeNull();
+	});
+});
+
+describe("expandEventOccurrences (§события)", () => {
+	function event(overrides: Partial<Task> = {}): Task {
+		return makeTask({ container: "events", ...overrides });
+	}
+
+	it("разворачивает серию по видимому диапазону с временем из правила", () => {
+		const ev = event({
+			description: "Тренировка",
+			recurrence: "every tuesday at 19:00-20:30",
+		});
+		const map = expandEventOccurrences([ev], "2026-07-13", "2026-07-19");
+		// 2026-07-14 — вторник
+		expect([...map.keys()]).toEqual(["2026-07-14"]);
+		const [occ] = map.get("2026-07-14")!;
+		expect(occ?.title).toBe("Тренировка");
+		expect(occ?.time).toBe("19:00");
+		expect(occ?.timeEnd).toBe("20:30");
+		expect(occ?.task).toBe(ev);
+	});
+
+	it("событие без времени — time/timeEnd null («Весь день»)", () => {
+		const ev = event({ recurrence: "every day" });
+		const map = expandEventOccurrences([ev], "2026-07-15", "2026-07-16");
+		expect(map.get("2026-07-15")?.[0]?.time).toBeNull();
+		expect(map.get("2026-07-16")?.[0]?.timeEnd).toBeNull();
+	});
+
+	it("битое/пустое правило серии пропускается молча", () => {
+		const broken = event({ recurrence: "каждый вторник" });
+		const empty = event({ recurrence: null });
+		expect(expandEventOccurrences([broken, empty], "2026-07-13", "2026-07-20").size).toBe(0);
+	});
+
+	it("несколько серий в один день — сортировка со временем asc, затем без времени", () => {
+		const a = event({ description: "Б-встреча", recurrence: "every day at 09:00" });
+		const b = event({ description: "А-звонок", recurrence: "every day at 08:00" });
+		const c = event({ description: "весь день", recurrence: "every day" });
+		const list = expandEventOccurrences([a, b, c], "2026-07-15", "2026-07-15").get("2026-07-15")!;
+		expect(list.map((o) => o.title)).toEqual(["А-звонок", "Б-встреча", "весь день"]);
 	});
 });

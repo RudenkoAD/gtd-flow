@@ -1,12 +1,13 @@
 <script lang="ts">
-	import type { App } from "obsidian";
+	import { Menu, type App } from "obsidian";
 	import type { IsoDate } from "../../core/model/Task";
 	import type { IntentDispatcher } from "../../services/WritebackService";
 	import type { GtdFlowSettings } from "../../settings/Settings";
 	import type { TaskMenuPorts } from "../common/taskMenu";
 	import type { DndPort } from "../dnd/types";
+	import EventOccurrenceChip from "./EventOccurrenceChip.svelte";
 	import TimeGridBlock from "./TimeGridBlock.svelte";
-	import type { PlacedEvent } from "./calendarLogic";
+	import type { CalendarWritePort, EventOccurrence, PlacedEvent } from "./calendarLogic";
 	import {
 		MINUTES_PER_DAY,
 		minutesFromOffsetY,
@@ -19,27 +20,36 @@
 		date,
 		today,
 		blocks,
+		eventBlocks = [],
 		dnd,
 		dispatcher,
 		app,
 		settings,
+		vault = null,
 		menuPorts = null,
 		onDropTask,
 		onQuickAdd,
+		onCreateEvent = null,
 	}: {
 		date: IsoDate;
 		today: IsoDate;
 		/** Блоки со временем этого дня (раскладку делает родитель через layoutDay). */
 		blocks: { block: TimedBlock; ev: PlacedEvent }[];
+		/** Виртуальные блоки серий-событий со временем (§события). */
+		eventBlocks?: { block: TimedBlock; occ: EventOccurrence }[];
 		dnd: DndPort | null;
 		dispatcher: IntentDispatcher;
 		app: App;
 		settings: GtdFlowSettings;
+		/** Порт файла событий — для правки серии из меню вхождения. */
+		vault?: CalendarWritePort | null;
 		menuPorts?: TaskMenuPorts | null;
 		/** Drop на слот: дата колонки + время по позиции (снап 15 мин). */
 		onDropTask: (taskKey: string, date: IsoDate, time: string | null) => Promise<void>;
 		/** Quick-add из клика по пустому слоту — с датой и временем слота. */
 		onQuickAdd: (date: IsoDate, text: string, time: string | null) => Promise<void>;
+		/** ПКМ по пустому слоту — создать событие с временем слота. */
+		onCreateEvent?: ((date: IsoDate, time: string | null) => void) | null;
 	} = $props();
 
 	let colEl: HTMLElement | null = $state(null);
@@ -65,8 +75,7 @@
 		});
 	});
 
-	/** ЛКМ по пустому слоту — quick-add с временем слота; клики по блокам/контролам —
-	 *  их дело. ПКМ по пустому намеренно не обрабатываем (нет contextmenu-обработчика). */
+	/** ЛКМ по пустому слоту — quick-add с временем слота; клики по блокам/контролам — их дело. */
 	function onColClick(e: MouseEvent): void {
 		if (
 			e.target instanceof Element &&
@@ -77,6 +86,28 @@
 		const rect = colEl.getBoundingClientRect();
 		addingMin = snapMinutes(minutesFromOffsetY(e.clientY - rect.top, rect.height));
 		draft = "";
+	}
+
+	/** ПКМ по пустому слоту — меню «Повторяющееся событие…» с временем слота (§события). */
+	function onColContextMenu(e: MouseEvent): void {
+		if (onCreateEvent === null || colEl === null) return;
+		if (
+			e.target instanceof Element &&
+			e.target.closest(".gtd-tg-block, .gtd-cal-chip, button, input, a, select, textarea")
+		)
+			return;
+		e.preventDefault();
+		const rect = colEl.getBoundingClientRect();
+		const min = snapMinutes(minutesFromOffsetY(e.clientY - rect.top, rect.height));
+		const time = minutesToTime(min);
+		const menu = new Menu();
+		menu.addItem((mi) =>
+			mi
+				.setTitle("Повторяющееся событие…")
+				.setIcon("repeat")
+				.onClick(() => onCreateEvent?.(date, time)),
+		);
+		menu.showAtMouseEvent(e);
 	}
 
 	function focusInput(el: HTMLInputElement): void {
@@ -103,6 +134,7 @@
 	class:is-today={date === today}
 	bind:this={colEl}
 	onclick={onColClick}
+	oncontextmenu={onColContextMenu}
 >
 	{#each blocks as b (b.ev.task.key)}
 		<TimeGridBlock
@@ -116,6 +148,11 @@
 			{settings}
 			{menuPorts}
 		/>
+	{/each}
+	{#each eventBlocks as eb (eb.occ.task.key)}
+		{#if vault !== null}
+			<EventOccurrenceChip occ={eb.occ} block={eb.block} {app} {dispatcher} {vault} />
+		{/if}
 	{/each}
 	{#if addingMin !== null}
 		<input

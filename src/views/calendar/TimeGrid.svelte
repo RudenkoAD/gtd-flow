@@ -7,33 +7,49 @@
 	import type { DndPort } from "../dnd/types";
 	import DayCell from "./DayCell.svelte";
 	import TimeGridCol from "./TimeGridCol.svelte";
-	import { agendaLabel, placedTime, placedTimeEnd, type PlacedEvent } from "./calendarLogic";
+	import {
+		agendaLabel,
+		placedTime,
+		placedTimeEnd,
+		type CalendarWritePort,
+		type EventOccurrence,
+		type PlacedEvent,
+	} from "./calendarLogic";
 	import { DEFAULT_SCROLL_MIN, layoutDay } from "./timeGrid";
 
 	let {
 		days,
 		today,
 		byDay,
+		eventsByDay = new Map(),
 		dnd,
 		dispatcher,
 		app,
 		settings,
+		vault = null,
 		menuPorts = null,
 		onDropTask,
 		onQuickAdd,
+		onCreateEvent = null,
 	}: {
 		/** Колонки сетки: 1 (день) или 3 (три дня), подряд. */
 		days: IsoDate[];
 		today: IsoDate;
 		byDay: Map<IsoDate, PlacedEvent[]>;
+		/** Виртуальные вхождения серий-событий по дням (§события). */
+		eventsByDay?: Map<IsoDate, EventOccurrence[]>;
 		dnd: DndPort | null;
 		dispatcher: IntentDispatcher;
 		app: App;
 		settings: GtdFlowSettings;
+		/** Порт файла событий — правка серии из меню вхождения. */
+		vault?: CalendarWritePort | null;
 		menuPorts?: TaskMenuPorts | null;
 		/** time: строка — слот сетки, null — полоса «Весь день» (снять время). */
 		onDropTask: (taskKey: string, date: IsoDate, time: string | null) => Promise<void>;
 		onQuickAdd: (date: IsoDate, text: string, time: string | null) => Promise<void>;
+		/** ПКМ по пустому слоту/полосе — создать событие. */
+		onCreateEvent?: ((date: IsoDate, time: string | null) => void) | null;
 	} = $props();
 
 	/** Высота часа. Единственный источник — отсюда уходит в CSS через --gtd-tg-hour. */
@@ -60,6 +76,27 @@
 		}),
 	);
 
+	// Раскладка виртуальных вхождений событий: тот же сплит время/весь-день.
+	// Ключ вхождения — task.key (одна серия — одно вхождение на дату).
+	const eventDayLayouts = $derived(
+		days.map((date) => {
+			const occs = eventsByDay.get(date) ?? [];
+			const byKey = new Map(occs.map((o) => [o.task.key, o]));
+			const layout = layoutDay(
+				occs.map((o) => ({ key: o.task.key, time: o.time, timeEnd: o.timeEnd })),
+			);
+			return {
+				date,
+				allDay: layout.allDay.map((k) => byKey.get(k)!),
+				blocks: layout.timed.map((b) => ({ block: b, occ: byKey.get(b.key)! })),
+			};
+		}),
+	);
+	/** allDay-вхождения событий по дню — в полосу «Весь день» (DayCell top). */
+	const eventAllDayByDate = $derived(
+		new Map(eventDayLayouts.map((d) => [d.date, d.allDay])),
+	);
+
 	let scrollEl: HTMLElement | null = $state(null);
 	// Автоскролл к 08:00 один раз при открытии; смена день↔3 дня компонент
 	// не пересоздаёт (одна ветка {#if}) — позиция скролла сохраняется.
@@ -84,13 +121,18 @@
 				{today}
 				label={agendaLabel(d.date)}
 				events={d.allDay}
+				eventOccurrences={eventAllDayByDate.get(d.date) ?? []}
 				{dnd}
 				{dispatcher}
 				{app}
 				{settings}
+				{vault}
 				{menuPorts}
 				onDropTask={(taskKey, date) => onDropTask(taskKey, date, null)}
 				onQuickAdd={(date, text) => onQuickAdd(date, text, null)}
+				onCreateEvent={onCreateEvent === null
+					? null
+					: (date) => onCreateEvent(date, null)}
 			/>
 		{/each}
 	</div>
@@ -101,18 +143,21 @@
 					<div class="gtd-tg-hourlabel">{h}</div>
 				{/each}
 			</div>
-			{#each dayLayouts as d (d.date)}
+			{#each dayLayouts as d, i (d.date)}
 				<TimeGridCol
 					date={d.date}
 					{today}
 					blocks={d.blocks}
+					eventBlocks={eventDayLayouts[i]?.blocks ?? []}
 					{dnd}
 					{dispatcher}
 					{app}
 					{settings}
+					{vault}
 					{menuPorts}
 					{onDropTask}
 					{onQuickAdd}
+					{onCreateEvent}
 				/>
 			{/each}
 		</div>

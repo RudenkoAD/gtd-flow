@@ -7,7 +7,7 @@
 	import type { DndPort } from "../dnd/types";
 	import DayCell from "./DayCell.svelte";
 	import TimeGridCol from "./TimeGridCol.svelte";
-	import { agendaLabel, placedTime, type PlacedEvent } from "./calendarLogic";
+	import { agendaLabel, placedTime, placedTimeEnd, type PlacedEvent } from "./calendarLogic";
 	import { DEFAULT_SCROLL_MIN, layoutDay } from "./timeGrid";
 
 	let {
@@ -46,7 +46,11 @@
 			const events = byDay.get(date) ?? [];
 			const byKey = new Map(events.map((e) => [e.task.key, e]));
 			const layout = layoutDay(
-				events.map((e) => ({ key: e.task.key, time: placedTime(e.task, e.field) })),
+				events.map((e) => ({
+					key: e.task.key,
+					time: placedTime(e.task, e.field),
+					timeEnd: placedTimeEnd(e.task, e.field),
+				})),
 			);
 			return {
 				date,

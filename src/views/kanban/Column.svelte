@@ -76,6 +76,69 @@
 		if (e.target instanceof Element && e.target.closest("input, button, a, select, textarea")) return;
 		dnd.startDrag({ taskKey, sourceViewType: VIEW_TYPES.kanban }, e, e.currentTarget as HTMLElement);
 	}
+
+	// --- переименование колонки: дабл-клик по заголовку ---
+	// Конфликт с одиночным кликом (сворачивание): нельзя сворачивать сразу,
+	// иначе после первого клика шапка сменится на вертикальную полоску и
+	// dblclick прилетит уже в другой элемент. Поэтому collapse откладывается
+	// на 250 мс (типовой double-click interval); второй клик в окне отменяет
+	// таймер и открывает rename. Цена — едва заметная задержка сворачивания.
+	// С drag карточек конфликта нет: заголовок не является drag-источником
+	// (pointerdown навешан только на карточки в теле колонки).
+	const DBLCLICK_MS = 250;
+	let collapseTimer: number | null = null;
+
+	let renaming = $state(false);
+	let renameValue = $state("");
+	let renameInputEl: HTMLInputElement | null = $state(null);
+
+	$effect(() => {
+		if (renaming && renameInputEl !== null) {
+			renameInputEl.focus();
+			renameInputEl.select();
+		}
+	});
+
+	// таймер не должен сработать после демонтажа колонки
+	$effect(() => () => {
+		if (collapseTimer !== null) window.clearTimeout(collapseTimer);
+	});
+
+	function onHeaderClick(): void {
+		if (collapseTimer !== null) return; // второй клик серии — его обработает dblclick
+		collapseTimer = window.setTimeout(() => {
+			collapseTimer = null;
+			onToggle(column.id); // одиночный клик — сворачивание, как и раньше
+		}, DBLCLICK_MS);
+	}
+
+	function onHeaderDblClick(): void {
+		if (collapseTimer !== null) {
+			window.clearTimeout(collapseTimer);
+			collapseTimer = null;
+		}
+		renaming = true;
+		renameValue = column.name;
+	}
+
+	async function commitRename(): Promise<void> {
+		if (!renaming) return; // blur после Escape/Enter — уже обработано
+		renaming = false;
+		const name = renameValue.trim();
+		if (name === "" || name === column.name) return;
+		const res = await boards.renameColumn(boardPath, column.id, name);
+		if (!res.ok) new Notice(`GTD Flow: не удалось переименовать колонку (${res.reason ?? "unknown"})`);
+	}
+
+	function onRenameKeydown(e: KeyboardEvent): void {
+		if (e.key === "Enter") {
+			e.preventDefault();
+			void commitRename();
+		} else if (e.key === "Escape") {
+			e.preventDefault();
+			renaming = false; // отмена; последующий blur — no-op (guard в commitRename)
+		}
+	}
 </script>
 
 <section
@@ -95,16 +158,31 @@
 			<span class="gtd-kanban-col-count">{column.count}</span>
 		</button>
 	{:else}
-		<button
-			class="gtd-kanban-col-header"
-			aria-expanded="true"
-			onclick={() => onToggle(column.id)}
-			title="Свернуть колонку"
-		>
-			<span class="gtd-kanban-col-chevron">▾</span>
-			<span class="gtd-kanban-col-name">{column.name}</span>
-			<span class="gtd-kanban-col-count">{column.count}</span>
-		</button>
+		{#if renaming}
+			<div class="gtd-kanban-col-header is-renaming">
+				<input
+					class="gtd-kanban-col-rename"
+					type="text"
+					aria-label="Новое имя колонки"
+					bind:this={renameInputEl}
+					bind:value={renameValue}
+					onkeydown={onRenameKeydown}
+					onblur={commitRename}
+				/>
+			</div>
+		{:else}
+			<button
+				class="gtd-kanban-col-header"
+				aria-expanded="true"
+				onclick={onHeaderClick}
+				ondblclick={onHeaderDblClick}
+				title="Свернуть колонку (дабл-клик — переименовать)"
+			>
+				<span class="gtd-kanban-col-chevron">▾</span>
+				<span class="gtd-kanban-col-name">{column.name}</span>
+				<span class="gtd-kanban-col-count">{column.count}</span>
+			</button>
+		{/if}
 		<div class="gtd-kanban-col-body">
 			{#if column.tasks.length === 0}
 				<div class="gtd-kanban-col-empty">Пусто</div>
@@ -162,6 +240,15 @@
 	.gtd-kanban-col-header:hover,
 	.gtd-kanban-col-strip:hover {
 		background: var(--background-modifier-hover);
+	}
+	.gtd-kanban-col-header.is-renaming,
+	.gtd-kanban-col-header.is-renaming:hover {
+		cursor: default;
+		background: transparent;
+	}
+	.gtd-kanban-col-rename {
+		width: 100%;
+		font-weight: 600;
 	}
 	.gtd-kanban-col-chevron {
 		color: var(--text-muted);

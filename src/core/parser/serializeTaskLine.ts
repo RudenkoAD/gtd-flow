@@ -133,13 +133,17 @@ function setPayloadField(
 	return serializeTokens(t);
 }
 
-/** Время «HH:mm» из ПОСЛЕДНЕГО токена поля — именно его правит замена
- *  («последний побеждает» и у парсера). Нет поля/времени — null. */
-function existingFieldTime(t: TokenizedTaskLine, field: DateFieldName): string | null {
+/** Время «HH:mm» (и конец интервала) из ПОСЛЕДНЕГО токена поля — именно его
+ *  правит замена («последний побеждает» и у парсера). Нет поля/времени — null. */
+function existingFieldTimes(
+	t: TokenizedTaskLine,
+	field: DateFieldName,
+): { time: string | null; timeEnd: string | null } {
 	const idxs = fieldIndices(t.segments, field);
-	if (idxs.length === 0) return null;
+	if (idxs.length === 0) return { time: null, timeEnd: null };
 	const tok = t.segments[idxs[idxs.length - 1]!] as FieldToken;
-	return splitDateTimePayload(tok.payload).time;
+	const { time, timeEnd } = splitDateTimePayload(tok.payload);
+	return { time, timeEnd };
 }
 
 /**
@@ -148,14 +152,20 @@ function existingFieldTime(t: TokenizedTaskLine, field: DateFieldName): string |
  * time — ТОЛЬКО для 📅/⏳/🛫 (due/scheduled/start):
  * - undefined (аргумент опущен) — сохранить существующее время поля: старые
  *   вызовы без 4-го аргумента при замене даты НЕ стирают время;
- * - null — снять время (остаётся голая дата);
+ * - null — снять время (остаётся голая дата); снимается и конец интервала;
  * - "HH:mm" — установить (валидация TIME_RE, мусор — throw, как у дат).
+ *
+ * timeEnd — конец интервала «-HH:mm», семантика та же (undefined сохранить,
+ * null снять, строка установить). Строка-timeEnd при отсутствии времени начала
+ * (в т.ч. time === undefined на строке без времени) — throw; timeEnd <= времени
+ * начала — throw (на диске конец живёт только СТРОГО позже начала).
  */
 export function setField(
 	rawLine: string,
 	field: DateFieldName,
 	value: IsoDate | null,
 	time?: string | null,
+	timeEnd?: string | null,
 ): string {
 	// писатель не мягче читателя: валидируем ТЕМ ЖЕ parseDatePayload, что и парсер,
 	// иначе записанная дата (2026-13-05) молча читалась бы обратно как null
@@ -173,15 +183,49 @@ export function setField(
 			throw new Error(`serializeTaskLine: время без даты: ${JSON.stringify(time)}`);
 		}
 	}
+	if (timeEnd !== undefined) {
+		if (!isTimedDateField(field)) {
+			throw new Error(`serializeTaskLine: поле ${field} не имеет времени`);
+		}
+		if (timeEnd !== null && !TIME_RE.test(timeEnd)) {
+			throw new Error(`serializeTaskLine: не время HH:mm: ${JSON.stringify(timeEnd)}`);
+		}
+		if (timeEnd !== null && value === null) {
+			throw new Error(`serializeTaskLine: время без даты: ${JSON.stringify(timeEnd)}`);
+		}
+	}
 	if (value === null) {
-		// удаление поля сносит и его время: оно живёт внутри payload токена
+		// удаление поля сносит и его время с интервалом: они живут внутри payload токена
 		return setPayloadField(rawLine, field, DATE_FIELD_EMOJI[field], null);
 	}
 	let effTime: string | null = time ?? null;
-	if (time === undefined && isTimedDateField(field)) {
-		effTime = existingFieldTime(mustTokenize(rawLine), field);
+	let effTimeEnd: string | null = timeEnd ?? null;
+	if (isTimedDateField(field) && (time === undefined || timeEnd === undefined)) {
+		const existing = existingFieldTimes(mustTokenize(rawLine), field);
+		if (time === undefined) effTime = existing.time;
+		// снятие времени начала (time === null) сносит и конец интервала
+		if (timeEnd === undefined) effTimeEnd = time === null ? null : existing.timeEnd;
 	}
-	const payload = effTime === null ? value : `${value} ${effTime}`;
+	if (effTimeEnd !== null) {
+		// итоговая пара обязана быть валидной НА ДИСКЕ: конец без начала или
+		// не позже начала токенизатор не прочитал бы обратно — отклоняем на записи
+		if (effTime === null) {
+			throw new Error(
+				`serializeTaskLine: конец интервала без времени начала: ${JSON.stringify(effTimeEnd)}`,
+			);
+		}
+		if (effTimeEnd <= effTime) {
+			throw new Error(
+				`serializeTaskLine: конец интервала не позже начала: ${JSON.stringify(`${effTime}-${effTimeEnd}`)}`,
+			);
+		}
+	}
+	const payload =
+		effTime === null
+			? value
+			: effTimeEnd === null
+				? `${value} ${effTime}`
+				: `${value} ${effTime}-${effTimeEnd}`;
 	return setPayloadField(rawLine, field, DATE_FIELD_EMOJI[field], payload);
 }
 

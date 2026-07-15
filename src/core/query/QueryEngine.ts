@@ -13,7 +13,7 @@ import {
 	type ResolveDep,
 } from "../model/gtdState";
 import { taskToCalendarEvent } from "../model/projections";
-import { matchesInboxSource, type InboxConfig, type QuerySpec } from "./querySpec";
+import type { InboxConfig, QuerySpec } from "./querySpec";
 
 export interface QueryContext {
 	tasks: Iterable<Task>;
@@ -23,27 +23,24 @@ export interface QueryContext {
 }
 
 /**
- * §1 дословно:
- * inbox := active && (
- *      (inInboxSource && !hasBoardTag)
- *   || (!hasBoardTag && !hasProject && !hasDue)
- *   || (hasProject && projectActive && ready && !hasBoardTag)
- * )
- * где hasProject = container === "project".
+ * §1, упрощено в фидбек-раунде 2 (решение пользователя: «задача с датой —
+ * уже разобрана», force-include источников захвата упразднён; inboxSources
+ * остались только целями записи quick-add/spawn):
  *
- * !hasBoardTag в первой ветке — итог живой верификации: force-include
- * источника захвата слабее «разобранности» (карточка, перетащенная на
- * доску прямо из Inbox.md, обязана уйти из входящих, иначе разбор
- * входящих не «опустошает» их — доверие к инбоксу ломается).
+ * inbox := active && !hasBoardTag && !hasDue
+ *       && (!hasProject || (projectActive && ready))
+ * где hasProject = container === "project", hasDue = t.due !== null.
+ *
+ * !hasBoardTag — итог живой верификации раунда 1: карточка, перетащенная
+ * на доску прямо из Inbox.md, обязана уйти из входящих, иначе разбор
+ * входящих не «опустошает» их — доверие к инбоксу ломается.
  */
 export function isInInbox(t: Task, ctx: QueryContext): boolean {
 	if (!isActive(t, ctx.today)) return false;
 	const bits = ctx.settingsBits;
-	const hasBoardTag = bits.hasBoardTag(t);
-	if (matchesInboxSource(t.filePath, bits.inboxSources)) return !hasBoardTag;
-	const hasProject = t.container === "project";
-	if (!hasBoardTag && !hasProject && !bits.hasDue(t)) return true;
-	return hasProject && t.projectActive && ready(t, ctx.today, ctx.resolveDep) && !hasBoardTag;
+	if (bits.hasBoardTag(t) || bits.hasDue(t)) return false;
+	if (t.container !== "project") return true;
+	return t.projectActive && ready(t, ctx.today, ctx.resolveDep);
 }
 
 /**

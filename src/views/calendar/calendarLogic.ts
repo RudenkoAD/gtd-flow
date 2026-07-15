@@ -138,6 +138,18 @@ export function placedTime(task: Task, field: CalendarField): string | null {
 	}
 }
 
+/** Конец интервала поля-размещения (парно placedTime; null — длительности нет). */
+export function placedTimeEnd(task: Task, field: CalendarField): string | null {
+	switch (field) {
+		case "due":
+			return task.dueTimeEnd;
+		case "scheduled":
+			return task.scheduledTimeEnd;
+		case "start":
+			return task.startTimeEnd;
+	}
+}
+
 /**
  * «Отложена до»: дата 🛫 задачи в состоянии TICKLER (§1: не done/cancelled,
  * не шаблон/деталь, start > today), иначе null. Для приглушённого чипа с ⏰.

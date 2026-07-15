@@ -201,6 +201,81 @@ describe("parseTaskLine: время у 📅/⏳/🛫", () => {
 	});
 });
 
+describe("parseTaskLine: интервал времени «HH:mm-HH:mm» у 📅/⏳/🛫", () => {
+	it("валидный интервал → *Time и *TimeEnd, из description вырезан", () => {
+		const t = parseTaskLine(
+			"- [ ] Врач 🛫 2026-07-20 08:00-08:45 ⏳ 2026-07-24 09:30-10:00 📅 2026-07-25 14:30-16:00",
+			ctx(),
+		)!;
+		expect(t.start).toBe("2026-07-20");
+		expect(t.startTime).toBe("08:00");
+		expect(t.startTimeEnd).toBe("08:45");
+		expect(t.scheduled).toBe("2026-07-24");
+		expect(t.scheduledTime).toBe("09:30");
+		expect(t.scheduledTimeEnd).toBe("10:00");
+		expect(t.due).toBe("2026-07-25");
+		expect(t.dueTime).toBe("14:30");
+		expect(t.dueTimeEnd).toBe("16:00");
+		expect(t.description).toBe("Врач");
+	});
+
+	it("время без интервала → *TimeEnd = null", () => {
+		const t = parseTaskLine("- [ ] T 📅 2026-07-25 14:30", ctx())!;
+		expect(t.dueTime).toBe("14:30");
+		expect(t.dueTimeEnd).toBeNull();
+	});
+
+	it("конец НЕ строго позже начала — в текст; дата и время начала целы", () => {
+		for (const bad of ["13:00", "14:30"]) {
+			const t = parseTaskLine(`- [ ] Врач 📅 2026-07-25 14:30-${bad}`, ctx())!;
+			expect(t.due, bad).toBe("2026-07-25");
+			expect(t.dueTime, bad).toBe("14:30");
+			expect(t.dueTimeEnd, bad).toBeNull();
+			expect(t.description, bad).toBe(`Врач -${bad}`);
+		}
+	});
+
+	it("невалидный конец — в текст; дата и время начала целы", () => {
+		const t = parseTaskLine("- [ ] Врач 📅 2026-07-25 14:30-25:00", ctx())!;
+		expect(t.due).toBe("2026-07-25");
+		expect(t.dueTime).toBe("14:30");
+		expect(t.dueTimeEnd).toBeNull();
+		expect(t.description).toBe("Врач -25:00");
+	});
+
+	it("границы: 00:00-23:59 и минимальный шаг", () => {
+		expect(parseTaskLine("- [ ] T 📅 2026-01-01 00:00-23:59", ctx())!.dueTimeEnd).toBe("23:59");
+		expect(parseTaskLine("- [ ] T 📅 2026-01-01 00:00-00:01", ctx())!.dueTimeEnd).toBe("00:01");
+	});
+
+	it("невалидная дата с валидным интервалом — всё null", () => {
+		const t = parseTaskLine("- [ ] T 📅 2026-02-30 14:30-16:00", ctx())!;
+		expect(t.due).toBeNull();
+		expect(t.dueTime).toBeNull();
+		expect(t.dueTimeEnd).toBeNull();
+	});
+
+	it("✅/➕/🔜 интервалов не имеют — хвост остаётся текстом", () => {
+		const t = parseTaskLine("- [x] T ✅ 2026-07-10 14:30-16:00", ctx())!;
+		expect(t.done).toBe("2026-07-10");
+		expect(t.description).toBe("T 14:30-16:00");
+	});
+
+	it("дубли: последний токен побеждает и концом интервала", () => {
+		const t = parseTaskLine("- [ ] T 📅 2026-01-01 10:00-11:00 📅 2026-02-02 12:00", ctx())!;
+		expect(t.due).toBe("2026-02-02");
+		expect(t.dueTime).toBe("12:00");
+		expect(t.dueTimeEnd).toBeNull(); // у последнего дубля конца нет
+		const t2 = parseTaskLine("- [ ] T 📅 2026-01-01 📅 2026-02-02 12:00-13:00", ctx())!;
+		expect(t2.dueTimeEnd).toBe("13:00");
+	});
+
+	it("rawLine дословный — интервал не теряется при round-trip", () => {
+		const line = "- [ ] T 📅 2026-07-25 14:30-16:00 ^b1";
+		expect(parseTaskLine(line, ctx())!.rawLine).toBe(line);
+	});
+});
+
 describe("parseDatePayload", () => {
 	it("валидная дата", () => {
 		expect(parseDatePayload("2026-07-15")).toEqual({ kind: "date", date: "2026-07-15" });

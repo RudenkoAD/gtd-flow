@@ -27,6 +27,8 @@
 		nextWeek,
 		openTasks,
 		placeEvents,
+		placedTime,
+		placedTimeEnd,
 		prevAgenda,
 		prevMonth,
 		prevWeek,
@@ -37,6 +39,7 @@
 		type CalendarPersistedState,
 		type CalendarWritePort,
 	} from "./calendarLogic";
+	import { preservedTimeEnd } from "./timeGrid";
 
 	let {
 		taskStore,
@@ -187,8 +190,9 @@
 	 *  календаре, иначе первое из settings.calendarPlacement.
 	 *  time: undefined — drop на день (существующее время поля сохраняется,
 	 *  контракт SetDate/setField: undefined = не трогать, перенос «14:30-задачи»
-	 *  на другой день оставляет 14:30); строка — слот time-grid (точное время);
-	 *  null — полоса «Весь день» time-grid (время снимается). */
+	 *  на другой день оставляет 14:30, интервал «14:30-16:00» — целиком);
+	 *  строка — слот time-grid (точное время); null — полоса «Весь день»
+	 *  time-grid (время снимается, конец интервала setField снимает сам). */
 	async function dropTask(taskKey: string, date: IsoDate, time?: string | null): Promise<void> {
 		const task = taskStore.index().get(taskKey);
 		if (task === undefined) {
@@ -196,6 +200,15 @@
 			return;
 		}
 		const field = dropDateField(task, settings.calendarPlacement);
+		// Блок с длительностью, брошенный на слот, тянет конец за собой: новый
+		// старт + прежняя длительность. Явно, а не undefined: setField при
+		// undefined сохранил бы СТАРЫЙ конец, который после переноса может
+		// оказаться не позже нового начала (throw). У задач без конца —
+		// undefined: timeEnd не трогаем, слот ставит только время (§ фидбека).
+		const timeEnd =
+			typeof time === "string"
+				? preservedTimeEnd(placedTime(task, field), placedTimeEnd(task, field), time)
+				: undefined;
 		// «🛫 и 📅 взаимоисключающие»: планирование реально отложенной задачи
 		// (🛫 в будущем) возвращает её из отложенных — с подтверждением и одной
 		// атомарной записью. Инертный 🛫 в прошлом конфликтом не считается.
@@ -217,6 +230,7 @@
 			field,
 			date,
 			time,
+			timeEnd,
 			clearStart,
 		});
 		if (!res.ok) new Notice(`GTD Flow: ${res.reason}`);

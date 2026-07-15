@@ -108,6 +108,7 @@
 		<TimeGridBlock
 			ev={b.ev}
 			block={b.block}
+			{date}
 			{today}
 			{dnd}
 			{dispatcher}

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { App } from "obsidian";
+	import { Notice, type App } from "obsidian";
 	import type { Readable } from "svelte/store";
 	import type { BoardService } from "../../services/BoardService";
 	import type { IntentDispatcher } from "../../services/WritebackService";
@@ -93,6 +93,44 @@
 		collapsed = toggleCollapsed(collapsed, colId);
 		persistNow();
 	}
+
+	// --- добавление колонки («призрачная» колонка с «+» в конце доски) ---
+
+	let addingCol = $state(false);
+	let newColName = $state("");
+	let addInputEl: HTMLInputElement | null = $state(null);
+
+	// фокус в инлайн-input сразу после появления
+	$effect(() => {
+		if (addingCol && addInputEl !== null) addInputEl.focus();
+	});
+
+	function cancelAddCol(): void {
+		addingCol = false;
+		newColName = "";
+	}
+
+	async function commitAddCol(): Promise<void> {
+		const name = newColName.trim();
+		if (name === "" || boards === null || shownPath === null) {
+			cancelAddCol();
+			return;
+		}
+		const res = await boards.addColumn(shownPath, name);
+		if (res.ok) cancelAddCol();
+		// при отказе input остаётся с текстом — можно поправить имя и повторить
+		else new Notice(`GTD Flow: не удалось создать колонку (${res.reason ?? "unknown"})`);
+	}
+
+	function onAddColKeydown(e: KeyboardEvent): void {
+		if (e.key === "Enter") {
+			e.preventDefault();
+			void commitAddCol();
+		} else if (e.key === "Escape") {
+			e.preventDefault();
+			cancelAddCol();
+		}
+	}
 </script>
 
 <div class="gtd-kanban">
@@ -142,6 +180,28 @@
 					{onToggle}
 				/>
 			{/each}
+			{#if addingCol}
+				<div class="gtd-kanban-add-col is-editing">
+					<input
+						class="gtd-kanban-add-input"
+						type="text"
+						placeholder="Название колонки"
+						aria-label="Название новой колонки"
+						bind:this={addInputEl}
+						bind:value={newColName}
+						onkeydown={onAddColKeydown}
+						onblur={cancelAddCol}
+					/>
+				</div>
+			{:else}
+				<button
+					class="gtd-kanban-add-col"
+					title="Добавить колонку"
+					onclick={() => (addingCol = true)}
+				>
+					+
+				</button>
+			{/if}
 		</div>
 	{/if}
 </div>
@@ -183,5 +243,32 @@
 		padding: 10px;
 		overflow-x: auto; /* горизонтальный скролл доски (ТЗ §4) */
 		overflow-y: hidden;
+	}
+	/* «призрачная» колонка: та же ширина, но пунктир и без заливки */
+	.gtd-kanban-add-col {
+		flex: 0 0 260px;
+		align-self: flex-start;
+		min-height: 80px;
+		display: flex;
+		align-items: flex-start;
+		justify-content: center;
+		padding: 10px;
+		background: transparent;
+		border: 1px dashed var(--background-modifier-border);
+		border-radius: var(--radius-m, 8px);
+		box-shadow: none;
+		color: var(--text-faint);
+		font-size: 1.4em;
+		cursor: pointer;
+	}
+	button.gtd-kanban-add-col:hover {
+		background: var(--background-modifier-hover);
+		color: var(--text-muted);
+	}
+	.gtd-kanban-add-col.is-editing {
+		cursor: default;
+	}
+	.gtd-kanban-add-input {
+		width: 100%;
 	}
 </style>

@@ -17,6 +17,7 @@ import {
 	openTasks,
 	placeEvents,
 	placedTime,
+	placedTimeEnd,
 	prevAgenda,
 	prevMonth,
 	prevWeek,
@@ -47,6 +48,9 @@ function makeTask(overrides: Partial<Task> = {}): Task {
 		dueTime: null,
 		scheduledTime: null,
 		startTime: null,
+		dueTimeEnd: null,
+		scheduledTimeEnd: null,
+		startTimeEnd: null,
 		created: null,
 		done: null,
 		cancelled: null,
@@ -258,6 +262,26 @@ describe("placedTime", () => {
 		expect(placedTime(t, "due")).toBeNull();
 		expect(placedTime(t, "scheduled")).toBeNull();
 		expect(placedTime(t, "start")).toBeNull();
+	});
+});
+
+describe("placedTimeEnd", () => {
+	it("маппинг поля-размещения на его конец интервала", () => {
+		const t = makeTask({
+			dueTimeEnd: "10:00",
+			scheduledTimeEnd: "11:15",
+			startTimeEnd: "12:30",
+		});
+		expect(placedTimeEnd(t, "due")).toBe("10:00");
+		expect(placedTimeEnd(t, "scheduled")).toBe("11:15");
+		expect(placedTimeEnd(t, "start")).toBe("12:30");
+	});
+
+	it("конца нет — null (событие без длительности)", () => {
+		const t = makeTask({ due: "2026-07-20", dueTime: "09:00" });
+		expect(placedTimeEnd(t, "due")).toBeNull();
+		expect(placedTimeEnd(t, "scheduled")).toBeNull();
+		expect(placedTimeEnd(t, "start")).toBeNull();
 	});
 });
 

@@ -37,6 +37,37 @@ export interface MenuItemModel {
 	action: MenuAction;
 }
 
+/**
+ * Подменю (obsidian 1.12 desktop, MenuItem.setSubmenu): группа листовых
+ * пунктов под одним заголовком. Среды без setSubmenu (мобайл, старые версии)
+ * сплющивают его через flattenSubmenu — модель одна, маппинг решает.
+ */
+export interface MenuSubmenuModel {
+	kind: "submenu";
+	id: string;
+	section: MenuSection;
+	label: string;
+	icon?: string;
+	children: MenuItemModel[];
+}
+
+export type MenuNode = MenuItemModel | MenuSubmenuModel;
+
+/** Дискриминация по наличию kind: у листовых пунктов поля kind нет вовсе. */
+export function isSubmenuNode(node: MenuNode): node is MenuSubmenuModel {
+	return "kind" in node;
+}
+
+/**
+ * Плоская форма подменю для сред без setSubmenu: дети становятся обычными
+ * пунктами с префиксом из label без завершающего многоточия —
+ * «Приоритет…» + «высокий» → «Приоритет: высокий» (как в доподменюшном UI).
+ */
+export function flattenSubmenu(node: MenuSubmenuModel): MenuItemModel[] {
+	const prefix = node.label.replace(/…$/u, "");
+	return node.children.map((c) => ({ ...c, title: `${prefix}: ${c.title}` }));
+}
+
 /** Плоский вход модели: наличие портов — булевы флаги, а не сами порты. */
 export interface MenuModelInput {
 	task: Task;
@@ -60,9 +91,9 @@ function intentItem(
 	return { id, section, title, icon, action: { kind: "intent", intent } };
 }
 
-export function buildMenuModel(input: MenuModelInput): MenuItemModel[] {
+export function buildMenuModel(input: MenuModelInput): MenuNode[] {
 	const { task, today } = input;
-	const items: MenuItemModel[] = [];
+	const items: MenuNode[] = [];
 	const isDone = task.statusChar === "x" || task.statusChar === "X";
 	const isDoing = task.statusChar === "/";
 	const isCancelled = task.statusChar === "-";
@@ -110,19 +141,25 @@ export function buildMenuModel(input: MenuModelInput): MenuItemModel[] {
 				}),
 	);
 
-	// --- приоритет: 5 уровней + сброс, checked на текущем ---
-	for (const p of PRIORITY_ORDER) {
-		items.push({
+	// --- приоритет: подменю «Приоритет…» (5 уровней + сброс), checked на текущем;
+	// статусные пункты выше намеренно НЕ группируются — они на расстоянии одного клика ---
+	items.push({
+		kind: "submenu",
+		id: "priority",
+		section: "priority",
+		label: "Приоритет…",
+		icon: "flag",
+		children: PRIORITY_ORDER.map((p) => ({
 			id: `priority-${p}`,
 			section: "priority",
-			title: `Приоритет: ${PRIORITY_LABELS[p]}`,
+			title: PRIORITY_LABELS[p],
 			checked: task.priority === p,
 			action: {
 				kind: "intent",
 				intent: { type: "set-priority", key: task.key, priority: p },
 			},
-		});
-	}
+		})),
+	});
 
 	// --- запланировать (📅 due) ---
 	items.push({
@@ -133,23 +170,28 @@ export function buildMenuModel(input: MenuModelInput): MenuItemModel[] {
 		action: { kind: "pick-due" },
 	});
 
-	// --- отложить (🛫): пресеты + произвольная дата ---
-	for (let i = 0; i < input.deferPresets.length; i++) {
-		const preset = input.deferPresets[i]!;
-		items.push(
-			intentItem(`defer-preset-${i}`, "defer", `Отложить: ${preset.label}`, "alarm-clock", {
-				type: "defer",
-				key: task.key,
-				until: addDaysIso(today, preset.offsetDays),
-			}),
-		);
-	}
-	items.push({
+	// --- отложить (🛫): подменю «Отложить…» — пресеты + произвольная дата ---
+	const deferChildren: MenuItemModel[] = input.deferPresets.map((preset, i) =>
+		intentItem(`defer-preset-${i}`, "defer", preset.label, "alarm-clock", {
+			type: "defer",
+			key: task.key,
+			until: addDaysIso(today, preset.offsetDays),
+		}),
+	);
+	deferChildren.push({
 		id: "defer-date",
 		section: "defer",
-		title: "Отложить: дата…",
+		title: "Дата…",
 		icon: "calendar",
 		action: { kind: "pick-defer" },
+	});
+	items.push({
+		kind: "submenu",
+		id: "defer",
+		section: "defer",
+		label: "Отложить…",
+		icon: "alarm-clock",
+		children: deferChildren,
 	});
 	if (input.inTickler) {
 		items.push(

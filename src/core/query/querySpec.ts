@@ -19,10 +19,10 @@ export type QuerySpec =
 	  };
 
 /** Биты настроек, нужные inbox-запросу §1. Предикаты инжектируются,
- *  чтобы ядро не знало о формате настроек (projectStrategy и т.п.). */
+ *  чтобы ядро не знало о формате настроек (projectStrategy и т.п.).
+ *  inboxSources здесь БОЛЬШЕ НЕТ: с фидбек-раунда 2 источники захвата —
+ *  только цели записи (quick-add, spawn), а не force-include запроса. */
 export interface InboxConfig {
-	/** Файлы/папки захвата — force-include во входящие. */
-	inboxSources: string[];
 	hasBoardTag: (t: Task) => boolean;
 	hasDue: (t: Task) => boolean;
 }
@@ -38,20 +38,12 @@ export function defaultHasDue(t: Task): boolean {
 	return t.due !== null;
 }
 
-export function defaultInboxConfig(inboxSources: string[]): InboxConfig {
-	return { inboxSources, hasBoardTag: defaultHasBoardTag, hasDue: defaultHasDue };
-}
-
-/** Источник = точный файл либо папка. Папочный префикс — только по границе
- *  сегмента пути: "GTD/In" не матчит "GTD/Inbox.md". */
-export function matchesInboxSource(filePath: string, sources: readonly string[]): boolean {
-	for (const source of sources) {
-		if (source.length === 0) continue;
-		if (source.endsWith("/")) {
-			if (filePath.startsWith(source)) return true;
-		} else if (filePath === source || filePath.startsWith(source + "/")) {
-			return true;
-		}
-	}
-	return false;
+/**
+ * Параметр _inboxSources игнорируется и оставлен только ради совместимости
+ * вызовов видов/фабрик (Inbox.svelte, queryStore передают settings.inboxSources):
+ * формула входящих упрощена — «задача с датой — уже разобрана», force-include
+ * источников захвата упразднён.
+ */
+export function defaultInboxConfig(_inboxSources?: readonly string[]): InboxConfig {
+	return { hasBoardTag: defaultHasBoardTag, hasDue: defaultHasDue };
 }

@@ -6,7 +6,7 @@
  *
  * Порты приходят опционально: нет сервиса — нет пункта (модель сама скрывает).
  */
-import { Menu, Notice, type App } from "obsidian";
+import { Menu, Notice, type App, type MenuItem } from "obsidian";
 import type { Readable } from "svelte/store";
 import type { Intent } from "../../core/intents/Intent";
 import type { IsoDate, Task } from "../../core/model/Task";
@@ -26,7 +26,14 @@ import {
 	recurringFilePaths,
 	type TemplateVaultPort,
 } from "./taskActions";
-import { buildMenuModel, type MenuAction } from "./taskMenuModel";
+import {
+	buildMenuModel,
+	flattenSubmenu,
+	isSubmenuNode,
+	type MenuAction,
+	type MenuItemModel,
+	type MenuSubmenuModel,
+} from "./taskMenuModel";
 
 export type { CardPort } from "../../services/CardService";
 
@@ -118,15 +125,59 @@ export function buildTaskMenu(ctx: TaskMenuCtx): Menu {
 		hasTemplates: ports?.template != null,
 	});
 	const menu = new Menu();
-	for (const item of model) {
-		menu.addItem((mi) => {
-			mi.setSection(item.section).setTitle(item.title);
-			if (item.icon !== undefined) mi.setIcon(item.icon);
-			if (item.checked !== undefined) mi.setChecked(item.checked);
-			mi.onClick(() => void runMenuAction(ctx, item.action));
-		});
+	for (const node of model) {
+		if (isSubmenuNode(node)) addSubmenuNode(menu, ctx, node);
+		else addLeaf(menu, ctx, node);
 	}
 	return menu;
+}
+
+// ---------------------------------------------------------------------------
+// Маппинг модели на obsidian Menu
+// ---------------------------------------------------------------------------
+
+/** MenuItem.setSubmenu есть в obsidian 1.12+ на десктопе; в типах 1.7 и в
+ *  мобильном рантайме его нет — только безопасный каст с проверкой typeof. */
+type MenuItemMaybeSubmenu = MenuItem & { setSubmenu?: () => Menu };
+
+function configureLeaf(mi: MenuItem, ctx: TaskMenuCtx, item: MenuItemModel): void {
+	mi.setSection(item.section).setTitle(item.title);
+	if (item.icon !== undefined) mi.setIcon(item.icon);
+	if (item.checked !== undefined) mi.setChecked(item.checked);
+	mi.onClick(() => void runMenuAction(ctx, item.action));
+}
+
+function addLeaf(menu: Menu, ctx: TaskMenuCtx, item: MenuItemModel): void {
+	menu.addItem((mi) => configureLeaf(mi, ctx, item));
+}
+
+/**
+ * Подменю-узел: при живом setSubmenu — настоящее вложенное меню, иначе
+ * (мобайл / obsidian < 1.12) — рекурсивное сплющивание с префиксом
+ * («Приоритет: высокий» — как в плоском меню до подменю).
+ *
+ * Возможность узнаётся только изнутри addItem (нужен экземпляр MenuItem),
+ * колбэк которого obsidian зовёт синхронно: уже созданный пункт при
+ * отсутствии setSubmenu становится ПЕРВЫМ сплющенным ребёнком, остальные
+ * добавляются следом — пробных/пустых пунктов в меню не остаётся.
+ */
+function addSubmenuNode(menu: Menu, ctx: TaskMenuCtx, node: MenuSubmenuModel): void {
+	if (node.children.length === 0) return; // пустая группа — нечего показывать
+	let flatRest: MenuItemModel[] = [];
+	menu.addItem((mi) => {
+		const cast = mi as MenuItemMaybeSubmenu;
+		if (typeof cast.setSubmenu === "function") {
+			mi.setSection(node.section).setTitle(node.label);
+			if (node.icon !== undefined) mi.setIcon(node.icon);
+			const sub = cast.setSubmenu();
+			for (const child of node.children) addLeaf(sub, ctx, child);
+		} else {
+			const flat = flattenSubmenu(node);
+			configureLeaf(mi, ctx, flat[0]!);
+			flatRest = flat.slice(1);
+		}
+	});
+	for (const child of flatRest) addLeaf(menu, ctx, child);
 }
 
 /** Единая точка write-back меню: отказ — уведомление, а не тихо съеденный клик. */

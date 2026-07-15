@@ -52,8 +52,8 @@ function applyStatusWithDates(currentLine: string, statusChar: string, date?: Is
 export function resolveLineTransform(intent: Intent, currentLine: string): string | null {
 	switch (intent.type) {
 		case "set-date": {
-			// time: undefined — сохранить время поля, null — снять, строка — установить
-			let line = setField(currentLine, intent.field, intent.date, intent.time);
+			// time/timeEnd: undefined — сохранить время поля, null — снять, строка — установить
+			let line = setField(currentLine, intent.field, intent.date, intent.time, intent.timeEnd);
 			// «🛫 и 📅 взаимоисключающие»: планирование снимает отложенность разом
 			if (intent.clearStart === true && intent.field === "due") line = setField(line, "start", null);
 			return line;

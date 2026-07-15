@@ -172,6 +172,130 @@ describe("setField: время (4-й аргумент)", () => {
 	});
 });
 
+describe("setField: конец интервала (5-й аргумент)", () => {
+	it("время + конец при вставке нового поля", () => {
+		expect(setField("- [ ] T", "due", "2026-01-05", "14:30", "16:00")).toBe(
+			"- [ ] T 📅 2026-01-05 14:30-16:00",
+		);
+		expect(setField("- [ ] T", "scheduled", "2026-01-01", "08:00", "08:01")).toBe(
+			"- [ ] T ⏳ 2026-01-01 08:00-08:01",
+		);
+		expect(setField("- [ ] T", "start", "2026-01-01", "00:00", "23:59")).toBe(
+			"- [ ] T 🛫 2026-01-01 00:00-23:59",
+		);
+	});
+
+	it("timeEnd-строка при опущенном time: существующее время начала сохраняется", () => {
+		expect(setField("- [ ] T 📅 2026-01-05 14:30", "due", "2026-01-05", undefined, "16:00")).toBe(
+			"- [ ] T 📅 2026-01-05 14:30-16:00",
+		);
+	});
+
+	it("оба опущены: замена даты сохраняет и время, и конец (drag по дням)", () => {
+		expect(setField("- [ ] T 📅 2026-01-05 14:30-16:00 ⏫", "due", "2026-02-01")).toBe(
+			"- [ ] T 📅 2026-02-01 14:30-16:00 ⏫",
+		);
+	});
+
+	it("time-строка при опущенном timeEnd: существующий конец сохраняется", () => {
+		expect(setField("- [ ] T 📅 2026-01-05 14:30-16:00", "due", "2026-01-05", "15:00")).toBe(
+			"- [ ] T 📅 2026-01-05 15:00-16:00",
+		);
+	});
+
+	it("timeEnd = null снимает конец, время начала остаётся", () => {
+		expect(setField("- [ ] T 📅 2026-01-05 14:30-16:00", "due", "2026-01-05", undefined, null)).toBe(
+			"- [ ] T 📅 2026-01-05 14:30",
+		);
+	});
+
+	it("time = null снимает и время, и конец (даже при timeEnd = undefined)", () => {
+		expect(setField("- [ ] T 📅 2026-01-05 14:30-16:00", "due", "2026-01-05", null)).toBe(
+			"- [ ] T 📅 2026-01-05",
+		);
+		expect(setField("- [ ] T 📅 2026-01-05 14:30-16:00", "due", "2026-01-05", null, null)).toBe(
+			"- [ ] T 📅 2026-01-05",
+		);
+	});
+
+	it("удаление поля (value = null) сносит дату, время и конец", () => {
+		expect(setField("- [ ] T 📅 2026-01-05 14:30-16:00 ⏫", "due", null)).toBe("- [ ] T ⏫");
+	});
+
+	it("no-op: та же дата, то же время, тот же конец = тождество строки", () => {
+		const line = "- [ ] T 📅 2026-01-05 14:30-16:00 ^b1";
+		expect(setField(line, "due", "2026-01-05")).toBe(line);
+		expect(setField(line, "due", "2026-01-05", "14:30")).toBe(line);
+		expect(setField(line, "due", "2026-01-05", "14:30", "16:00")).toBe(line);
+	});
+
+	it("при дублях замена правит последний токен и сохраняет ЕГО интервал", () => {
+		const line = "- [ ] T 📅 2026-01-01 10:00-11:00 x 📅 2026-02-02 11:00-12:00";
+		expect(setField(line, "due", "2026-03-03")).toBe(
+			"- [ ] T 📅 2026-01-01 10:00-11:00 x 📅 2026-03-03 11:00-12:00",
+		);
+	});
+
+	it("интервал переживает правку соседнего поля", () => {
+		expect(setField("- [ ] T 📅 2026-01-05 14:30-16:00", "done", "2026-01-06")).toBe(
+			"- [ ] T 📅 2026-01-05 14:30-16:00 ✅ 2026-01-06",
+		);
+	});
+
+	it("throw: мусорный timeEnd (писатель не мягче читателя)", () => {
+		for (const bad of ["24:00", "9:30", "14:60", "16:00:00", "1600", ""]) {
+			expect(
+				() => setField("- [ ] T", "due", "2026-01-01", "14:30", bad),
+				bad,
+			).toThrow();
+		}
+	});
+
+	it("throw: timeEnd не позже времени начала (равен или меньше)", () => {
+		expect(() => setField("- [ ] T", "due", "2026-01-01", "14:30", "14:30")).toThrow();
+		expect(() => setField("- [ ] T", "due", "2026-01-01", "14:30", "13:00")).toThrow();
+	});
+
+	it("throw: timeEnd-строка без времени начала", () => {
+		// time = null — снятие времени; конец при этом невозможен
+		expect(() =>
+			setField("- [ ] T 📅 2026-01-01 10:00", "due", "2026-01-01", null, "16:00"),
+		).toThrow();
+		// time опущен, а у строки времени нет — сохранять нечего
+		expect(() =>
+			setField("- [ ] T 📅 2026-01-01", "due", "2026-01-01", undefined, "16:00"),
+		).toThrow();
+		expect(() => setField("- [ ] T", "due", "2026-01-01", undefined, "16:00")).toThrow();
+	});
+
+	it("throw: сохранённый конец конфликтует с новым временем начала", () => {
+		// timeEnd опущен ⇒ «сохранить 16:00», но 17:00 >= 16:00 — итоговая пара
+		// не прочиталась бы обратно; вызывающий обязан передать timeEnd явно
+		expect(() =>
+			setField("- [ ] T 📅 2026-01-05 14:30-16:00", "due", "2026-01-05", "17:00"),
+		).toThrow();
+		expect(() =>
+			setField("- [ ] T 📅 2026-01-05 14:30-16:00", "due", "2026-01-05", "16:00"),
+		).toThrow();
+	});
+
+	it("throw: timeEnd у полей без времени (✅/➕/🔜) — даже null", () => {
+		expect(() => setField("- [ ] T", "done", "2026-01-01", undefined, "16:00")).toThrow();
+		expect(() => setField("- [ ] T", "created", "2026-01-01", undefined, null)).toThrow();
+		expect(() => setField("- [ ] T", "nextSpawn", "2026-01-01", undefined, "16:00")).toThrow();
+	});
+
+	it("throw: timeEnd без даты (value = null + строка конца)", () => {
+		expect(() =>
+			setField("- [ ] T 📅 2026-01-01 10:00-11:00", "due", null, undefined, "16:00"),
+		).toThrow();
+	});
+
+	it("throw: интервал, вклеенный в дату value", () => {
+		expect(() => setField("- [ ] T", "due", "2026-01-01 14:30-16:00")).toThrow();
+	});
+});
+
 describe("setDescription", () => {
 	it("замена текста; поля и их payload дословно на месте", () => {
 		expect(setDescription("- [ ] Старый текст 📅 2026-01-05 ⏫", "Новый текст")).toBe(
@@ -449,6 +573,8 @@ interface GenLine {
 	due: string | null;
 	/** Время у 📅 — генерируется только вместе с датой. */
 	dueTime: string | null;
+	/** Конец интервала — только вместе со временем и только строго позже него. */
+	dueTimeEnd: string | null;
 	id: string | null;
 	deps: string[] | null;
 	block: string | null;
@@ -485,6 +611,7 @@ const genArb: fc.Arbitrary<GenLine> = fc.record({
 	scheduled: fc.option(dateArb, { nil: null }),
 	due: fc.option(dateArb, { nil: null }),
 	dueTime: fc.option(fc.constantFrom("00:00", "09:05", "14:30", "23:59"), { nil: null }),
+	dueTimeEnd: fc.option(fc.constantFrom("09:06", "16:00", "23:59"), { nil: null }),
 	id: fc.option(idArb, { nil: null }),
 	deps: fc.option(fc.array(idArb, { minLength: 1, maxLength: 3 }), { nil: null }),
 	block: fc.option(fc.constantFrom("^ab1", "^x-9"), { nil: null }),
@@ -501,8 +628,16 @@ function buildLine(r: GenLine, glues: readonly boolean[] = []): string {
 	if (r.rec !== null) parts.push(`🔁 ${r.rec}`);
 	if (r.start !== null) parts.push(`🛫 ${r.start}`);
 	if (r.scheduled !== null) parts.push(`⏳ ${r.scheduled}`);
-	if (r.due !== null)
-		parts.push(r.dueTime !== null ? `📅 ${r.due} ${r.dueTime}` : `📅 ${r.due}`);
+	if (r.due !== null) {
+		// конец интервала пишем только валидным (строго позже начала) — генератор
+		// строит канонические строки; невалидные комбинации покрыты голденами
+		let timeTail = "";
+		if (r.dueTime !== null) {
+			timeTail = ` ${r.dueTime}`;
+			if (r.dueTimeEnd !== null && r.dueTimeEnd > r.dueTime) timeTail += `-${r.dueTimeEnd}`;
+		}
+		parts.push(`📅 ${r.due}${timeTail}`);
+	}
 	if (r.id !== null) parts.push(`🆔 ${r.id}`);
 	if (r.deps !== null) parts.push(`⛔ ${r.deps.join(",")}`);
 	let line = `${r.indent}${r.bullet} [${r.status}]`;
@@ -568,14 +703,15 @@ describe("property: правка отражает ровно одно измен
 				const before = parseTaskLine(line, ctx())!;
 				const after = setField(line, f, null);
 				const t2 = parseTaskLine(after, ctx());
-				// удаление поля сносит и его время: оно живёт внутри payload токена
+				// удаление поля сносит и его время с концом интервала:
+				// они живут внутри payload токена
 				const timeNull =
 					f === "due"
-						? { dueTime: null }
+						? { dueTime: null, dueTimeEnd: null }
 						: f === "scheduled"
-							? { scheduledTime: null }
+							? { scheduledTime: null, scheduledTimeEnd: null }
 							: f === "start"
-								? { startTime: null }
+								? { startTime: null, startTimeEnd: null }
 								: {};
 				expect(t2).toEqual({ ...before, [f]: null, ...timeNull, rawLine: after });
 			}),
@@ -629,7 +765,10 @@ describe("property: после любой правки строка остаёт
 				expect(tokenizeTaskLine(line), line).not.toBeNull();
 				const outs = [
 					setField(line, "due", v),
-					setField(line, "due", v, "12:00"),
+					// 00:30 меньше любого генерируемого конца — сохранённый конец не конфликтует
+					setField(line, "due", v, "00:30"),
+					setField(line, "due", v, "12:00", null),
+					setField(line, "due", v, "12:00", "13:30"),
 					setField(line, "due", v, null),
 					setField(line, "due", null),
 					setField(line, "done", null),
@@ -679,6 +818,9 @@ describe("property: setDescription", () => {
 						"dueTime",
 						"scheduledTime",
 						"startTime",
+						"dueTimeEnd",
+						"scheduledTimeEnd",
+						"startTimeEnd",
 						"recurrence",
 						"taskId",
 						"spawnedFrom",
@@ -701,11 +843,40 @@ describe("property: setDescription", () => {
 		fc.assert(
 			fc.property(genArb, dateArb, timeArb, (r, d, hm) => {
 				const line = buildLine(r);
-				const after = setField(line, "due", d, hm);
+				// timeEnd = null явно: сохранённый конец из line мог бы конфликтовать с hm
+				const after = setField(line, "due", d, hm, null);
 				const t2 = parseTaskLine(after, ctx())!;
 				expect(t2.due).toBe(d);
 				expect(t2.dueTime).toBe(hm);
+				expect(t2.dueTimeEnd).toBeNull();
 			}),
+			{ numRuns: 300 },
+		);
+	});
+
+	it("setField(интервал) + parse: начало и конец читаются назад ровно теми же", () => {
+		// пара минут суток: меньшая — начало, большая — конец (строго позже)
+		const minuteArb = fc.integer({ min: 0, max: 24 * 60 - 1 });
+		const toHm = (n: number): string =>
+			`${String(Math.floor(n / 60)).padStart(2, "0")}:${String(n % 60).padStart(2, "0")}`;
+		fc.assert(
+			fc.property(
+				genArb,
+				dateArb,
+				fc.tuple(minuteArb, minuteArb).filter(([a, b]) => a !== b),
+				(r, d, [a, b]) => {
+					const start = toHm(Math.min(a, b));
+					const end = toHm(Math.max(a, b));
+					const line = buildLine(r);
+					const after = setField(line, "due", d, start, end);
+					const t2 = parseTaskLine(after, ctx())!;
+					expect(t2.due).toBe(d);
+					expect(t2.dueTime).toBe(start);
+					expect(t2.dueTimeEnd).toBe(end);
+					// повторная сериализация той же тройки — тождество (round-trip)
+					expect(setField(after, "due", d, start, end)).toBe(after);
+				},
+			),
 			{ numRuns: 300 },
 		);
 	});

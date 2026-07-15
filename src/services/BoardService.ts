@@ -53,6 +53,13 @@ export interface BoardColumnModel {
 	tasks: Task[];
 }
 
+/** Результат операций над колонками (создание/переименование). */
+export interface ColumnOpResult {
+	ok: boolean;
+	colId?: string;
+	reason?: string;
+}
+
 export interface BoardModel {
 	path: string;
 	def: BoardDef;
@@ -189,6 +196,66 @@ export class BoardService {
 			fm["order"] = patchOrder(normalizeOrder(fm["order"]), colId, orderedIds);
 		});
 	}
+
+	// --- колонки: создание и переименование ---
+
+	/**
+	 * Новая колонка в конце доски. colId — slug из имени (транслит кириллицы,
+	 * ASCII [a-z0-9-], уникальность против существующих; пустой slug → colN).
+	 *
+	 * Match новой колонки ВСЕГДА тег '#kanban/<board.id>/<colId>' — и на
+	 * status-досках тоже: смешанные match допустимы (membership режет по
+	 * match-спеку каждой колонки, не по group-by), а статус-бакетов всего три
+	 * и они обычно уже заняты — новая колонка со status-match была бы пустым
+	 * дублем или перехватывала бы чужие карточки.
+	 */
+	async addColumn(boardPath: string, name: string): Promise<ColumnOpResult> {
+		const trimmed = name.trim();
+		if (trimmed === "") return { ok: false, reason: "empty-name" };
+		const fm = this.deps.readFrontmatter(boardPath);
+		if (fm === null) return { ok: false, reason: "board-not-found" };
+		const parsed = parseBoardFrontmatter(fm);
+		if (isBoardError(parsed)) return { ok: false, reason: parsed.messages.join("; ") };
+
+		const colId = uniqueColId(trimmed, new Set(parsed.columns.map((c) => c.id)));
+		const match = `#kanban/${parsed.id}/${colId}`;
+		await this.deps.patchFrontmatter(boardPath, (live) => {
+			// живой frontmatter мутируем точечно: чужие ключи и формы не трогаем
+			const cols = Array.isArray(live["columns"]) ? (live["columns"] as unknown[]) : [];
+			cols.push({ id: colId, name: trimmed, match });
+			live["columns"] = cols;
+			const order = live["order"];
+			if (isPlainRecord(order)) order[colId] = [];
+			else live["order"] = { [colId]: [] };
+		});
+		return { ok: true, colId };
+	}
+
+	/**
+	 * Переименование меняет ТОЛЬКО display name колонки. Match (тег/статус)
+	 * намеренно не трогаем: смена тега потребовала бы переписать строки всех
+	 * задач колонки (массовая правка файлов) и «перекрасила» бы карточки —
+	 * переименование обязано быть косметическим и безопасным.
+	 */
+	async renameColumn(boardPath: string, colId: string, name: string): Promise<ColumnOpResult> {
+		const trimmed = name.trim();
+		if (trimmed === "") return { ok: false, reason: "empty-name" };
+		const fm = this.deps.readFrontmatter(boardPath);
+		if (fm === null) return { ok: false, reason: "board-not-found" };
+		const rawCols = fm["columns"];
+		const exists =
+			Array.isArray(rawCols) && rawCols.some((c) => isPlainRecord(c) && c["id"] === colId);
+		if (!exists) return { ok: false, reason: "column-not-found" };
+
+		await this.deps.patchFrontmatter(boardPath, (live) => {
+			const cols = live["columns"];
+			if (!Array.isArray(cols)) return; // гонка: frontmatter переписан между чтением и patch
+			for (const c of cols) {
+				if (isPlainRecord(c) && c["id"] === colId) c["name"] = trimmed;
+			}
+		});
+		return { ok: true, colId };
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -232,6 +299,54 @@ export function insertIntoColumnOrder(
 	const ids = rest.map((t) => t.taskId).filter((id): id is string => id !== null);
 	ids.splice(idPos, 0, movedId);
 	return ids;
+}
+
+/** Узкий guard «обычный объект-словарь» для живого frontmatter. */
+function isPlainRecord(v: unknown): v is Record<string, unknown> {
+	return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** Простая таблица транслитерации кириллицы для slug-ов колонок. */
+const CYRILLIC_TRANSLIT: Record<string, string> = {
+	а: "a", б: "b", в: "v", г: "g", д: "d", е: "e", ё: "e", ж: "zh",
+	з: "z", и: "i", й: "y", к: "k", л: "l", м: "m", н: "n", о: "o",
+	п: "p", р: "r", с: "s", т: "t", у: "u", ф: "f", х: "h", ц: "ts",
+	ч: "ch", ш: "sh", щ: "sch", ъ: "", ы: "y", ь: "", э: "e", ю: "yu", я: "ya",
+};
+
+/**
+ * Slug имени колонки: нижний регистр, кириллица → транслит, прочее → '-',
+ * серии дефисов схлопываются, крайние обрезаются. Только ASCII [a-z0-9-].
+ * Имя целиком из «прочего» (эмодзи, CJK) даёт пустую строку — caller
+ * подставит fallback colN.
+ */
+export function slugifyColumnName(name: string): string {
+	let out = "";
+	for (const ch of name.toLowerCase()) {
+		if (/^[a-z0-9]$/.test(ch)) {
+			out += ch;
+		} else {
+			const tr = CYRILLIC_TRANSLIT[ch];
+			out += tr !== undefined ? tr : "-";
+		}
+	}
+	return out.replace(/-+/g, "-").replace(/^-|-$/g, "");
+}
+
+/** Уникальный colId: slug имени; занят → суффикс -2, -3…; пустой slug → col1, col2… */
+export function uniqueColId(name: string, existing: ReadonlySet<string>): string {
+	const base = slugifyColumnName(name);
+	if (base === "") {
+		for (let n = 1; ; n++) {
+			const id = `col${n}`;
+			if (!existing.has(id)) return id;
+		}
+	}
+	if (!existing.has(base)) return base;
+	for (let n = 2; ; n++) {
+		const id = `${base}-${n}`;
+		if (!existing.has(id)) return id;
+	}
 }
 
 /** Ленивое чтение текущего order из живого frontmatter (форма не гарантирована). */

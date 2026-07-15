@@ -2,7 +2,15 @@ import { describe, expect, it } from "vitest";
 import type { Task } from "../../core/model/Task";
 import type { DeferPreset } from "../../settings/Settings";
 import { makeTask } from "../../stores/testSupport";
-import { buildMenuModel, type MenuItemModel, type MenuModelInput } from "./taskMenuModel";
+import {
+	buildMenuModel,
+	flattenSubmenu,
+	isSubmenuNode,
+	type MenuItemModel,
+	type MenuModelInput,
+	type MenuNode,
+	type MenuSubmenuModel,
+} from "./taskMenuModel";
 
 const TODAY = "2026-07-15";
 
@@ -25,14 +33,30 @@ function input(over: Partial<MenuModelInput> & { task?: Task } = {}): MenuModelI
 	};
 }
 
-function ids(items: MenuItemModel[]): string[] {
-	return items.map((i) => i.id);
+/** Листовые пункты в порядке обхода: верхний уровень + дети подменю. */
+function leaves(nodes: MenuNode[]): MenuItemModel[] {
+	const out: MenuItemModel[] = [];
+	for (const n of nodes) {
+		if (isSubmenuNode(n)) out.push(...n.children);
+		else out.push(n);
+	}
+	return out;
 }
 
-function byId(items: MenuItemModel[], id: string): MenuItemModel {
-	const found = items.find((i) => i.id === id);
+function ids(nodes: MenuNode[]): string[] {
+	return leaves(nodes).map((i) => i.id);
+}
+
+function byId(nodes: MenuNode[], id: string): MenuItemModel {
+	const found = leaves(nodes).find((i) => i.id === id);
 	expect(found, `пункт ${id} должен существовать`).toBeDefined();
 	return found!;
+}
+
+function submenuById(nodes: MenuNode[], id: string): MenuSubmenuModel {
+	const found = nodes.find((n) => isSubmenuNode(n) && n.id === id);
+	expect(found, `подменю ${id} должно существовать`).toBeDefined();
+	return found as MenuSubmenuModel;
 }
 
 describe("buildMenuModel: секции от портов", () => {
@@ -86,12 +110,27 @@ describe("buildMenuModel: ветка inTickler", () => {
 		});
 	});
 
+	it("«Вернуть во входящие» — верхний уровень, НЕ внутри подменю «Отложить…»", () => {
+		const task = makeTask({ filePath: "GTD/Inbox.md", start: "2026-08-01" });
+		const items = buildMenuModel(input({ task, inTickler: true }));
+		expect(items.some((n) => !isSubmenuNode(n) && n.id === "defer-return")).toBe(true);
+		expect(submenuById(items, "defer").children.map((c) => c.id)).not.toContain("defer-return");
+	});
+
 	it("вне тикля пункта нет", () => {
 		expect(ids(buildMenuModel(input()))).not.toContain("defer-return");
 	});
 });
 
 describe("buildMenuModel: статусные переключатели", () => {
+	it("статусные пункты НЕ группируются в подменю (верхний уровень)", () => {
+		const items = buildMenuModel(input());
+		const topIds = items.filter((n) => !isSubmenuNode(n)).map((n) => (n as MenuItemModel).id);
+		expect(topIds).toContain("status-done");
+		expect(topIds).toContain("status-doing");
+		expect(topIds).toContain("status-cancel");
+	});
+
 	it("открытая задача: выполнено (с датой), в работу, отменить (с датой)", () => {
 		const task = makeTask({ filePath: "a.md", statusChar: " " });
 		const items = buildMenuModel(input({ task }));
@@ -141,13 +180,54 @@ describe("buildMenuModel: статусные переключатели", () => 
 	});
 });
 
-describe("buildMenuModel: приоритет и отложить", () => {
-	it("checked стоит на текущем приоритете", () => {
+describe("buildMenuModel: подменю «Приоритет…»", () => {
+	it("подменю с 6 уровнями, заголовок и секция priority", () => {
+		const sub = submenuById(buildMenuModel(input()), "priority");
+		expect(sub.label).toBe("Приоритет…");
+		expect(sub.section).toBe("priority");
+		expect(sub.children.map((c) => c.id)).toEqual([
+			"priority-highest",
+			"priority-high",
+			"priority-medium",
+			"priority-low",
+			"priority-lowest",
+			"priority-none",
+		]);
+	});
+
+	it("checked стоит на текущем приоритете внутри детей", () => {
 		const task = makeTask({ filePath: "a.md", priority: "high" });
 		const items = buildMenuModel(input({ task }));
 		expect(byId(items, "priority-high").checked).toBe(true);
 		expect(byId(items, "priority-none").checked).toBe(false);
 		expect(byId(items, "priority-lowest").checked).toBe(false);
+	});
+
+	it("титулы детей без префикса «Приоритет: » (он появляется при сплющивании)", () => {
+		const sub = submenuById(buildMenuModel(input()), "priority");
+		for (const c of sub.children) expect(c.title.startsWith("Приоритет")).toBe(false);
+	});
+
+	it("дети несут set-priority интенты", () => {
+		const task = makeTask({ filePath: "a.md" });
+		const items = buildMenuModel(input({ task }));
+		expect(byId(items, "priority-high").action).toEqual({
+			kind: "intent",
+			intent: { type: "set-priority", key: task.key, priority: "high" },
+		});
+	});
+});
+
+describe("buildMenuModel: подменю «Отложить…» и «Запланировать…»", () => {
+	it("подменю: пресеты + «Дата…» последним ребёнком", () => {
+		const sub = submenuById(buildMenuModel(input()), "defer");
+		expect(sub.label).toBe("Отложить…");
+		expect(sub.children.map((c) => c.id)).toEqual([
+			"defer-preset-0",
+			"defer-preset-1",
+			"defer-date",
+		]);
+		expect(sub.children[sub.children.length - 1]!.title).toBe("Дата…");
 	});
 
 	it("пресеты отложки разворачиваются в абсолютные даты от today", () => {
@@ -163,28 +243,61 @@ describe("buildMenuModel: приоритет и отложить", () => {
 		});
 	});
 
-	it("«Запланировать…» и «Отложить: дата…» — интерактивные маркеры", () => {
+	it("«Запланировать…» — верхнеуровневый интерактивный маркер, «Дата…» — pick-defer", () => {
 		const items = buildMenuModel(input());
+		expect(items.some((n) => !isSubmenuNode(n) && n.id === "schedule-due")).toBe(true);
 		expect(byId(items, "schedule-due").action).toEqual({ kind: "pick-due" });
 		expect(byId(items, "defer-date").action).toEqual({ kind: "pick-defer" });
 	});
 });
 
+describe("flattenSubmenu: плоский фолбэк (мобайл / obsidian < 1.12)", () => {
+	it("приоритет: «Приоритет: ⏫ высокий» — как в плоском меню до подменю", () => {
+		const task = makeTask({ filePath: "a.md", priority: "high" });
+		const flat = flattenSubmenu(submenuById(buildMenuModel(input({ task })), "priority"));
+		const high = flat.find((i) => i.id === "priority-high")!;
+		expect(high.title).toBe("Приоритет: ⏫ высокий");
+		expect(high.checked).toBe(true); // checked/action/id сохраняются
+		expect(high.action).toEqual({
+			kind: "intent",
+			intent: { type: "set-priority", key: task.key, priority: "high" },
+		});
+	});
+
+	it("отложить: «Отложить: Завтра» и «Отложить: Дата…»", () => {
+		const flat = flattenSubmenu(submenuById(buildMenuModel(input()), "defer"));
+		expect(flat.map((i) => i.title)).toEqual([
+			"Отложить: Завтра",
+			"Отложить: Через неделю",
+			"Отложить: Дата…",
+		]);
+	});
+});
+
 describe("buildMenuModel: инварианты", () => {
-	it("id пунктов уникальны", () => {
-		const items = buildMenuModel(
-			input({ hasBoards: true, hasProjects: true, hasCards: true, hasTemplates: true, inTickler: true }),
+	it("id пунктов (включая узлы подменю и детей) уникальны", () => {
+		const nodes = buildMenuModel(
+			input({
+				hasBoards: true,
+				hasProjects: true,
+				hasCards: true,
+				hasTemplates: true,
+				inTickler: true,
+			}),
 		);
-		const got = ids(items);
-		expect(new Set(got).size).toBe(got.length);
+		// все id один раз: узлы верхнего уровня + дети подменю, без пересечений
+		const all = nodes.flatMap((n) =>
+			isSubmenuNode(n) ? [n.id, ...n.children.map((c) => c.id)] : [n.id],
+		);
+		expect(new Set(all).size).toBe(all.length);
 	});
 
 	it("порядок секций стабилен: status → priority → schedule → defer → move → card → nav", () => {
-		const items = buildMenuModel(
+		const nodes = buildMenuModel(
 			input({ hasBoards: true, hasProjects: true, hasCards: true, hasTemplates: true }),
 		);
 		const order = ["status", "priority", "schedule", "defer", "move", "card", "nav"];
-		const seen = items.map((i) => order.indexOf(i.section));
+		const seen = nodes.map((n) => order.indexOf(n.section));
 		for (let i = 1; i < seen.length; i++) expect(seen[i]! >= seen[i - 1]!).toBe(true);
 	});
 });

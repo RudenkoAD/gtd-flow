@@ -233,6 +233,99 @@ describe("tokenizeTaskLine: время в payload дата-полей (📅/⏳/
 	});
 });
 
+describe("tokenizeTaskLine: интервал времени «HH:mm-HH:mm» в payload (📅/⏳/🛫)", () => {
+	it("валидный интервал попадает в payload токена целиком", () => {
+		const t = tokenizeTaskLine("- [ ] T 📅 2026-07-25 14:30-16:00")!;
+		expect(fields(t.segments)[0]!.payload).toBe("2026-07-25 14:30-16:00");
+		expect(t.segments[t.segments.length - 1]!.kind).toBe("field"); // хвостового текста нет
+	});
+
+	it("⏳ и 🛫 тоже захватывают интервал", () => {
+		expect(
+			fields(tokenizeTaskLine("- [ ] T ⏳ 2026-01-01 00:00-23:59")!.segments)[0]!.payload,
+		).toBe("2026-01-01 00:00-23:59");
+		expect(
+			fields(tokenizeTaskLine("- [ ] T 🛫 2026-01-01 08:00-08:01")!.segments)[0]!.payload,
+		).toBe("2026-01-01 08:00-08:01");
+	});
+
+	it("конец НЕ позже начала — уходит тексту, начало остаётся в payload", () => {
+		for (const bad of ["13:00", "14:30", "00:00"]) {
+			const t = tokenizeTaskLine(`- [ ] T 📅 2026-07-25 14:30-${bad}`)!;
+			expect(fields(t.segments)[0]!.payload, bad).toBe("2026-07-25 14:30");
+			expect(t.segments[t.segments.length - 1]).toEqual({ kind: "text", text: `-${bad}` });
+		}
+	});
+
+	it("невалидный конец — уходит тексту, начало остаётся в payload", () => {
+		for (const bad of ["25:00", "9:30", "16:0", "16:00:00", "16:00x", ""]) {
+			const t = tokenizeTaskLine(`- [ ] T 📅 2026-07-25 14:30-${bad}`)!;
+			expect(fields(t.segments)[0]!.payload, bad).toBe("2026-07-25 14:30");
+			expect(t.segments[t.segments.length - 1]).toEqual({ kind: "text", text: `-${bad}` });
+		}
+	});
+
+	it("дефис с пробелами — не интервал (формат: дефис БЕЗ пробелов)", () => {
+		const t1 = tokenizeTaskLine("- [ ] T 📅 2026-07-25 14:30 -16:00")!;
+		expect(fields(t1.segments)[0]!.payload).toBe("2026-07-25 14:30");
+		expect(t1.segments[t1.segments.length - 1]).toEqual({ kind: "text", text: " -16:00" });
+		const t2 = tokenizeTaskLine("- [ ] T 📅 2026-07-25 14:30- 16:00")!;
+		expect(fields(t2.segments)[0]!.payload).toBe("2026-07-25 14:30");
+		expect(t2.segments[t2.segments.length - 1]).toEqual({ kind: "text", text: "- 16:00" });
+	});
+
+	it("невалидное начало ломает весь хвост, как раньше (дата не задета)", () => {
+		const t = tokenizeTaskLine("- [ ] T 📅 2026-07-25 25:00-26:00")!;
+		expect(fields(t.segments)[0]!.payload).toBe("2026-07-25");
+		expect(t.segments[t.segments.length - 1]).toEqual({ kind: "text", text: " 25:00-26:00" });
+	});
+
+	it("текст и следующее поле после интервала не съедаются", () => {
+		const t = tokenizeTaskLine("- [ ] T 📅 2026-07-25 14:30-16:00 rest")!;
+		expect(fields(t.segments)[0]!.payload).toBe("2026-07-25 14:30-16:00");
+		expect(t.segments[t.segments.length - 1]).toEqual({ kind: "text", text: " rest" });
+		const f = fields(tokenizeTaskLine("- [ ] T 📅 2026-07-25 14:30-16:00 ⏫")!.segments);
+		expect(f[0]!.payload).toBe("2026-07-25 14:30-16:00");
+		expect(f[1]!.field).toBe("priority");
+	});
+
+	it("у ✅/❌/➕/🔜 интервал — обычный текст", () => {
+		for (const emoji of ["✅", "❌", "➕", "🔜"]) {
+			const t = tokenizeTaskLine(`- [ ] T ${emoji} 2026-01-01 14:30-16:00`)!;
+			expect(fields(t.segments)[0]!.payload, emoji).toBe("2026-01-01");
+			expect(t.segments[t.segments.length - 1]).toEqual({ kind: "text", text: " 14:30-16:00" });
+		}
+	});
+
+	it("после офсета ±Nd интервал не захватывается (шаблоны)", () => {
+		expect(fields(tokenizeTaskLine("- [ ] Tpl 📅 +14d 14:30-16:00")!.segments)[0]!.payload).toBe(
+			"+14d",
+		);
+	});
+
+	it("NBSP между датой и интервалом захватывается дословно", () => {
+		const line = `- [ ] T 📅 2026-07-25${NBSP}14:30-16:00`;
+		const t = tokenizeTaskLine(line)!;
+		expect(fields(t.segments)[0]!.payload).toBe(`2026-07-25${NBSP}14:30-16:00`);
+		expect(serializeTokens(t)).toBe(line);
+	});
+
+	it("round-trip дословный для строк с интервалом", () => {
+		const lines = [
+			"- [ ] T 📅 2026-07-25 14:30-16:00",
+			"- [ ] T ⏳ 2026-01-01 00:00-00:01 🛫 2026-01-02 22:00-23:59 ^b1",
+			"- [ ] T 📅 2026-07-25 14:30-13:00 tail", // невалидный конец — текст, дословно
+			"- [ ] T 📅 2026-07-25 14:30-16:00 ⏫ rest\r",
+			"- [ ] T 📅 2026-07-25 14:30-",
+		];
+		for (const line of lines) {
+			const t = tokenizeTaskLine(line);
+			expect(t, JSON.stringify(line)).not.toBeNull();
+			expect(serializeTokens(t!)).toBe(line);
+		}
+	});
+});
+
 describe("tokenizeTaskLine: хвостовой \\r (CRLF-файл, разрезанный по \\n)", () => {
 	it("\\r отделяется в trailingCr, ^block-id распознаётся", () => {
 		const t = tokenizeTaskLine("- [ ] Task ^abc\r")!;

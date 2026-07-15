@@ -7,6 +7,8 @@ import {
 	insertIntoColumnOrder,
 	inScope,
 	normalizeOrder,
+	slugifyColumnName,
+	uniqueColId,
 } from "./BoardService";
 import type { IntentDispatcher, IntentResult } from "./WritebackService";
 
@@ -401,6 +403,153 @@ describe("BoardService.reorderCard", () => {
 			todo: ["a"],
 			doing: ["b", "c"],
 		});
+	});
+});
+
+// ---------------------------------------------------------------------------
+// addColumn / renameColumn
+// ---------------------------------------------------------------------------
+
+describe("BoardService.addColumn", () => {
+	let h: Harness;
+	beforeEach(() => {
+		h = makeHarness();
+		h.frontmatters.set("Board.md", {
+			"gtd-board": true,
+			id: "dev",
+			columns: [
+				{ id: "todo", name: "Todo", match: "#kanban/dev/todo" },
+				{ id: "doing", name: "Doing", match: "#kanban/dev/doing" },
+			],
+			order: { todo: ["a"] },
+		});
+	});
+
+	it("добавляет колонку с tag-match и пустым order", async () => {
+		const res = await h.service.addColumn("Board.md", "Review");
+		expect(res).toEqual({ ok: true, colId: "review" });
+		const fm = h.frontmatters.get("Board.md")!;
+		expect(fm["columns"]).toEqual([
+			{ id: "todo", name: "Todo", match: "#kanban/dev/todo" },
+			{ id: "doing", name: "Doing", match: "#kanban/dev/doing" },
+			{ id: "review", name: "Review", match: "#kanban/dev/review" },
+		]);
+		// существующий порядок не тронут, новой колонке — пустой список
+		expect(fm["order"]).toEqual({ todo: ["a"], review: [] });
+	});
+
+	it("кириллическое имя транслитерируется в slug", async () => {
+		const res = await h.service.addColumn("Board.md", "В работе");
+		expect(res).toEqual({ ok: true, colId: "v-rabote" });
+		const cols = h.frontmatters.get("Board.md")!["columns"] as Array<Record<string, unknown>>;
+		expect(cols[2]).toEqual({ id: "v-rabote", name: "В работе", match: "#kanban/dev/v-rabote" });
+	});
+
+	it("коллизия id разрешается суффиксом", async () => {
+		const res = await h.service.addColumn("Board.md", "Todo");
+		expect(res).toEqual({ ok: true, colId: "todo-2" });
+	});
+
+	it("имя без ASCII/кириллицы — fallback colN", async () => {
+		const res = await h.service.addColumn("Board.md", "🔥🔥");
+		expect(res).toEqual({ ok: true, colId: "col1" });
+		const cols = h.frontmatters.get("Board.md")!["columns"] as Array<Record<string, unknown>>;
+		expect(cols[2]!["match"]).toBe("#kanban/dev/col1");
+	});
+
+	it("на status-доске новая колонка ВСЁ РАВНО tag-match (смешанные match допустимы)", async () => {
+		h.frontmatters.set("st.md", {
+			id: "st",
+			"group-by": "status",
+			columns: [{ id: "todo", match: "status:todo" }],
+		});
+		const res = await h.service.addColumn("st.md", "Ожидает");
+		expect(res).toEqual({ ok: true, colId: "ozhidaet" });
+		const cols = h.frontmatters.get("st.md")!["columns"] as Array<Record<string, unknown>>;
+		expect(cols[1]!["match"]).toBe("#kanban/st/ozhidaet");
+		// order отсутствовал во frontmatter — создаётся с пустым списком
+		expect(h.frontmatters.get("st.md")!["order"]).toEqual({ ozhidaet: [] });
+	});
+
+	it("нет frontmatter / битая доска / пустое имя — отказ без записей", async () => {
+		expect(await h.service.addColumn("gone.md", "X")).toEqual({
+			ok: false,
+			reason: "board-not-found",
+		});
+		h.frontmatters.set("bad.md", { "gtd-board": true }); // нет id и columns
+		const bad = await h.service.addColumn("bad.md", "X");
+		expect(bad.ok).toBe(false);
+		expect(bad.reason).toMatch(/columns/);
+		expect(await h.service.addColumn("Board.md", "   ")).toEqual({
+			ok: false,
+			reason: "empty-name",
+		});
+		expect(h.patched).toEqual([]);
+	});
+});
+
+describe("BoardService.renameColumn", () => {
+	let h: Harness;
+	beforeEach(() => {
+		h = makeHarness();
+		h.frontmatters.set("Board.md", {
+			id: "dev",
+			columns: [
+				{ id: "todo", name: "Todo", match: "#kanban/dev/todo" },
+				{ id: "doing", name: "Doing", match: "#kanban/dev/doing" },
+			],
+		});
+	});
+
+	it("меняет только display name — match и id не тронуты", async () => {
+		const res = await h.service.renameColumn("Board.md", "todo", "Очередь");
+		expect(res).toEqual({ ok: true, colId: "todo" });
+		expect(h.frontmatters.get("Board.md")!["columns"]).toEqual([
+			{ id: "todo", name: "Очередь", match: "#kanban/dev/todo" },
+			{ id: "doing", name: "Doing", match: "#kanban/dev/doing" },
+		]);
+	});
+
+	it("несуществующая колонка / пустое имя / нет доски — отказ без записей", async () => {
+		expect(await h.service.renameColumn("Board.md", "ghost", "X")).toEqual({
+			ok: false,
+			reason: "column-not-found",
+		});
+		expect(await h.service.renameColumn("Board.md", "todo", "  ")).toEqual({
+			ok: false,
+			reason: "empty-name",
+		});
+		expect(await h.service.renameColumn("gone.md", "todo", "X")).toEqual({
+			ok: false,
+			reason: "board-not-found",
+		});
+		expect(h.patched).toEqual([]);
+	});
+});
+
+describe("slugifyColumnName / uniqueColId", () => {
+	it("латиница, пробелы и мусорные символы", () => {
+		expect(slugifyColumnName("In Progress")).toBe("in-progress");
+		expect(slugifyColumnName("  Done!!  ")).toBe("done");
+		expect(slugifyColumnName("a--b__c")).toBe("a-b-c");
+	});
+
+	it("кириллица по таблице, включая шипящие и мягкий знак", () => {
+		expect(slugifyColumnName("Ждущие")).toBe("zhduschie");
+		expect(slugifyColumnName("Проверь ёж")).toBe("prover-ezh");
+		expect(slugifyColumnName("Юля")).toBe("yulya");
+	});
+
+	it("пусто/эмодзи → пустой slug; uniqueColId даёт colN", () => {
+		expect(slugifyColumnName("🔥")).toBe("");
+		expect(uniqueColId("🔥", new Set())).toBe("col1");
+		expect(uniqueColId("🔥", new Set(["col1", "col2"]))).toBe("col3");
+	});
+
+	it("коллизии получают числовой суффикс", () => {
+		expect(uniqueColId("Todo", new Set(["doing"]))).toBe("todo");
+		expect(uniqueColId("Todo", new Set(["todo"]))).toBe("todo-2");
+		expect(uniqueColId("Todo", new Set(["todo", "todo-2"]))).toBe("todo-3");
 	});
 });
 

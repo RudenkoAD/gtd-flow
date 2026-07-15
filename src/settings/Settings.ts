@@ -11,7 +11,9 @@ export interface DeferPreset {
 }
 
 export interface GtdFlowSettings {
-	/** Файлы/папки, задачи которых force-include во входящие. */
+	/** Файлы/папки-цели ЗАПИСИ захвата (quick-add, spawn). С фидбек-раунда 2
+	 *  это НЕ force-include запроса входящих: «задача с датой — уже разобрана»,
+	 *  формула входящих смотрит только на состояние задачи, не на её файл. */
 	inboxSources: string[];
 	/** Как определяется hasProject вне gtd-project файлов. */
 	projectStrategy: "tag" | "folder";

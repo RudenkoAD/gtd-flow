@@ -7,8 +7,10 @@
  *   поле остаётся null, офсет живёт в rawLine и разворачивается движком повторов.
  * - Невалидный payload даты тоже даёт null (но токен уже вырезан из description).
  * - У 📅/⏳/🛫 payload может нести время «HH:mm» после даты → dueTime/scheduledTime/
- *   startTime; невалидное время в payload не попадает (токенизатор оставляет его
- *   тексту), поэтому дата при этом парсится штатно, время = null.
+ *   startTime и конец интервала «-HH:mm» сразу за ним → dueTimeEnd/scheduledTimeEnd/
+ *   startTimeEnd; невалидное время (и невалидный/не больший конец) в payload не
+ *   попадает (токенизатор оставляет его тексту), поэтому дата при этом парсится
+ *   штатно, время/конец = null.
  * - description: текст без токенов полей, схлопнутые пробелы, trim; теги ОСТАЮТСЯ
  *   в description и дополнительно собираются в tags[] (с '#', без дублей).
  */
@@ -71,17 +73,35 @@ export function parseDatePayload(payload: string): DatePayload {
 	return { kind: "invalid", raw: payload };
 }
 
-/** Отщепить опциональное время «HH:mm» от payload дата-поля 📅/⏳/🛫.
- *  Токенизатор кладёт время в payload только валидным, но здесь перепроверяем
- *  тем же TIME_RE — функция обязана быть корректной на произвольной строке
- *  (её использует и setField для «сохранить существующее время»). */
+/** Отщепить опциональное время «HH:mm[-HH:mm]» от payload дата-поля 📅/⏳/🛫.
+ *  Токенизатор кладёт время (и конец интервала) в payload только валидным, но
+ *  здесь перепроверяем тем же TIME_RE — функция обязана быть корректной на
+ *  произвольной строке (её использует и setField для «сохранить существующее
+ *  время»). Мусорный хвост ⇒ весь payload считается datePart (и не пройдёт
+ *  parseDatePayload) — как и раньше для невалидного времени. */
 export function splitDateTimePayload(payload: string): {
 	datePart: string;
 	time: string | null;
+	timeEnd: string | null;
 } {
 	const m = /^(\S+)\s+(\S+)$/.exec(payload);
-	if (m !== null && TIME_RE.test(m[2]!)) return { datePart: m[1]!, time: m[2]! };
-	return { datePart: payload, time: null };
+	if (m !== null) {
+		const tok = m[2]!;
+		if (TIME_RE.test(tok)) return { datePart: m[1]!, time: tok, timeEnd: null };
+		// интервал «14:30-16:00»: «HH:mm» — ровно 5 символов, дефис без пробелов;
+		// конец обязан быть валидным и СТРОГО позже начала (лексикографика == хронология)
+		const startPart = tok.slice(0, 5);
+		const endPart = tok.slice(6);
+		if (
+			tok.charAt(5) === "-" &&
+			TIME_RE.test(startPart) &&
+			TIME_RE.test(endPart) &&
+			endPart > startPart
+		) {
+			return { datePart: m[1]!, time: startPart, timeEnd: endPart };
+		}
+	}
+	return { datePart: payload, time: null, timeEnd: null };
 }
 
 /** U+FE0F не участвует в таблицах эмодзи — срезаем перед поиском приоритета. */
@@ -108,6 +128,11 @@ export function parseTaskLine(rawLine: string, ctx: ParseContext): Task | null {
 	};
 	// время только у 📅/⏳/🛫; при дублях поля — как и дата — побеждает последнее
 	const times: Record<TimedDateFieldName, string | null> = {
+		due: null,
+		scheduled: null,
+		start: null,
+	};
+	const timeEnds: Record<TimedDateFieldName, string | null> = {
 		due: null,
 		scheduled: null,
 		start: null,
@@ -155,11 +180,12 @@ export function parseTaskLine(rawLine: string, ctx: ParseContext): Task | null {
 			}
 			default: {
 				if (isTimedDateField(seg.field)) {
-					const { datePart, time } = splitDateTimePayload(seg.payload);
+					const { datePart, time, timeEnd } = splitDateTimePayload(seg.payload);
 					const parsed = parseDatePayload(datePart);
 					const ok = parsed.kind === "date";
 					dates[seg.field] = ok ? parsed.date : null;
 					times[seg.field] = ok ? time : null;
+					timeEnds[seg.field] = ok ? timeEnd : null;
 				} else {
 					const parsed = parseDatePayload(seg.payload);
 					dates[seg.field] = parsed.kind === "date" ? parsed.date : null;
@@ -192,6 +218,9 @@ export function parseTaskLine(rawLine: string, ctx: ParseContext): Task | null {
 		dueTime: times.due,
 		scheduledTime: times.scheduled,
 		startTime: times.start,
+		dueTimeEnd: timeEnds.due,
+		scheduledTimeEnd: timeEnds.scheduled,
+		startTimeEnd: timeEnds.start,
 		recurrence,
 		nextSpawn: dates.nextSpawn,
 		spawnedFrom,

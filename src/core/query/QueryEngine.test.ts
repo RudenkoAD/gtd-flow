@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Task } from "../model/Task";
 import { evaluate, isInTickler, type QueryContext } from "./QueryEngine";
-import { defaultInboxConfig, matchesInboxSource } from "./querySpec";
+import { defaultInboxConfig } from "./querySpec";
 
 const TODAY = "2026-07-15";
 
@@ -28,6 +28,9 @@ function makeTask(overrides: Partial<Task> = {}): Task {
 		dueTime: null,
 		scheduledTime: null,
 		startTime: null,
+		dueTimeEnd: null,
+		scheduledTimeEnd: null,
+		startTimeEnd: null,
 		recurrence: null,
 		nextSpawn: null,
 		spawnedFrom: null,
@@ -40,12 +43,12 @@ function makeTask(overrides: Partial<Task> = {}): Task {
 	};
 }
 
-function ctxOf(tasks: Task[], sources: string[] = ["GTD/Inbox.md", "GTD/Capture/"]): QueryContext {
+function ctxOf(tasks: Task[]): QueryContext {
 	return {
 		tasks,
 		today: TODAY,
 		resolveDep: (id) => tasks.filter((t) => t.taskId === id),
-		settingsBits: defaultInboxConfig(sources),
+		settingsBits: defaultInboxConfig(),
 	};
 }
 
@@ -53,105 +56,92 @@ function inboxKeys(tasks: Task[]): string[] {
 	return evaluate({ kind: "inbox" }, ctxOf(tasks)).map((t) => t.key);
 }
 
-describe("matchesInboxSource", () => {
-	it("точный файл", () => {
-		expect(matchesInboxSource("GTD/Inbox.md", ["GTD/Inbox.md"])).toBe(true);
-		expect(matchesInboxSource("GTD/Inbox.md.bak", ["GTD/Inbox.md"])).toBe(false);
-	});
-
-	it("папка с завершающим слэшем и без", () => {
-		expect(matchesInboxSource("GTD/Capture/phone.md", ["GTD/Capture/"])).toBe(true);
-		expect(matchesInboxSource("GTD/Capture/phone.md", ["GTD/Capture"])).toBe(true);
-	});
-
-	it("префикс только по границе сегмента", () => {
-		expect(matchesInboxSource("GTD/CaptureX.md", ["GTD/Capture"])).toBe(false);
-		expect(matchesInboxSource("GTD/Inbox.md", ["GTD/In"])).toBe(false);
-	});
-});
-
-describe("inbox — три ветки §1", () => {
-	it("ветка 2: захвачено и не разобрано (без тега доски, проекта и due)", () => {
+describe("inbox — упрощённая формула §1 (фидбек-раунд 2: «задача с датой — уже разобрана»)", () => {
+	it("захвачено и не разобрано (без тега доски, проекта и due) — во входящих", () => {
 		const t = makeTask();
 		expect(inboxKeys([t])).toEqual([t.key]);
 	});
 
-	it("ветка 2: hasDue исключает", () => {
+	it("задача без даты — во входящих из ЛЮБОГО файла (понятие источника из запроса ушло)", () => {
+		const anywhere = makeTask({ filePath: "Заметки/случайный файл.md" });
+		const inCapture = makeTask({ filePath: "GTD/Capture/phone.md" });
+		expect(inboxKeys([anywhere, inCapture]).sort()).toEqual(
+			[anywhere.key, inCapture.key].sort(),
+		);
+	});
+
+	it("hasDue исключает", () => {
 		const t = makeTask({ due: "2026-07-20" });
 		expect(inboxKeys([t])).toEqual([]);
 	});
 
-	it("ветка 2: тег доски исключает", () => {
+	it("hasDue исключает и в бывшем файле-источнике: задача с 📅 в GTD/Inbox.md — НЕ во входящих", () => {
+		// force-include упразднён: планирование задачи прямо в Inbox.md — это разбор
+		const t = makeTask({ filePath: "GTD/Inbox.md", due: "2026-07-20" });
+		expect(inboxKeys([t])).toEqual([]);
+	});
+
+	it("тег доски исключает", () => {
 		const t = makeTask({ tags: ["#kanban/work/todo"] });
 		expect(inboxKeys([t])).toEqual([]);
 	});
 
-	it("ветка 2: container board (status-доска) исключает даже без тегов и due", () => {
+	it("container board (status-доска) исключает даже без тегов и due", () => {
 		// задача в файле gtd-board: true с group-by: status — разобрана по колонке,
 		// во входящие попадать не должна (регресс: двойное присутствие доска+inbox)
 		const t = makeTask({ filePath: "Boards/dev.md", container: "board" });
 		expect(inboxKeys([t])).toEqual([]);
 	});
 
-	it("ветка 1: force-include НЕ спасает container board (разобранное — не во входящих)", () => {
+	it("container board в GTD/Inbox.md — не во входящих (разобранное — не во входящих)", () => {
 		const t = makeTask({ filePath: "GTD/Inbox.md", container: "board" });
 		expect(inboxKeys([t])).toEqual([]);
 	});
 
-	it("ветка 3: проект отдал готовую задачу", () => {
+	it("регрессия живого теста: drag на доску прямо из Inbox.md убирает из входящих", () => {
+		// Карточка получила #kanban/... прямо в Inbox.md — разобрана (!hasBoardTag).
+		const t = makeTask({ filePath: "GTD/Inbox.md", tags: ["#kanban/work/doing"] });
+		expect(inboxKeys([t])).toEqual([]);
+	});
+
+	it("проект отдал готовую задачу", () => {
 		const done = makeTask({ taskId: "a1", statusChar: "x", container: "project" });
 		const t = makeTask({ container: "project", dependsOn: ["a1"] });
 		expect(inboxKeys([done, t])).toEqual([t.key]);
 	});
 
-	it("ветка 3: projectActive=false исключает (on-hold/архив)", () => {
+	it("projectActive=false исключает (on-hold/архив)", () => {
 		const t = makeTask({ container: "project", projectActive: false });
 		expect(inboxKeys([t])).toEqual([]);
 	});
 
-	it("ветка 3: не ready (невыполненная ⛔) исключает", () => {
+	it("не ready (невыполненная ⛔) исключает", () => {
 		const dep = makeTask({ taskId: "a1", statusChar: " ", container: "project" });
 		const t = makeTask({ container: "project", dependsOn: ["a1"] });
 		expect(inboxKeys([dep, t])).toEqual([dep.key]); // сам dep — корень без ⛔, он ready
 	});
 
-	it("ветка 3: тег доски исключает даже готовую задачу проекта", () => {
+	it("тег доски исключает даже готовую задачу проекта", () => {
 		const t = makeTask({ container: "project", tags: ["#kanban/work/todo"] });
 		expect(inboxKeys([t])).toEqual([]);
 	});
 
-	it("ветка 1: файл-источник force-include (несмотря на due)", () => {
-		const t = makeTask({ filePath: "GTD/Inbox.md", due: "2026-07-20" });
-		expect(inboxKeys([t])).toEqual([t.key]);
-	});
-
-	it("ветка 1 (регрессия живого теста): drag на доску из файла-источника убирает из входящих", () => {
-		// Карточка получила #kanban/... прямо в Inbox.md — разобрана, force-include уступает.
-		const t = makeTask({ filePath: "GTD/Inbox.md", tags: ["#kanban/work/doing"] });
+	it("hasDue глобален: готовая задача проекта с 📅 — не во входящих", () => {
+		const t = makeTask({ container: "project", due: "2026-07-20" });
 		expect(inboxKeys([t])).toEqual([]);
 	});
 
-	it("ветка 1: папка-источник force-include", () => {
-		const t = makeTask({ filePath: "GTD/Capture/phone.md", due: "2026-07-20" });
-		expect(inboxKeys([t])).toEqual([t.key]);
-	});
-
-	it("ветка 1: НЕ спасает неактивные (done/отложенные/шаблоны)", () => {
+	it("неактивные (done/отложенные/шаблоны) — не во входящих независимо от файла", () => {
 		const done = makeTask({ filePath: "GTD/Inbox.md", statusChar: "x" });
 		const deferred = makeTask({ filePath: "GTD/Inbox.md", start: "2026-08-01" });
 		const template = makeTask({ filePath: "GTD/Inbox.md", container: "recurring" });
 		expect(inboxKeys([done, deferred, template])).toEqual([]);
 	});
-
-	it("похожий путь — не источник: GTD/CaptureX.md с due не во входящих", () => {
-		const t = makeTask({ filePath: "GTD/CaptureX.md", due: "2026-07-20" });
-		expect(inboxKeys([t])).toEqual([]);
-	});
 });
 
 describe("inbox — сортировка", () => {
 	it("приоритет по убыванию, затем created по возрастанию (null в конец)", () => {
-		// все в файле-источнике, чтобы все прошли фильтр
+		// все без даты/тегов/проекта — все проходят фильтр входящих
 		const plain = makeTask({ filePath: "GTD/Inbox.md", priority: "none" });
 		const top = makeTask({ filePath: "GTD/Inbox.md", priority: "highest" });
 		const highLate = makeTask({

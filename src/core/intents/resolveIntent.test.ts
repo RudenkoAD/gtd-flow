@@ -71,6 +71,58 @@ describe("resolveLineTransform — однострочные intents", () => {
 		expect(out).not.toContain("14:30");
 	});
 
+	it("set-date: time + timeEnd пишут «📅 дата HH:mm-HH:mm»", () => {
+		const out = resolveLineTransform(
+			{
+				type: "set-date",
+				key: "k",
+				field: "due",
+				date: "2026-07-25",
+				time: "14:30",
+				timeEnd: "16:00",
+			},
+			"- [ ] Врач",
+		);
+		expect(out).toContain("📅 2026-07-25 14:30-16:00");
+	});
+
+	it("set-date: time и timeEnd опущены — интервал сохраняется (drag по дням)", () => {
+		const out = resolveLineTransform(
+			{ type: "set-date", key: "k", field: "due", date: "2026-07-26" },
+			"- [ ] Врач 📅 2026-07-25 14:30-16:00",
+		);
+		expect(out).toContain("📅 2026-07-26 14:30-16:00");
+	});
+
+	it("set-date: timeEnd = null снимает конец, время начала остаётся", () => {
+		const out = resolveLineTransform(
+			{ type: "set-date", key: "k", field: "due", date: "2026-07-25", timeEnd: null },
+			"- [ ] Врач 📅 2026-07-25 14:30-16:00",
+		);
+		expect(out).toContain("📅 2026-07-25 14:30");
+		expect(out).not.toContain("16:00");
+	});
+
+	it("set-date: time = null сносит и время, и конец", () => {
+		const out = resolveLineTransform(
+			{ type: "set-date", key: "k", field: "due", date: "2026-07-25", time: null },
+			"- [ ] Врач 📅 2026-07-25 14:30-16:00",
+		);
+		expect(out).toContain("📅 2026-07-25");
+		expect(out).not.toContain("14:30");
+		expect(out).not.toContain("16:00");
+	});
+
+	it("set-date: date = null сносит поле вместе с интервалом", () => {
+		const out = resolveLineTransform(
+			{ type: "set-date", key: "k", field: "due", date: null },
+			"- [ ] Врач 📅 2026-07-25 14:30-16:00",
+		);
+		expect(out).not.toContain("📅");
+		expect(out).not.toContain("14:30");
+		expect(out).not.toContain("16:00");
+	});
+
 	it("set-text: заменяет описание, поля и ^block-id нетронуты", () => {
 		const out = resolveLineTransform(
 			{ type: "set-text", key: "k", text: "Новое описание #next" },

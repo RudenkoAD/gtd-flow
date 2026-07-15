@@ -77,6 +77,14 @@ export interface Task {
 	scheduledTime: string | null;
 	startTime: string | null;
 
+	// --- конец интервала (опциональный хвост "-HH:mm" сразу за временем начала) ---
+	// Формат на диске: "📅 2026-07-25 14:30-16:00" — дефис БЕЗ пробелов.
+	// Валиден только при валидном времени начала и СТРОГО позже него;
+	// невалидный/не больший конец уходит тексту, дату и время начала не ломает.
+	dueTimeEnd: string | null;
+	scheduledTimeEnd: string | null;
+	startTimeEnd: string | null;
+
 	// --- регулярные ---
 	/** 🔁 — текст правила, хранится дословно. */
 	recurrence: string | null;

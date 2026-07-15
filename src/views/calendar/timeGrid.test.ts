@@ -8,13 +8,15 @@ import {
 	layoutDay,
 	minutesFromOffsetY,
 	minutesToTime,
+	preservedTimeEnd,
+	resizeEndMin,
 	snapMinutes,
 	timeToMinutes,
 	type TimedEventInput,
 } from "./timeGrid";
 
-function ev(key: string, time: string | null): TimedEventInput {
-	return { key, time };
+function ev(key: string, time: string | null, timeEnd: string | null = null): TimedEventInput {
+	return { key, time, timeEnd };
 }
 
 describe("константы сетки", () => {
@@ -137,6 +139,140 @@ describe("layoutDay — позиционирование ровно по вре�
 
 	it("пустой вход — пустая раскладка", () => {
 		expect(layoutDay([])).toEqual({ timed: [], allDay: [] });
+	});
+});
+
+describe("layoutDay — реальная длительность (timeEnd)", () => {
+	it("событие с концом: высота = (end − start) минуты, endMin реальный", () => {
+		const { timed } = layoutDay([ev("a", "14:30", "16:00")]);
+		const a = timed[0]!;
+		expect(a.startMin).toBe(870);
+		expect(a.endMin).toBe(960);
+		expect(a.hasEnd).toBe(true);
+		expect(a.heightPct).toBeCloseTo((90 / 1440) * 100, 10);
+	});
+
+	it("без конца — прежняя визуальная длительность 45 мин", () => {
+		const { timed } = layoutDay([ev("a", "10:00")]);
+		expect(timed[0]!.endMin).toBe(645);
+		expect(timed[0]!.hasEnd).toBe(false);
+		expect(timed[0]!.heightPct).toBeCloseTo((EVENT_DURATION_MIN / 1440) * 100, 10);
+	});
+
+	it("timeEnd не передан (поле опционально) — как без конца", () => {
+		const { timed } = layoutDay([{ key: "a", time: "10:00" }]);
+		expect(timed[0]!.endMin).toBe(645);
+		expect(timed[0]!.hasEnd).toBe(false);
+	});
+
+	it("битый конец — защитно игнорируется, начало не ломает", () => {
+		const { timed, allDay } = layoutDay([ev("a", "10:00", "25:00"), ev("b", "11:00", "xx")]);
+		expect(allDay).toEqual([]);
+		expect(timed.map((t) => [t.key, t.hasEnd, t.endMin - t.startMin])).toEqual([
+			["a", false, EVENT_DURATION_MIN],
+			["b", false, EVENT_DURATION_MIN],
+		]);
+	});
+
+	it("конец не позже начала — игнорируется (контракт: строго позже)", () => {
+		const { timed } = layoutDay([ev("a", "10:00", "10:00"), ev("b", "12:00", "11:00")]);
+		expect(timed.map((t) => t.hasEnd)).toEqual([false, false]);
+		expect(timed.map((t) => t.endMin - t.startMin)).toEqual([
+			EVENT_DURATION_MIN,
+			EVENT_DURATION_MIN,
+		]);
+	});
+
+	it("хвост суток: 45-минутный дефолт от 23:30 капнут к 24:00", () => {
+		const { timed } = layoutDay([ev("a", "23:30")]);
+		expect(timed[0]!.endMin).toBe(MINUTES_PER_DAY);
+		expect(timed[0]!.topPct + timed[0]!.heightPct).toBeCloseTo(100, 10);
+	});
+});
+
+describe("layoutDay — дорожки по РЕАЛЬНЫМ интервалам", () => {
+	it("длинное событие пересекает то, что фикс-45 не задел бы", () => {
+		// a 10:00–12:00; b 11:30 (при фикс. 45 мин a кончился бы в 10:45)
+		const { timed } = layoutDay([ev("a", "10:00", "12:00"), ev("b", "11:30")]);
+		expect(timed.map((t) => [t.key, t.laneIndex, t.laneCount])).toEqual([
+			["a", 0, 2],
+			["b", 1, 2],
+		]);
+	});
+
+	it("короткое событие освобождает дорожку раньше 45 мин", () => {
+		// a 10:00–10:15; b 10:20 — при фикс. 45 пересеклись бы, реально нет
+		const { timed } = layoutDay([ev("a", "10:00", "10:15"), ev("b", "10:20")]);
+		expect(timed.map((t) => [t.laneIndex, t.laneCount])).toEqual([
+			[0, 1],
+			[0, 1],
+		]);
+	});
+
+	it("конец исключающий и для реальных интервалов: 10:00–10:30 и 10:30", () => {
+		const { timed } = layoutDay([ev("a", "10:00", "10:30"), ev("b", "10:30")]);
+		expect(timed.map((t) => [t.laneIndex, t.laneCount])).toEqual([
+			[0, 1],
+			[0, 1],
+		]);
+	});
+
+	it("кластер держится, пока идёт длинное: 09:00–12:00 накрывает 10:00 и 11:00", () => {
+		const { timed } = layoutDay([
+			ev("long", "09:00", "12:00"),
+			ev("b", "10:00"),
+			ev("c", "11:00"),
+		]);
+		// b 10:00–10:45 (lane 1); c 11:00 ≥ 10:45 — переиспользует lane 1;
+		// кластер общий (clusterMaxEnd 12:00) — laneCount 2 у всех
+		expect(timed.map((t) => [t.key, t.laneIndex, t.laneCount])).toEqual([
+			["long", 0, 2],
+			["b", 1, 2],
+			["c", 1, 2],
+		]);
+	});
+});
+
+describe("resizeEndMin — снап конца при resize за нижний край", () => {
+	it("снап к 15 минутам", () => {
+		expect(resizeEndMin(877, 600)).toBe(870);
+		expect(resizeEndMin(878, 600)).toBe(885);
+	});
+
+	it("минимум start + 15", () => {
+		expect(resizeEndMin(600, 600)).toBe(615);
+		expect(resizeEndMin(0, 600)).toBe(615);
+		expect(resizeEndMin(607, 600)).toBe(615); // снап 600 == start → поднимается
+	});
+
+	it("низ сетки — потолок 1440 (в строку уйдёт «23:59» через minutesToTime)", () => {
+		expect(resizeEndMin(1439, 600)).toBe(1440);
+		expect(minutesToTime(resizeEndMin(1439, 600))).toBe("23:59");
+	});
+});
+
+describe("preservedTimeEnd — перенос блока сохраняет длительность", () => {
+	it("новый старт + прежняя длительность", () => {
+		expect(preservedTimeEnd("14:30", "16:00", "09:00")).toBe("10:30");
+		expect(preservedTimeEnd("08:00", "08:15", "23:00")).toBe("23:15");
+	});
+
+	it("длительности не было — undefined (timeEnd интента не трогаем)", () => {
+		expect(preservedTimeEnd("14:30", null, "09:00")).toBeUndefined();
+		expect(preservedTimeEnd(null, null, "09:00")).toBeUndefined();
+	});
+
+	it("битые значения — undefined, а не мусор в set-date", () => {
+		expect(preservedTimeEnd("xx", "16:00", "09:00")).toBeUndefined();
+		expect(preservedTimeEnd("14:30", "24:60", "09:00")).toBeUndefined();
+		expect(preservedTimeEnd("16:00", "14:30", "09:00")).toBeUndefined(); // конец ≤ начала
+	});
+
+	it("хвост суток: конец клампится к 23:59, вырожденный — undefined", () => {
+		// 2 часа от 23:00 не помещаются — кламп к «23:59», но конец валиден
+		expect(preservedTimeEnd("10:00", "12:00", "23:00")).toBe("23:59");
+		// от 23:59 любой конец вырождается (не строго позже) — без конца
+		expect(preservedTimeEnd("10:00", "12:00", "23:59")).toBeUndefined();
 	});
 });
 

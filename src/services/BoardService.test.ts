@@ -246,6 +246,47 @@ describe("BoardService.moveCard", () => {
 		expect(h.frontmatters.get("Board.md")!["order"]).toEqual({ doing: ["a"] });
 	});
 
+	it("done-карточка в tag-колонку = reopen (живой фидбек-баг: тег писался «в никуда»)", async () => {
+		const t = boardTask({
+			filePath: "x.md",
+			taskId: "a",
+			key: "id:a",
+			statusChar: "x",
+			tags: ["#kanban/dev/todo", "#other"],
+		});
+		h.feed.replaceFile("x.md", [t]);
+
+		const res = await h.service.moveCard("Board.md", TAG_BOARD, "id:a", "doing", 0);
+		expect(res.ok).toBe(true);
+		expect(h.dispatcher.intents[0]).toEqual({
+			type: "move-column",
+			key: "id:a",
+			fromTag: "#kanban/dev/todo", // исходная колонка по резолву тега
+			toTag: "#kanban/dev/doing",
+			toStatusChar: " ", // намерение пользователя: вернуть в работу
+			index: 0, // fromTags нет: единственный тег доски уже в fromTag; #other чужой
+		});
+	});
+
+	it("reopen счищает залежавшиеся теги этой доски (кроме целевого и fromTag)", async () => {
+		const t = boardTask({
+			filePath: "x.md",
+			taskId: "a",
+			key: "id:a",
+			statusChar: "x",
+			tags: ["#kanban/dev/todo", "#kanban/dev/review", "#other"],
+		});
+		h.feed.replaceFile("x.md", [t]);
+
+		await h.service.moveCard("Board.md", TAG_BOARD, "id:a", "doing", 0);
+		expect(h.dispatcher.intents[0]).toMatchObject({
+			toTag: "#kanban/dev/doing",
+			toStatusChar: " ",
+			fromTag: "#kanban/dev/todo",
+			fromTags: ["#kanban/dev/review"], // счищен; #other (не доска) не тронут
+		});
+	});
+
 	it("вставка в позицию между существующими карточками колонки", async () => {
 		const mk = (id: string, tag: string): Task =>
 			boardTask({ filePath: "x.md", taskId: id, key: "id:" + id, tags: [tag] });

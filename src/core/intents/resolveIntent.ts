@@ -72,6 +72,7 @@ export function resolveLineTransform(intent: Intent, currentLine: string): strin
 			// intent.index (ручной порядок) — frontmatter доски, отдельная запись сервиса
 			let line = currentLine;
 			if (intent.fromTag !== null) line = removeTag(line, intent.fromTag);
+			for (const tag of intent.fromTags ?? []) line = removeTag(line, tag);
 			if (intent.toTag !== null) line = addTag(line, intent.toTag);
 			if (intent.toStatusChar !== undefined)
 				line = applyStatusWithDates(line, intent.toStatusChar, intent.date);

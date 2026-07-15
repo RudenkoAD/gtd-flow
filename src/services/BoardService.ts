@@ -155,8 +155,15 @@ export class BoardService {
 		const fromColId = resolveColumn(task, def);
 		if (fromColId !== toColId) {
 			const intent: MoveColumn = { type: "move-column", key: taskKey, fromTag: null, toTag: null };
-			if (toSpec.kind === "tag") intent.toTag = "#" + toSpec.tag;
-			else {
+			if (toSpec.kind === "tag") {
+				intent.toTag = "#" + toSpec.tag;
+				// Живой фидбек-баг: done-карточка видима только в status:done-колонке,
+				// и перенос её в рабочую колонку писал тег «в никуда» (карточка
+				// оставалась в «Готово»). Намерение пользователя очевидно — вернуть
+				// в работу: снимаем [x]/[-] (✅/❌ уйдут через applyStatusWithDates)…
+				const ch = task.statusChar;
+				if (ch === "x" || ch === "X" || ch === "-") intent.toStatusChar = " ";
+			} else {
 				intent.toStatusChar = STATUS_CHAR[toSpec.status];
 				// drag в статус-колонку = смена статуса: сопутствующие даты ✅/❌
 				// обязаны вести себя как у set-status (штамп при done, снятие при reopen)
@@ -165,6 +172,16 @@ export class BoardService {
 			const fromCol = fromColId !== null ? def.columns.find((c) => c.id === fromColId) : undefined;
 			const fromSpec = fromCol !== undefined ? parseMatchSpec(fromCol.match) : null;
 			if (fromSpec !== null && fromSpec.kind === "tag") intent.fromTag = "#" + fromSpec.tag;
+			if (intent.toStatusChar === " " && toSpec.kind === "tag") {
+				// …и при reopen снимаем ВСЕ теги колонок этой доски, кроме целевого и
+				// уже снимаемого fromTag, — иначе задача после снятия [x] уехала бы
+				// в старую колонку по давнему тегу (дубли removeTag недопустимы).
+				const prefix = `#kanban/${def.id}/`;
+				const extra = task.tags.filter(
+					(t) => t.startsWith(prefix) && t !== intent.toTag && t !== intent.fromTag,
+				);
+				if (extra.length > 0) intent.fromTags = extra;
+			}
 			intent.index = insertIndex;
 			const res = await this.deps.dispatcher.dispatch(intent);
 			if (!res.ok) return res; // фаза 1 не прошла — порядок не трогаем

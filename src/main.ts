@@ -131,7 +131,11 @@ export default class GtdFlowPlugin extends Plugin {
 			callback: () => void this.openGtdWorkspace(),
 		});
 
-		this.addRibbonIcon("inbox", "GTD Flow: Входящие", () => void this.activateView("inbox"));
+		// Ярлыки всех видов в ленте; порядок — как в VIEW_META (регистрация задаёт
+		// порядок иконок, пользователь может скрыть лишние через контекстное меню ленты).
+		for (const meta of Object.values(VIEW_META)) {
+			this.addRibbonIcon(meta.icon, meta.displayText, () => void this.activateView(meta.kind));
+		}
 	}
 
 	onunload(): void {

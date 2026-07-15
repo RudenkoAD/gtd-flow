@@ -39,18 +39,12 @@ function makeTask(over: Partial<Task> & { key: string }): Task {
 }
 
 function board(columns: BoardDef["columns"]): BoardDef {
-	return { id: "b", name: "b", groupBy: "tag", columns, order: {} };
+	return { id: "b", name: "b", groupBy: "tag", columns, skippedColumns: [], order: {} };
 }
 
 const tagBoard = board([
 	{ id: "todo", name: "todo", match: "#kanban/b/todo" },
 	{ id: "doing", name: "doing", match: "#kanban/b/doing" },
-]);
-
-const statusBoard = board([
-	{ id: "done", name: "done", match: "status:done" },
-	{ id: "doing", name: "doing", match: "status:doing" },
-	{ id: "todo", name: "todo", match: "status:todo" },
 ]);
 
 describe("resolveColumn: tag matching", () => {
@@ -77,18 +71,16 @@ describe("resolveColumn: tag matching", () => {
 	});
 });
 
-describe("resolveColumn: status matching", () => {
-	it("statusChar sets: done/doing/todo", () => {
-		expect(resolveColumn(makeTask({ key: "k", statusChar: "x" }), statusBoard)).toBe("done");
-		expect(resolveColumn(makeTask({ key: "k", statusChar: "X" }), statusBoard)).toBe("done");
-		expect(resolveColumn(makeTask({ key: "k", statusChar: "/" }), statusBoard)).toBe("doing");
-		expect(resolveColumn(makeTask({ key: "k", statusChar: " " }), statusBoard)).toBe("todo");
-		// нестандартный символ = todo
-		expect(resolveColumn(makeTask({ key: "k", statusChar: "?" }), statusBoard)).toBe("todo");
+describe("resolveColumn: статус на членство не влияет (раунд 3)", () => {
+	it("задача любого статуса ложится в свою тег-колонку", () => {
+		for (const statusChar of [" ", "/", "x", "X", "-"]) {
+			const t = makeTask({ key: "k", statusChar, tags: ["#kanban/b/todo"] });
+			expect(resolveColumn(t, tagBoard)).toBe("todo");
+		}
 	});
 
-	it("cancelled '-' matches no status column", () => {
-		expect(resolveColumn(makeTask({ key: "k", statusChar: "-" }), statusBoard)).toBeNull();
+	it("без подходящего тега — null, какой бы ни был статус", () => {
+		expect(resolveColumn(makeTask({ key: "k", statusChar: "x" }), tagBoard)).toBeNull();
 	});
 });
 
@@ -102,15 +94,6 @@ describe("resolveColumn: first column wins", () => {
 			{ id: "todo", name: "todo", match: "#kanban/b/todo" },
 		]);
 		expect(resolveColumn(t, flipped)).toBe("doing");
-	});
-
-	it("mixed tag + status board: order decides", () => {
-		const mixed = board([
-			{ id: "tagged", name: "tagged", match: "#pin" },
-			{ id: "done", name: "done", match: "status:done" },
-		]);
-		const t = makeTask({ key: "k", statusChar: "x", tags: ["#pin"] });
-		expect(resolveColumn(t, mixed)).toBe("tagged");
 	});
 });
 

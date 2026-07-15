@@ -27,10 +27,8 @@ import type { Intent } from "./Intent";
 
 /**
  * Статус + сопутствующие даты одной правкой: ✅/❌ сопровождают статус,
- * при повторном открытии обе даты снимаются. Общая логика set-status и
- * move-column по статусной колонке — drag на доске ЕСТЬ смена статуса,
- * иначе один и тот же переход писал бы разные данные разными путями UI
- * (снятая с Done карточка тащила бы устаревший ✅ на незакрытой строке).
+ * при повторном открытии обе даты снимаются. Используется set-status; drag
+ * между колонками статус НЕ трогает (раунд 3: колонки развязаны со статусом).
  */
 function applyStatusWithDates(currentLine: string, statusChar: string, date?: IsoDate): string {
 	let line = setStatusChar(currentLine, statusChar);
@@ -69,13 +67,13 @@ export function resolveLineTransform(intent: Intent, currentLine: string): strin
 			return setPriority(currentLine, intent.priority);
 
 		case "move-column": {
-			// intent.index (ручной порядок) — frontmatter доски, отдельная запись сервиса
+			// Перенос = ТОЛЬКО теги (fromTag/fromTags снять → toTag добавить); статус
+			// карточки не трогается никогда. intent.index (ручной порядок) —
+			// frontmatter доски, отдельная запись сервиса.
 			let line = currentLine;
 			if (intent.fromTag !== null) line = removeTag(line, intent.fromTag);
 			for (const tag of intent.fromTags ?? []) line = removeTag(line, tag);
 			if (intent.toTag !== null) line = addTag(line, intent.toTag);
-			if (intent.toStatusChar !== undefined)
-				line = applyStatusWithDates(line, intent.toStatusChar, intent.date);
 			return line;
 		}
 

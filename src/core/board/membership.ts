@@ -1,28 +1,17 @@
 /**
- * Членство задачи в колонке доски (ТЗ §3): match-спеки '#tag' и 'status:*'.
+ * Членство задачи в колонке доски (ТЗ §3): match-спек — только '#tag'
+ * (раунд 3: колонки развязаны со статусом, status-матчей больше нет).
  */
 import type { Task } from "../model/Task";
 import type { BoardDef, MatchSpec } from "./boardFile";
 import { parseMatchSpec } from "./boardFile";
 
 function matchesSpec(task: Task, spec: MatchSpec): boolean {
-	if (spec.kind === "tag") {
-		return task.tags.some((raw) => {
-			// теги могут прийти с '#' или без; вложенный тег (#a/b) — член колонки '#a'
-			const t = raw.startsWith("#") ? raw.slice(1) : raw;
-			return t === spec.tag || t.startsWith(spec.tag + "/");
-		});
-	}
-	const c = task.statusChar;
-	switch (spec.status) {
-		case "done":
-			return c === "x" || c === "X";
-		case "doing":
-			return c === "/";
-		case "todo":
-			// любые прочие символы = todo; '-' (cancelled) не попадает никуда
-			return c !== "x" && c !== "X" && c !== "/" && c !== "-";
-	}
+	return task.tags.some((raw) => {
+		// теги могут прийти с '#' или без; вложенный тег (#a/b) — член колонки '#a'
+		const t = raw.startsWith("#") ? raw.slice(1) : raw;
+		return t === spec.tag || t.startsWith(spec.tag + "/");
+	});
 }
 
 /**
@@ -46,8 +35,8 @@ export function resolveColumn(task: Task, board: BoardDef): string | null {
  *   (b) на задаче есть тег колонки ЭТОЙ доски '#kanban/<def.id>/…';
  *   (c) у доски задан scope 'path:…' и путь задачи под этим префиксом.
  * Иначе чужая задача (в т.ч. выполненная из другого файла или помеченная
- * тегом другой доски) на доску не протекает — иначе status:done-колонка
- * собирала бы выполненные со всего хранилища.
+ * тегом другой доски) на доску не протекает — иначе выполненные со всего
+ * хранилища собирались бы на первой попавшейся доске.
  */
 export function belongsToBoard(task: Task, boardPath: string, board: BoardDef): boolean {
 	if (task.filePath === boardPath) return true;

@@ -24,6 +24,7 @@ export type MenuAction =
 	| { kind: "pick-column" } // «Переместить в колонку…»: доски × колонки → moveCard в конец
 	| { kind: "pick-project" } // «В проект…»: пикер проектов → move-line
 	| { kind: "make-template" } // «Сделать шаблоном…»: move-line в gtd-recurring файл
+	| { kind: "archive" } // «Архивировать»: снять теги досок → move-line в archiveFile
 	| { kind: "open-card" } // CardPort.openOrCreate
 	| { kind: "open-file" }; // openTaskInFile
 
@@ -75,6 +76,8 @@ export interface MenuModelInput {
 	deferPresets: readonly DeferPreset[];
 	/** Пункт «Вернуть во входящие» (снять 🛫) — только из вида отложенных. */
 	inTickler: boolean;
+	/** Пункт «Архивировать» — только из вида доски (для готовых/отменённых). */
+	inBoard: boolean;
 	hasBoards: boolean;
 	hasProjects: boolean;
 	hasCards: boolean;
@@ -216,6 +219,18 @@ export function buildMenuModel(input: MenuModelInput): MenuNode[] {
 			title: "Сделать шаблоном…",
 			icon: "repeat",
 			action: { kind: "make-template" },
+		});
+	}
+
+	// --- архив: только на доске и только для выполненных/отменённых карточек
+	// (снимает теги всех досок и переносит строку в файл архива) ---
+	if (input.inBoard && (isDone || isCancelled)) {
+		items.push({
+			id: "archive",
+			section: "move",
+			title: "Архивировать",
+			icon: "archive",
+			action: { kind: "archive" },
 		});
 	}
 

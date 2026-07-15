@@ -4,7 +4,7 @@
 	import type { IsoDate } from "../../core/model/Task";
 	import type { IntentDispatcher } from "../../services/WritebackService";
 	import type { GtdFlowSettings } from "../../settings/Settings";
-	import { PRIORITY_ICONS, PRIORITY_LABELS } from "../common/cardFormat";
+	import { PRIORITY_ICONS, PRIORITY_LABELS, stripColumnTags } from "../common/cardFormat";
 	import { buildTaskMenu, type TaskMenuPorts } from "../common/taskMenu";
 	import type { DndPort } from "../dnd/types";
 	import { VIEW_TYPES } from "../registry";
@@ -37,6 +37,9 @@
 	} = $props();
 
 	const isDone = $derived(ev.task.statusChar === "x" || ev.task.statusChar === "X");
+	// описание без структурных тегов колонок доски (#kanban/…) — как в TaskCard,
+	// иначе чип календаря тащил бы служебный тег в текст и подсказку
+	const displayText = $derived(stripColumnTags(ev.task.description));
 	// ТЗ §8: на телефоне кросс-видовой drag выключен — меню/пикеры вместо него
 	const draggable = $derived(dnd !== null && !Platform.isPhone);
 	/** Время поля-размещения — бейдж "14:30" перед текстом. */
@@ -154,7 +157,7 @@
 	class:is-done={isDone}
 	class:is-draggable={draggable && !editing}
 	class:is-deferred={deferred !== null}
-	title={deferred !== null ? `Отложена до ${deferred}` : ev.task.description}
+	title={deferred !== null ? `Отложена до ${deferred}` : displayText}
 	onpointerdown={onPointerDown}
 	onclick={onClick}
 	oncontextmenu={onContextMenu}
@@ -196,7 +199,7 @@
 		{#if time !== null}
 			<span class="gtd-cal-chip-time">{time}</span>
 		{/if}
-		<span class="gtd-cal-chip-text">{ev.task.description}</span>
+		<span class="gtd-cal-chip-text">{displayText}</span>
 	{/if}
 </div>
 

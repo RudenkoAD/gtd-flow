@@ -70,18 +70,7 @@ const TAG_BOARD: BoardDef = {
 		{ id: "todo", name: "Todo", match: "#kanban/dev/todo" },
 		{ id: "doing", name: "Doing", match: "#kanban/dev/doing" },
 	],
-	order: {},
-};
-
-const STATUS_BOARD: BoardDef = {
-	id: "st",
-	name: "Статусы",
-	groupBy: "status",
-	columns: [
-		{ id: "todo", name: "Todo", match: "status:todo" },
-		{ id: "doing", name: "Doing", match: "status:doing" },
-		{ id: "done", name: "Done", match: "status:done" },
-	],
+	skippedColumns: [],
 	order: {},
 };
 
@@ -128,13 +117,34 @@ describe("BoardService.discoverBoards", () => {
 		expect(errors.find((e) => e.path === "bad.md")!.error).toMatch(/columns/);
 	});
 
+	it("упразднённая status-колонка не валит доску, но поверхностится как warning", () => {
+		h.feed.replaceFile("GTD/Board.md", [
+			boardTask({ filePath: "GTD/Board.md", container: "board" }),
+		]);
+		h.frontmatters.set("GTD/Board.md", {
+			"gtd-board": true,
+			id: "dev",
+			columns: [
+				{ id: "todo", match: "#kanban/dev/todo" },
+				{ id: "done", name: "Готово", match: "status:done" },
+			],
+		});
+
+		const { boards, errors } = h.service.discoverBoards();
+		expect(boards).toHaveLength(1);
+		expect(boards[0]!.def.columns.map((c) => c.id)).toEqual(["todo"]);
+		expect(errors).toHaveLength(1);
+		expect(errors[0]!.path).toBe("GTD/Board.md");
+		expect(errors[0]!.error).toMatch(/status-матчи упразднены/);
+	});
+
 	it("несколько задач одного файла дают одну доску; пути отсортированы", () => {
 		for (const p of ["b.md", "a.md"]) {
 			h.feed.replaceFile(p, [
 				boardTask({ filePath: p, container: "board", lineStart: 1 }),
 				boardTask({ filePath: p, container: "board", lineStart: 2, description: "две" }),
 			]);
-			h.frontmatters.set(p, { id: p, columns: [{ id: "c", match: "status:todo" }] });
+			h.frontmatters.set(p, { id: p, columns: [{ id: "c", match: "#c" }] });
 		}
 		const { boards } = h.service.discoverBoards();
 		expect(boards.map((b) => b.path)).toEqual(["a.md", "b.md"]);
@@ -165,28 +175,27 @@ describe("BoardService.boardModel", () => {
 		expect(model.columns[1]!.tasks.map((t) => t.taskId)).toEqual(["c"]);
 	});
 
-	it("scope 'path:' включает задачи под префиксом (по статусу), прочие пути — нет", () => {
-		// на статус-доске колонка = статус, поэтому scope-охват виден и без тега колонки
-		h.feed.replaceFile("Projects/A/work.md", [
-			boardTask({ filePath: "Projects/A/work.md", key: "in", statusChar: " " }),
+	it("done и cancelled видны в своей тег-колонке (зачёркнутость — дело TaskCard)", () => {
+		// раунд 3: колонки развязаны со статусом — выполненная/отменённая карточка
+		// остаётся в своей тег-колонке, а не уходит с доски
+		h.feed.replaceFile("x.md", [
+			boardTask({ filePath: "x.md", key: "d", statusChar: "x", tags: ["#kanban/dev/todo"] }),
+			boardTask({ filePath: "x.md", key: "c", statusChar: "-", tags: ["#kanban/dev/doing"] }),
+			boardTask({ filePath: "x.md", key: "a", tags: ["#kanban/dev/todo"] }),
 		]);
-		h.feed.replaceFile("elsewhere.md", [boardTask({ filePath: "elsewhere.md", key: "out" })]);
-
-		const def: BoardDef = { ...STATUS_BOARD, scope: "path:Projects/A/" };
-		const model = h.service.boardModel("Board.md", def);
-		expect(model.columns[0]!.tasks.map((t) => t.key)).toEqual(["in"]); // todo-колонка
+		const model = h.service.boardModel("Board.md", TAG_BOARD);
+		expect(model.columns[0]!.tasks.map((t) => t.key).sort()).toEqual(["a", "d"]);
+		expect(model.columns[1]!.tasks.map((t) => t.key)).toEqual(["c"]);
 	});
 
-	it("scope: чужая done-задача из другого файла не протекает в status:done", () => {
-		// живой баг: «пометил в календаре сделанной → появилась на доске Готово»
-		h.feed.replaceFile("b.md", [
-			boardTask({ filePath: "b.md", key: "own", container: "board", statusChar: "x" }),
+	it("TICKLER (🛫 в будущем) спрятан; задачи прочих статусов видны", () => {
+		h.feed.replaceFile("x.md", [
+			boardTask({ filePath: "x.md", key: "t", start: "2026-08-01", tags: ["#kanban/dev/todo"] }),
+			boardTask({ filePath: "x.md", key: "ok", tags: ["#kanban/dev/todo"] }),
+			boardTask({ filePath: "x.md", key: "done", statusChar: "x", tags: ["#kanban/dev/todo"] }),
 		]);
-		h.feed.replaceFile("other.md", [
-			boardTask({ filePath: "other.md", key: "foreign", statusChar: "x" }),
-		]);
-		const model = h.service.boardModel("b.md", STATUS_BOARD);
-		expect(model.columns[2]!.tasks.map((t) => t.key)).toEqual(["own"]); // done: только своя
+		const model = h.service.boardModel("Board.md", TAG_BOARD);
+		expect(model.columns[0]!.tasks.map((t) => t.key).sort()).toEqual(["done", "ok"]);
 	});
 
 	it("scope: задача с тегом ДРУГОЙ доски не попадает", () => {
@@ -198,47 +207,16 @@ describe("BoardService.boardModel", () => {
 		expect(model.columns[0]!.tasks.map((t) => t.key)).toEqual(["mine"]);
 	});
 
-	it("scope: своя задача из файла доски попадает (без тега колонки, по статусу)", () => {
+	it("чужая задача из другого файла без тега колонки не протекает на доску", () => {
+		// живой баг: «пометил в календаре сделанной → появилась на чужой доске»
 		h.feed.replaceFile("b.md", [
-			boardTask({ filePath: "b.md", key: "own", container: "board", statusChar: "/" }),
+			boardTask({ filePath: "b.md", key: "own", container: "board", tags: ["#kanban/dev/todo"] }),
 		]);
-		const model = h.service.boardModel("b.md", STATUS_BOARD);
-		expect(model.columns[1]!.tasks.map((t) => t.key)).toEqual(["own"]); // doing
-	});
-
-	it("неактивные задачи не попадают на тег-доску: done уходит с доски, tickler спрятан", () => {
-		h.feed.replaceFile("x.md", [
-			boardTask({ filePath: "x.md", key: "d", statusChar: "x", tags: ["#kanban/dev/todo"] }),
-			boardTask({ filePath: "x.md", key: "t", start: "2026-08-01", tags: ["#kanban/dev/todo"] }),
-			boardTask({ filePath: "x.md", key: "ok", tags: ["#kanban/dev/todo"] }),
+		h.feed.replaceFile("other.md", [
+			boardTask({ filePath: "other.md", key: "foreign", statusChar: "x" }),
 		]);
-		const model = h.service.boardModel("Board.md", TAG_BOARD);
-		expect(model.columns[0]!.tasks.map((t) => t.key)).toEqual(["ok"]);
-	});
-
-	it("доска со status:done показывает выполненные в done-колонке", () => {
-		h.feed.replaceFile("b.md", [
-			boardTask({ filePath: "b.md", key: "w", container: "board" }),
-			boardTask({ filePath: "b.md", key: "g", container: "board", statusChar: "/" }),
-			boardTask({ filePath: "b.md", key: "d", container: "board", statusChar: "x" }),
-			boardTask({ filePath: "b.md", key: "c", container: "board", statusChar: "-" }),
-		]);
-		const model = h.service.boardModel("b.md", STATUS_BOARD);
-		expect(model.columns.map((col) => col.tasks.map((t) => t.key))).toEqual([
-			["w"],
-			["g"],
-			["d"], // cancelled 'c' не попадает никуда
-		]);
-	});
-
-	it("TEMPLATE/DETAIL не протекают на статус-доску даже выполненными", () => {
-		// задачи в самом файле доски (принадлежат по scope), но isBoardEligible их режет
-		h.feed.replaceFile("b.md", [
-			boardTask({ filePath: "b.md", key: "tpl", container: "recurring", statusChar: "x" }),
-			boardTask({ filePath: "b.md", key: "card", container: "card", statusChar: "x" }),
-		]);
-		const model = h.service.boardModel("b.md", STATUS_BOARD);
-		expect(model.columns[2]!.tasks).toEqual([]);
+		const model = h.service.boardModel("b.md", TAG_BOARD);
+		expect(model.columns[0]!.tasks.map((t) => t.key)).toEqual(["own"]);
 	});
 });
 
@@ -274,8 +252,8 @@ describe("BoardService.moveCard", () => {
 		expect(h.frontmatters.get("Board.md")!["order"]).toEqual({ doing: ["a"] });
 	});
 
-	it("done-карточка в tag-колонку — отказ done-card без записей (раньше был reopen)", async () => {
-		// раунд 3: перенос статус не трогает; вернуть в работу = снять отметку чекбоксом
+	it("done-карточку можно перетащить в другую тег-колонку (статус не трогается)", async () => {
+		// раунд 3: колонки развязаны со статусом — перенос выражает только теги
 		const t = boardTask({
 			filePath: "x.md",
 			taskId: "a",
@@ -286,12 +264,22 @@ describe("BoardService.moveCard", () => {
 		h.feed.replaceFile("x.md", [t]);
 
 		const res = await h.service.moveCard("Board.md", TAG_BOARD, "id:a", "doing", 0);
-		expect(res).toEqual({ ok: false, reason: "done-card" });
-		expect(h.queue).toEqual([]);
-		expect(h.patched).toEqual([]);
+		expect(res.ok).toBe(true);
+		expect(h.queue).toEqual(["dispatch", "patch"]);
+		expect(h.dispatcher.intents[0]).toEqual({
+			type: "move-column",
+			key: "id:a",
+			fromTag: "#kanban/dev/todo",
+			toTag: "#kanban/dev/doing",
+			index: 0,
+		});
+		// статус/даты в интенте отсутствуют — перенос не выражает done/undone
+		expect(h.dispatcher.intents[0]).not.toHaveProperty("date");
+		expect(h.dispatcher.intents[0]).not.toHaveProperty("toStatusChar");
+		expect(h.frontmatters.get("Board.md")!["order"]).toEqual({ doing: ["a"] });
 	});
 
-	it("отменённая (-) карточка в tag-колонку — тоже отказ done-card", async () => {
+	it("отменённую (-) карточку тоже можно перетащить", async () => {
 		const t = boardTask({
 			filePath: "x.md",
 			taskId: "a",
@@ -302,8 +290,8 @@ describe("BoardService.moveCard", () => {
 		h.feed.replaceFile("x.md", [t]);
 
 		const res = await h.service.moveCard("Board.md", TAG_BOARD, "id:a", "doing", 0);
-		expect(res).toEqual({ ok: false, reason: "done-card" });
-		expect(h.queue).toEqual([]);
+		expect(res.ok).toBe(true);
+		expect(h.queue).toEqual(["dispatch", "patch"]);
 	});
 
 	it("вставка в позицию между существующими карточками колонки", async () => {
@@ -331,29 +319,6 @@ describe("BoardService.moveCard", () => {
 		expect(res).toEqual({ ok: false, reason: "line-not-found" });
 		expect(h.queue).toEqual(["dispatch"]);
 		expect(h.patched).toEqual([]);
-	});
-
-	it("drop в status-колонку — отказ status-column без записей (статус меняется чекбоксом)", async () => {
-		h.feed.replaceFile("b.md", [
-			boardTask({ filePath: "b.md", taskId: "a", key: "id:a", container: "board", statusChar: " " }),
-		]);
-		const res = await h.service.moveCard("b.md", STATUS_BOARD, "id:a", "done", 0);
-		expect(res).toEqual({ ok: false, reason: "status-column" });
-		expect(h.queue).toEqual([]);
-		expect(h.patched).toEqual([]);
-	});
-
-	it("перестановка внутри status-колонки не считается сменой статуса (без отказа)", async () => {
-		// та же колонка → фаза 1 пропущена, отказ status-column не срабатывает
-		h.feed.replaceFile("b.md", [
-			boardTask({ filePath: "b.md", taskId: "a", key: "id:a", container: "board", statusChar: " " }),
-			boardTask({ filePath: "b.md", taskId: "b", key: "id:b", container: "board", statusChar: " " }),
-		]);
-		const def: BoardDef = { ...STATUS_BOARD, order: { todo: ["a", "b"] } };
-		const res = await h.service.moveCard("b.md", def, "id:a", "todo", 2);
-		expect(res.ok).toBe(true);
-		expect(h.queue).toEqual(["patch"]); // только порядок, dispatch не было
-		expect(h.frontmatters.get("b.md")!["order"]).toEqual({ todo: ["b", "a"] });
 	});
 
 	it("тег-доска: intent без date — статус и даты ✅/❌ не трогаются", async () => {

@@ -260,32 +260,37 @@ describe("resolveLineTransform — однострочные intents", () => {
 		expect(out).not.toContain("#kanban/work/todo");
 	});
 
-	it("move-column: статусная доска меняет статус", () => {
+	it("move-column: статус карточки НЕ трогается (раунд 3 — развязка со статусом)", () => {
+		// перенос выполненной карточки меняет только теги, чекбокс остаётся [x]
 		const out = resolveLineTransform(
-			{ type: "move-column", key: "k", fromTag: null, toTag: null, toStatusChar: "/" },
-			"- [ ] Задача",
-		);
-		expect((out as string).startsWith("- [/]")).toBe(true);
-	});
-
-	it("move-column: drag из Done снимает устаревший ✅ (те же правила, что set-status)", () => {
-		// регресс: раньше строка становилась '- [ ] … ✅ 2026-07-10' —
-		// незакрытая задача с датой выполнения (порча Tasks-формата)
-		const out = resolveLineTransform(
-			{ type: "move-column", key: "k", fromTag: null, toTag: null, toStatusChar: " ", date: "2026-07-15" },
-			"- [x] Починить баг 🆔 t1 ✅ 2026-07-10",
-		);
-		expect((out as string).startsWith("- [ ]")).toBe(true);
-		expect(out).not.toContain("✅");
-	});
-
-	it("move-column: drag в Done с датой штампует ✅ (паритет с чекбоксом)", () => {
-		const out = resolveLineTransform(
-			{ type: "move-column", key: "k", fromTag: null, toTag: null, toStatusChar: "x", date: "2026-07-15" },
-			"- [ ] Починить баг 🆔 t1",
+			{
+				type: "move-column",
+				key: "k",
+				fromTag: "#kanban/work/todo",
+				toTag: "#kanban/work/doing",
+			},
+			"- [x] Починить баг #kanban/work/todo 🆔 t1 ✅ 2026-07-10",
 		);
 		expect((out as string).startsWith("- [x]")).toBe(true);
-		expect(out).toContain("✅ 2026-07-15");
+		expect(out).toContain("✅ 2026-07-10"); // дата выполнения не снимается
+		expect(out).toContain("#kanban/work/doing");
+		expect(out).not.toContain("#kanban/work/todo");
+	});
+
+	it("move-column: fromTags снимает несколько тегов колонок разом (архив)", () => {
+		const out = resolveLineTransform(
+			{
+				type: "move-column",
+				key: "k",
+				fromTag: null,
+				toTag: null,
+				fromTags: ["#kanban/work/done", "#kanban/home/todo"],
+			},
+			"- [x] Готово #kanban/work/done #kanban/home/todo 🆔 t1 ✅ 2026-07-10",
+		);
+		expect(out).not.toContain("#kanban/work/done");
+		expect(out).not.toContain("#kanban/home/todo");
+		expect((out as string).startsWith("- [x]")).toBe(true); // статус нетронут
 	});
 });
 

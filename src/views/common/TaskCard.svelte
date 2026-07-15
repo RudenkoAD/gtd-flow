@@ -21,6 +21,7 @@
 		settings,
 		today,
 		inTickler = false,
+		inBoard = false,
 		dnd = null,
 		dragPayload,
 		menuPorts = null,
@@ -32,6 +33,8 @@
 		today: IsoDate;
 		/** Пункт «Вернуть во входящие» (снять 🛫) — только из вида отложенных. */
 		inTickler?: boolean;
+		/** Пункт «Архивировать» — только из вида доски. */
+		inBoard?: boolean;
 		/** Заданы оба — карточка сама drag-источник (ТЗ §8); иначе как раньше
 		 *  (kanban оборачивает карточку своим drag-контейнером). */
 		dnd?: DndPort | null;
@@ -97,6 +100,9 @@
 	}
 
 	const isDone = $derived(task.statusChar === "x" || task.statusChar === "X");
+	// раунд 3: карточки любого статуса живут на доске — отменённая, как и
+	// выполненная, показывается зачёркнутой (чекбокс при этом снят)
+	const isCancelled = $derived(task.statusChar === "-");
 	// вики-ссылки → плоский текст (alias/basename, ссылка на свою карточку прячется),
 	// затем сегментация #тегов без структурных тегов колонок доски (#kanban/…)
 	const segments = $derived(displaySegments(renderWikiLinks(task.description, task.taskId)));
@@ -185,7 +191,7 @@
 	}
 
 	function openMenu(e: MouseEvent): void {
-		buildTaskMenu({ task, app, dispatcher, settings, today, inTickler, ports: menuPorts })
+		buildTaskMenu({ task, app, dispatcher, settings, today, inTickler, inBoard, ports: menuPorts })
 			.showAtMouseEvent(e);
 	}
 </script>
@@ -194,6 +200,7 @@
 <div
 	class="gtd-task-card"
 	class:is-done={isDone}
+	class:is-cancelled={isCancelled}
 	class:is-draggable={draggable}
 	onpointerdown={onCardPointerDown}
 	onpointermove={onCardPointerMove}
@@ -278,7 +285,8 @@
 	.gtd-task-card.is-draggable:active {
 		cursor: grabbing;
 	}
-	.gtd-task-card.is-done .gtd-task-desc {
+	.gtd-task-card.is-done .gtd-task-desc,
+	.gtd-task-card.is-cancelled .gtd-task-desc {
 		color: var(--text-muted);
 		text-decoration: line-through;
 	}

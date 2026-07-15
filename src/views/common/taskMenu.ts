@@ -71,6 +71,8 @@ export interface TaskMenuPorts {
 	projects?: ProjectMenuPort | null;
 	cards?: CardPort | null;
 	template?: TemplateMenuPort | null;
+	/** Создать файл, если его нет — для «Архивировать» (приёмник archiveFile). */
+	ensureFile?: ((path: string) => Promise<void>) | null;
 	/** Смена индекса — для реактивного прогресса n/m на карточке. */
 	epoch?: Readable<number> | null;
 }
@@ -85,6 +87,7 @@ export function taskMenuPortsFromPlugin(plugin: GtdFlowPlugin): TaskMenuPorts {
 		boards: plugin.boards ?? null,
 		projects: plugin.projects ?? null,
 		cards: p.cards ?? null,
+		ensureFile: (path) => plugin.vaultAdapter.ensureFile(path),
 		template: {
 			recurringFiles: () => recurringFilePaths(plugin.taskStore.index().all()),
 			spawnTarget: () => plugin.settings.recurring.spawnTarget,
@@ -109,6 +112,8 @@ export interface TaskMenuCtx {
 	today: IsoDate;
 	/** Пункт «Вернуть во входящие» — только из вида отложенных. */
 	inTickler?: boolean;
+	/** Пункт «Архивировать» — только из вида доски. */
+	inBoard?: boolean;
 	ports?: TaskMenuPorts | null;
 }
 
@@ -119,6 +124,7 @@ export function buildTaskMenu(ctx: TaskMenuCtx): Menu {
 		today: ctx.today,
 		deferPresets: ctx.settings.deferPresets,
 		inTickler: ctx.inTickler === true,
+		inBoard: ctx.inBoard === true,
 		hasBoards: ports?.boards != null,
 		hasProjects: ports?.projects != null,
 		hasCards: ports?.cards != null,
@@ -219,6 +225,53 @@ async function dispatchDefer(ctx: TaskMenuCtx, until: IsoDate): Promise<void> {
 		clearDue,
 	});
 	if (res.ok) new Notice(clearDue ? `Отложена до ${until}, план снят` : `Отложена до ${until}`);
+}
+
+/**
+ * «Архивировать» (пункт меню доски для готовых/отменённых): двухфазно —
+ * (1) снять ВСЕ теги '#kanban/' задачи одним move-column ⇒ карточка мгновенно
+ * уходит со всех досок; (2) убедиться в файле архива и перенести строку туда.
+ * Частичный сбой безопасен: при отказе фазы 2 тег-less строка остаётся в
+ * исходном файле (её всегда можно заархивировать повторно), поэтому потери нет.
+ */
+async function archiveTask(ctx: TaskMenuCtx): Promise<void> {
+	const kanbanTags = ctx.task.tags
+		.map((t) => (t.startsWith("#") ? t : "#" + t))
+		.filter((t) => t.startsWith("#kanban/"));
+
+	// Фаза 1 — снять теги колонок всех досок.
+	const stripRes = await ctx.dispatcher.dispatch({
+		type: "move-column",
+		key: ctx.task.key,
+		fromTag: null,
+		toTag: null,
+		fromTags: kanbanTags,
+	});
+	if (!stripRes.ok) {
+		new Notice(`GTD Flow: ${stripRes.reason}`);
+		return;
+	}
+
+	// Фаза 2 — файл архива (создать при отсутствии) + перенос строки.
+	const ensureFile = ctx.ports?.ensureFile;
+	if (ensureFile == null) {
+		new Notice("GTD Flow: архивирование недоступно");
+		return;
+	}
+	const archiveFile = ctx.settings.archiveFile;
+	try {
+		await ensureFile(archiveFile);
+	} catch {
+		new Notice("GTD Flow: не удалось создать файл архива");
+		return;
+	}
+	const moveRes = await ctx.dispatcher.dispatch({
+		type: "move-line",
+		key: ctx.task.key,
+		toFile: archiveFile,
+	});
+	if (!moveRes.ok) new Notice(`GTD Flow: ${moveRes.reason}`);
+	else new Notice("GTD Flow: заархивировано");
 }
 
 async function runMenuAction(ctx: TaskMenuCtx, action: MenuAction): Promise<void> {
@@ -324,6 +377,9 @@ async function runMenuAction(ctx: TaskMenuCtx, action: MenuAction): Promise<void
 			else new Notice("GTD Flow: перенесено в шаблоны — заполните правило 🔁");
 			return;
 		}
+
+		case "archive":
+			return archiveTask(ctx);
 
 		case "open-card": {
 			const cards = ports?.cards;

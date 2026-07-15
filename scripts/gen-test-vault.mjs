@@ -108,7 +108,7 @@ for (const [bi, b] of BOARDS.entries()) {
 		const extra = i % 3 === 0 ? ` 📅 ${isoDate(bi * 7 + i)}` : i % 4 === 1 ? " ⏫" : "";
 		lines.push(
 			status === "x"
-				? `- [x] ${b.name}: закрытая задача ${i} ✅ 2026-07-01`
+				? `- [x] ${b.name}: закрытая задача ${i} #kanban/${b.id}/done ✅ 2026-07-01`
 				: `- [${status}] ${b.name}: задача ${i} #kanban/${b.id}/${col}${extra}`,
 		);
 	}
@@ -122,7 +122,7 @@ group-by: tag
 columns:
   - { id: todo, name: "К работе", match: "#kanban/${b.id}/todo" }
   - { id: doing, name: "В работе", match: "#kanban/${b.id}/doing" }
-  - { id: done, name: "Готово", match: "status:done" }
+  - { id: done, name: "Готово", match: "#kanban/${b.id}/done" }
 order:
   todo: []
   doing: []

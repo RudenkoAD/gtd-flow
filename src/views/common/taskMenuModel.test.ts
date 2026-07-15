@@ -25,6 +25,7 @@ function input(over: Partial<MenuModelInput> & { task?: Task } = {}): MenuModelI
 		today: TODAY,
 		deferPresets: PRESETS,
 		inTickler: false,
+		inBoard: false,
 		hasBoards: false,
 		hasProjects: false,
 		hasCards: false,
@@ -119,6 +120,33 @@ describe("buildMenuModel: ветка inTickler", () => {
 
 	it("вне тикля пункта нет", () => {
 		expect(ids(buildMenuModel(input()))).not.toContain("defer-return");
+	});
+});
+
+describe("buildMenuModel: ветка inBoard (архив)", () => {
+	it("на доске для выполненной есть «Архивировать» с action archive", () => {
+		const task = makeTask({ filePath: "b.md", statusChar: "x" });
+		const items = buildMenuModel(input({ task, inBoard: true }));
+		const archive = byId(items, "archive");
+		expect(archive.section).toBe("move");
+		expect(archive.action).toEqual({ kind: "archive" });
+	});
+
+	it("на доске для отменённой (-) тоже есть «Архивировать»", () => {
+		const task = makeTask({ filePath: "b.md", statusChar: "-" });
+		expect(ids(buildMenuModel(input({ task, inBoard: true })))).toContain("archive");
+	});
+
+	it("на доске для активной/в работе карточки пункта нет", () => {
+		for (const statusChar of [" ", "/"]) {
+			const task = makeTask({ filePath: "b.md", statusChar });
+			expect(ids(buildMenuModel(input({ task, inBoard: true })))).not.toContain("archive");
+		}
+	});
+
+	it("вне доски (inBoard: false) пункта нет даже для выполненной", () => {
+		const task = makeTask({ filePath: "b.md", statusChar: "x" });
+		expect(ids(buildMenuModel(input({ task, inBoard: false })))).not.toContain("archive");
 	});
 });
 
@@ -299,9 +327,18 @@ describe("buildMenuModel: инварианты", () => {
 	});
 
 	it("порядок секций стабилен: status → priority → schedule → defer → move → card → nav", () => {
+		// done + inBoard: в наборе присутствует и «Архивировать» (секция move)
 		const nodes = buildMenuModel(
-			input({ hasBoards: true, hasProjects: true, hasCards: true, hasTemplates: true }),
+			input({
+				task: makeTask({ filePath: "b.md", statusChar: "x" }),
+				hasBoards: true,
+				hasProjects: true,
+				hasCards: true,
+				hasTemplates: true,
+				inBoard: true,
+			}),
 		);
+		expect(ids(nodes)).toContain("archive");
 		const order = ["status", "priority", "schedule", "defer", "move", "card", "nav"];
 		const seen = nodes.map((n) => order.indexOf(n.section));
 		for (let i = 1; i < seen.length; i++) expect(seen[i]! >= seen[i - 1]!).toBe(true);

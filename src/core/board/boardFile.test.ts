@@ -9,8 +9,8 @@ const validFm = (): Record<string, unknown> => ({
 	scope: "#work",
 	columns: [
 		{ id: "todo", name: "To do", match: "#kanban/work/todo" },
-		{ id: "doing", match: "status:doing" },
-		{ id: "done", name: "Done", match: "status:done" },
+		{ id: "doing", match: "#kanban/work/doing" },
+		{ id: "done", name: "Done", match: "#kanban/work/done" },
 	],
 	order: {
 		todo: ["t1", "t2"],
@@ -30,9 +30,10 @@ describe("parseBoardFrontmatter: valid input", () => {
 		expect(res.scope).toBe("#work");
 		expect(res.columns).toEqual([
 			{ id: "todo", name: "To do", match: "#kanban/work/todo" },
-			{ id: "doing", name: "doing", match: "status:doing" }, // name по умолчанию = id
-			{ id: "done", name: "Done", match: "status:done" },
+			{ id: "doing", name: "doing", match: "#kanban/work/doing" }, // name по умолчанию = id
+			{ id: "done", name: "Done", match: "#kanban/work/done" },
 		]);
+		expect(res.skippedColumns).toEqual([]);
 		// order неизвестной колонки молча выброшен (ренормализация)
 		expect(res.order).toEqual({ todo: ["t1", "t2"], doing: [] });
 	});
@@ -47,15 +48,48 @@ describe("parseBoardFrontmatter: valid input", () => {
 		expect(res.name).toBe("b1");
 		expect(res.groupBy).toBe("tag");
 		expect(res.order).toEqual({});
+		expect(res.skippedColumns).toEqual([]);
 		expect(res.scope).toBeUndefined();
 	});
 
-	it("accepts groupBy 'status' via either key spelling", () => {
-		const a = parseBoardFrontmatter({ id: "b", columns: [{ id: "c", match: "status:todo" }], "group-by": "status" });
-		const b = parseBoardFrontmatter({ id: "b", columns: [{ id: "c", match: "status:todo" }], groupBy: "status" });
+	it("accepts groupBy 'status' via either key spelling (метаданные, колонки — теги)", () => {
+		const a = parseBoardFrontmatter({ id: "b", columns: [{ id: "c", match: "#c" }], "group-by": "status" });
+		const b = parseBoardFrontmatter({ id: "b", columns: [{ id: "c", match: "#c" }], groupBy: "status" });
 		if (isBoardError(a) || isBoardError(b)) throw new Error("expected valid boards");
 		expect(a.groupBy).toBe("status");
 		expect(b.groupBy).toBe("status");
+	});
+});
+
+describe("parseBoardFrontmatter: упразднённые status-колонки (раунд 3)", () => {
+	it("status-матч не валит доску — колонка пропускается в skippedColumns", () => {
+		const res = parseBoardFrontmatter({
+			id: "b",
+			columns: [
+				{ id: "todo", match: "#kanban/b/todo" },
+				{ id: "done", name: "Готово", match: "status:done" },
+			],
+		});
+		expect(isBoardError(res)).toBe(false);
+		if (isBoardError(res)) return;
+		expect(res.columns.map((c) => c.id)).toEqual(["todo"]);
+		expect(res.skippedColumns).toHaveLength(1);
+		expect(res.skippedColumns[0]!.id).toBe("done");
+		expect(res.skippedColumns[0]!.name).toBe("Готово");
+		expect(res.skippedColumns[0]!.reason).toMatch(/status-матчи упразднены/);
+	});
+
+	it("order упразднённой колонки отбрасывается (ренормализация)", () => {
+		const res = parseBoardFrontmatter({
+			id: "b",
+			columns: [
+				{ id: "todo", match: "#kanban/b/todo" },
+				{ id: "done", match: "status:done" },
+			],
+			order: { todo: ["t1"], done: ["d1"] },
+		});
+		if (isBoardError(res)) throw new Error("expected valid board");
+		expect(res.order).toEqual({ todo: ["t1"] });
 	});
 });
 
@@ -79,7 +113,7 @@ describe("parseBoardFrontmatter: malformed input", () => {
 	it("column without id or match, and invalid match spec", () => {
 		const res = parseBoardFrontmatter({
 			id: "b",
-			columns: [{ name: "x" }, { id: "c1", match: "tag-without-hash" }, { id: "c2", match: "status:paused" }],
+			columns: [{ name: "x" }, { id: "c1", match: "tag-without-hash" }, { id: "c2", match: "plain" }],
 		});
 		expect(isBoardError(res)).toBe(true);
 		if (!isBoardError(res)) return;
@@ -133,16 +167,15 @@ describe("parseBoardFrontmatter: malformed input", () => {
 });
 
 describe("parseMatchSpec", () => {
-	it("parses tag and status specs", () => {
+	it("parses tag specs (без ведущего #)", () => {
 		expect(parseMatchSpec("#kanban/w/todo")).toEqual({ kind: "tag", tag: "kanban/w/todo" });
-		expect(parseMatchSpec("status:todo")).toEqual({ kind: "status", status: "todo" });
-		expect(parseMatchSpec("status:doing")).toEqual({ kind: "status", status: "doing" });
-		expect(parseMatchSpec("status:done")).toEqual({ kind: "status", status: "done" });
+		expect(parseMatchSpec("#work")).toEqual({ kind: "tag", tag: "work" });
 	});
 
-	it("rejects garbage", () => {
+	it("rejects garbage и упразднённые status-матчи", () => {
 		expect(parseMatchSpec("#")).toBeNull();
-		expect(parseMatchSpec("status:paused")).toBeNull();
+		expect(parseMatchSpec("status:todo")).toBeNull();
+		expect(parseMatchSpec("status:done")).toBeNull();
 		expect(parseMatchSpec("plain")).toBeNull();
 		expect(parseMatchSpec("")).toBeNull();
 	});

@@ -17,7 +17,7 @@ import { isBoardError, parseBoardFrontmatter, parseMatchSpec } from "../core/boa
 import { belongsToBoard, resolveColumn } from "../core/board/membership";
 import { applyOrder, patchOrder } from "../core/board/ordering";
 import type { MoveColumn } from "../core/intents/Intent";
-import { isActive, isDone } from "../core/model/gtdState";
+import { isDeferred } from "../core/model/gtdState";
 import type { Task } from "../core/model/Task";
 import type { IndexFeed } from "./types";
 import type { IntentDispatcher, IntentResult } from "./WritebackService";
@@ -86,8 +86,14 @@ export class BoardService {
 				continue;
 			}
 			const parsed = parseBoardFrontmatter(fm);
-			if (isBoardError(parsed)) errors.push({ path, error: parsed.messages.join("; ") });
-			else boards.push({ path, def: parsed });
+			if (isBoardError(parsed)) {
+				errors.push({ path, error: parsed.messages.join("; ") });
+			} else {
+				boards.push({ path, def: parsed });
+				// упразднённые status-колонки не валят доску, но показываются
+				// как предупреждения (тем же errors-механизмом, что и битый fm)
+				for (const sc of parsed.skippedColumns) errors.push({ path, error: sc.reason });
+			}
 		}
 		return { boards, errors };
 	}
@@ -96,18 +102,15 @@ export class BoardService {
 
 	boardModel(path: string, def: BoardDef): BoardModel {
 		const today = this.deps.feed.today();
-		// DONE-задачи видимы только когда доске есть куда их класть (status:done);
-		// на тег-досках выполненная карточка уходит с доски (классика kanban-GTD)
-		const hasDoneColumn = def.columns.some((c) => {
-			const spec = parseMatchSpec(c.match);
-			return spec !== null && spec.kind === "status" && spec.status === "done";
-		});
+		// Раунд 3: колонки развязаны со статусом — показываем задачи ЛЮБОГО статуса
+		// своей доски в их тег-колонках (done/cancelled рендерятся зачёркнутыми —
+		// это делает TaskCard). Скрыт только TICKLER (🛫 в будущем, §1).
 		const byCol = new Map<string, Task[]>();
 		for (const t of this.deps.feed.getIndex().all()) {
 			// охват доски: только задачи ЭТОЙ доски (файл доски / тег колонки / scope),
-			// иначе чужая done-задача из другого файла протекала бы в status:done
+			// иначе чужая задача из другого файла протекала бы на доску
 			if (!belongsToBoard(t, path, def)) continue;
-			if (!isActive(t, today) && !(hasDoneColumn && isDone(t) && isBoardEligible(t))) continue;
+			if (isDeferred(t, today)) continue;
 			const colId = resolveColumn(t, def);
 			if (colId === null) continue;
 			const bucket = byCol.get(colId);
@@ -128,12 +131,9 @@ export class BoardService {
 	/**
 	 * Двухфазная запись (ТЗ §3), строго (1)→(2):
 	 * 1. intent по строке задачи: move-column меняет ТОЛЬКО теги колонок
-	 *    (снять исходный → добавить целевой). Колонка = организация, а не
-	 *    статус: перенос статуса карточки НЕ трогает (статус меняется лишь
-	 *    чекбоксом). Поэтому drop отклоняется без записи, если:
-	 *      - целевая колонка по статусу (status:*) → reason 'status-column';
-	 *      - карточка выполнена/отменена ([x]/[X]/[-]) → reason 'done-card'
-	 *        (вернуть в работу = снять отметку чекбоксом).
+	 *    (снять исходный → добавить целевой). Раунд 3: колонки развязаны со
+	 *    статусом — карточку ЛЮБОГО статуса (в т.ч. done/cancelled) можно
+	 *    перетащить в любую колонку; статус при этом не трогается никогда.
 	 *    Внутриколоночный drop строку не трогает — сразу фаза 2.
 	 * 2. frontmatter доски: вставка 🆔 в ручной порядок целевой колонки.
 	 *    Если 🆔 у задачи не было, после (1) он появляется (ленивая вставка
@@ -158,15 +158,7 @@ export class BoardService {
 		// Фаза 1 — строка задачи (пропускается для drop в ту же колонку).
 		const fromColId = resolveColumn(task, def);
 		if (fromColId !== toColId) {
-			// Колонка = только организация: статус-колонки не принимают drag —
-			// статус меняется исключительно чекбоксом карточки.
-			if (toSpec.kind === "status") return { ok: false, reason: "status-column" };
-			// Выполненную/отменённую карточку возвращают в работу отметкой чекбокса,
-			// а не перетаскиванием (перенос статус не снимает).
-			const ch = task.statusChar;
-			if (ch === "x" || ch === "X" || ch === "-") return { ok: false, reason: "done-card" };
-
-			// Обычный перенос активной карточки: только теги (fromTag → toTag) + order.
+			// Перенос = только теги (fromTag → toTag) + order; статус не трогается.
 			const intent: MoveColumn = {
 				type: "move-column",
 				key: taskKey,
@@ -175,7 +167,7 @@ export class BoardService {
 			};
 			const fromCol = fromColId !== null ? def.columns.find((c) => c.id === fromColId) : undefined;
 			const fromSpec = fromCol !== undefined ? parseMatchSpec(fromCol.match) : null;
-			if (fromSpec !== null && fromSpec.kind === "tag") intent.fromTag = "#" + fromSpec.tag;
+			if (fromSpec !== null) intent.fromTag = "#" + fromSpec.tag;
 			intent.index = insertIndex;
 			const res = await this.deps.dispatcher.dispatch(intent);
 			if (!res.ok) return res; // фаза 1 не прошла — порядок не трогаем
@@ -214,11 +206,8 @@ export class BoardService {
 	 * Новая колонка в конце доски. colId — slug из имени (транслит кириллицы,
 	 * ASCII [a-z0-9-], уникальность против существующих; пустой slug → colN).
 	 *
-	 * Match новой колонки ВСЕГДА тег '#kanban/<board.id>/<colId>' — и на
-	 * status-досках тоже: смешанные match допустимы (membership режет по
-	 * match-спеку каждой колонки, не по group-by), а статус-бакетов всего три
-	 * и они обычно уже заняты — новая колонка со status-match была бы пустым
-	 * дублем или перехватывала бы чужие карточки.
+	 * Match новой колонки ВСЕГДА тег '#kanban/<board.id>/<colId>' — иных типов
+	 * match больше нет (раунд 3: колонки развязаны со статусом).
 	 */
 	async addColumn(boardPath: string, name: string): Promise<ColumnOpResult> {
 		const trimmed = name.trim();
@@ -272,12 +261,6 @@ export class BoardService {
 // ---------------------------------------------------------------------------
 // Чистые помощники (экспортированы для тестов)
 // ---------------------------------------------------------------------------
-
-/** На статус-доску DONE-задачи допускаются той же цепочкой исключений §1,
- *  что и active: шаблоны/чеклисты карточек на доску не протекают. */
-function isBoardEligible(t: Task): boolean {
-	return t.container !== "recurring" && t.container !== "card";
-}
 
 /**
  * Итоговый порядок 🆔 целевой колонки: видимый порядок задач → их 🆔

@@ -6,13 +6,23 @@
  */
 
 export type GroupBy = "tag" | "status";
-export type StatusBucket = "todo" | "doing" | "done";
 
 export interface BoardColumn {
 	id: string;
 	name: string;
-	/** '#tag' либо 'status:todo' | 'status:doing' | 'status:done'. */
+	/** Только '#tag'-матч (раунд 3: колонки развязаны со статусом). */
 	match: string;
+}
+
+/**
+ * Колонка, пропущенная при разборе доски (раунд 3): status-матчи упразднены,
+ * такая колонка не валит доску, но и не показывается — discovery поверхностит
+ * её как предупреждение, чтобы пользователь пересоздал колонку тегом.
+ */
+export interface SkippedColumn {
+	id: string;
+	name: string;
+	reason: string;
 }
 
 export interface BoardDef {
@@ -20,6 +30,8 @@ export interface BoardDef {
 	name: string;
 	groupBy: GroupBy;
 	columns: BoardColumn[];
+	/** Колонки, отброшенные при разборе (напр. упразднённые status-матчи). */
+	skippedColumns: SkippedColumn[];
 	/** Ограничение охвата (тег/папка) — интерпретируется query-слоем. */
 	scope?: string;
 	/** Ручной порядок карточек: colId → список 🆔. */
@@ -35,21 +47,20 @@ export function isBoardError(v: BoardDef | BoardError): v is BoardError {
 	return (v as BoardError).kind === "board-error";
 }
 
-/** Разобранный match-спек колонки. */
-export type MatchSpec =
-	| { kind: "tag"; tag: string } // без ведущего '#'
-	| { kind: "status"; status: StatusBucket };
+/** Разобранный match-спек колонки — только тег (без ведущего '#'). */
+export type MatchSpec = { kind: "tag"; tag: string };
 
 export function parseMatchSpec(match: string): MatchSpec | null {
 	if (match.startsWith("#")) {
 		const tag = match.slice(1);
 		return tag.length > 0 ? { kind: "tag", tag } : null;
 	}
-	if (match.startsWith("status:")) {
-		const s = match.slice("status:".length);
-		if (s === "todo" || s === "doing" || s === "done") return { kind: "status", status: s };
-	}
 	return null;
+}
+
+/** Упразднённый status-матч ('status:*'): такую колонку пропускаем, не валя доску. */
+function isStatusMatch(match: string): boolean {
+	return match.startsWith("status:");
 }
 
 function readString(v: unknown): string | null {
@@ -90,6 +101,7 @@ export function parseBoardFrontmatter(fm: Record<string, unknown>): BoardDef | B
 	}
 
 	const columns: BoardColumn[] = [];
+	const skippedColumns: SkippedColumn[] = [];
 	const rawColumns = fm["columns"];
 	if (!Array.isArray(rawColumns) || rawColumns.length === 0) {
 		messages.push("board: 'columns' must be a non-empty array");
@@ -103,6 +115,19 @@ export function parseBoardFrontmatter(fm: Record<string, unknown>): BoardDef | B
 			}
 			const colId = readString(rawCol["id"]);
 			const match = readString(rawCol["match"]);
+			const displayName = readString(rawCol["name"]) ?? colId ?? `columns[${i}]`;
+			// Раунд 3: status-матч больше не поддерживается — колонка не валит доску,
+			// а тихо отбрасывается (discovery покажет предупреждение). Пропускаем ДО
+			// проверок id/дублей/валидности, чтобы упразднённая колонка не порождала
+			// шумных ошибок и не занимала id.
+			if (match !== null && isStatusMatch(match)) {
+				skippedColumns.push({
+					id: colId ?? `columns[${i}]`,
+					name: displayName,
+					reason: `колонка '${displayName}': status-матчи упразднены — пересоздайте как обычную колонку`,
+				});
+				continue;
+			}
 			if (colId === null) messages.push(`board: columns[${i}] missing string 'id'`);
 			else if (seenIds.has(colId)) messages.push(`board: duplicate column id '${colId}'`);
 			else seenIds.add(colId);
@@ -110,7 +135,7 @@ export function parseBoardFrontmatter(fm: Record<string, unknown>): BoardDef | B
 				messages.push(`board: columns[${i}] missing string 'match'`);
 			} else if (parseMatchSpec(match) === null) {
 				messages.push(
-					`board: columns[${i}] invalid match ${JSON.stringify(match)} — expected '#tag' or 'status:todo|doing|done'`,
+					`board: columns[${i}] invalid match ${JSON.stringify(match)} — expected '#tag'`,
 				);
 			}
 			if (colId !== null && match !== null && parseMatchSpec(match) !== null) {
@@ -144,5 +169,13 @@ export function parseBoardFrontmatter(fm: Record<string, unknown>): BoardDef | B
 
 	if (messages.length > 0) return { kind: "board-error", messages };
 	// id/name здесь гарантированно не null: их отсутствие даёт message выше
-	return { id: id as string, name: name as string, groupBy, columns, ...(scope !== undefined ? { scope } : {}), order };
+	return {
+		id: id as string,
+		name: name as string,
+		groupBy,
+		columns,
+		skippedColumns,
+		...(scope !== undefined ? { scope } : {}),
+		order,
+	};
 }

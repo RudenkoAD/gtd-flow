@@ -195,7 +195,7 @@
 						class:is-draggable={cardDraggable}
 						onpointerdown={(e) => onCardPointerDown(e, task.key)}
 					>
-						<TaskCard {task} {dispatcher} {app} {settings} {today} {menuPorts} />
+						<TaskCard {task} {dispatcher} {app} {settings} {today} {menuPorts} inBoard={true} />
 					</div>
 				{/each}
 			</div>

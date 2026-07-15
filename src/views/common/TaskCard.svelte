@@ -10,8 +10,8 @@
 		PRIORITY_ICONS,
 		PRIORITY_LABELS,
 		dateBadges,
+		displaySegments,
 		renderWikiLinks,
-		segmentDescription,
 	} from "./cardFormat";
 
 	let {
@@ -98,8 +98,8 @@
 
 	const isDone = $derived(task.statusChar === "x" || task.statusChar === "X");
 	// вики-ссылки → плоский текст (alias/basename, ссылка на свою карточку прячется),
-	// затем сегментация #тегов
-	const segments = $derived(segmentDescription(renderWikiLinks(task.description, task.taskId)));
+	// затем сегментация #тегов без структурных тегов колонок доски (#kanban/…)
+	const segments = $derived(displaySegments(renderWikiLinks(task.description, task.taskId)));
 	const badges = $derived(dateBadges(task));
 
 	// --- инлайн-редактирование названия (dblclick) ---

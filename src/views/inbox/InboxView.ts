@@ -32,6 +32,8 @@ export class InboxView extends GtdView {
 			app: plugin.app,
 			dnd: plugin.dnd ?? null,
 			menuPorts: taskMenuPortsFromPlugin(plugin),
+			// структурный порт InboxWritePort — совместим с VaultAdapter
+			vault: plugin.vaultAdapter,
 		};
 	}
 }

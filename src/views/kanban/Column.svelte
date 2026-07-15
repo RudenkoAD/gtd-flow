@@ -10,7 +10,7 @@
 	import { insertIndexByY, type FlatRect } from "../dnd/dndCore";
 	import type { DndPort } from "../dnd/types";
 	import { VIEW_TYPES } from "../registry";
-	import type { ColumnVM } from "./kanbanLogic";
+	import { moveRefusalNotice, type ColumnVM } from "./kanbanLogic";
 
 	let {
 		column,
@@ -65,7 +65,7 @@
 			accepts: (p) => p.taskKey !== "",
 			drop: async (p, ctx) => {
 				const res = await boards.moveCard(boardPath, def, p.taskKey, column.id, dropIndex(ctx.clientY));
-				if (!res.ok) new Notice(`GTD Flow: ${res.reason}`);
+				if (!res.ok) new Notice(moveRefusalNotice(res.reason));
 			},
 		});
 	});

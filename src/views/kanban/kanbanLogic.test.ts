@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { BoardDef } from "../../core/board/boardFile";
 import type { DiscoveredBoard } from "../../services/BoardService";
 import { makeTask } from "../../stores/testSupport";
-import { buildColumnVMs, pickBoardPath, toggleCollapsed } from "./kanbanLogic";
+import { buildColumnVMs, moveRefusalNotice, pickBoardPath, toggleCollapsed } from "./kanbanLogic";
 
 const DEF: BoardDef = { id: "x", name: "X", groupBy: "tag", columns: [], order: {} };
 const boards: DiscoveredBoard[] = [
@@ -44,6 +44,22 @@ describe("buildColumnVMs", () => {
 			["todo", 2, false],
 			["done", 0, true],
 		]);
+	});
+});
+
+describe("moveRefusalNotice", () => {
+	it("status-column и done-card дают понятные подсказки", () => {
+		expect(moveRefusalNotice("status-column")).toBe(
+			"GTD Flow: Колонка по статусу: статус меняется чекбоксом карточки",
+		);
+		expect(moveRefusalNotice("done-card")).toBe(
+			"GTD Flow: Выполненная карточка: снимите отметку, чтобы вернуть в работу",
+		);
+	});
+
+	it("прочие причины показываются как есть; undefined — общий текст", () => {
+		expect(moveRefusalNotice("line-not-found")).toBe("GTD Flow: line-not-found");
+		expect(moveRefusalNotice(undefined)).toBe("GTD Flow: не удалось перенести карточку");
 	});
 });
 

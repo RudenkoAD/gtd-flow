@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Task } from "../model/Task";
 import type { BoardDef } from "./boardFile";
-import { resolveColumn } from "./membership";
+import { belongsToBoard, resolveColumn } from "./membership";
 
 function makeTask(over: Partial<Task> & { key: string }): Task {
 	return {
@@ -111,5 +111,47 @@ describe("resolveColumn: first column wins", () => {
 		]);
 		const t = makeTask({ key: "k", statusChar: "x", tags: ["#pin"] });
 		expect(resolveColumn(t, mixed)).toBe("tagged");
+	});
+});
+
+describe("belongsToBoard", () => {
+	it("(a) задача из файла доски — член без тегов и scope", () => {
+		const t = makeTask({ key: "k", filePath: "Board.md" });
+		expect(belongsToBoard(t, "Board.md", tagBoard)).toBe(true);
+	});
+
+	it("(b) тег колонки этой доски делает членом из любого файла", () => {
+		const t = makeTask({ key: "k", filePath: "x.md", tags: ["#kanban/b/todo"] });
+		expect(belongsToBoard(t, "Board.md", tagBoard)).toBe(true);
+	});
+
+	it("тег колонки без ведущего # тоже засчитывается", () => {
+		const t = makeTask({ key: "k", filePath: "x.md", tags: ["kanban/b/doing"] });
+		expect(belongsToBoard(t, "Board.md", tagBoard)).toBe(true);
+	});
+
+	it("тег ДРУГОЙ доски не делает членом", () => {
+		const t = makeTask({ key: "k", filePath: "x.md", tags: ["#kanban/other/todo"] });
+		expect(belongsToBoard(t, "Board.md", tagBoard)).toBe(false);
+	});
+
+	it("(c) scope 'path:' включает по префиксу пути, прочее — нет", () => {
+		const def: BoardDef = { ...tagBoard, scope: "path:GTD/" };
+		expect(belongsToBoard(makeTask({ key: "k", filePath: "GTD/a.md" }), "Board.md", def)).toBe(true);
+		expect(belongsToBoard(makeTask({ key: "k", filePath: "other.md" }), "Board.md", def)).toBe(
+			false,
+		);
+	});
+
+	it("не-path scope членство не расширяет (чужой файл без тега — не член)", () => {
+		const def: BoardDef = { ...tagBoard, scope: "#sometag" };
+		expect(belongsToBoard(makeTask({ key: "k", filePath: "other.md" }), "Board.md", def)).toBe(
+			false,
+		);
+	});
+
+	it("нет совпадений — не член: чужая задача из другого файла не протекает", () => {
+		const t = makeTask({ key: "k", filePath: "other.md", tags: ["#unrelated"] });
+		expect(belongsToBoard(t, "Board.md", tagBoard)).toBe(false);
 	});
 });

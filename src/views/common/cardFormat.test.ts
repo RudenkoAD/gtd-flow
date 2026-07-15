@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { makeTask } from "../../stores/testSupport";
-import { dateBadges, renderWikiLinks, segmentDescription, wikiLinkBasename } from "./cardFormat";
+import {
+	dateBadges,
+	displaySegments,
+	renderWikiLinks,
+	segmentDescription,
+	stripColumnTags,
+	wikiLinkBasename,
+} from "./cardFormat";
 
 describe("segmentDescription", () => {
 	it("выделяет тег в середине текста", () => {
@@ -51,6 +58,51 @@ describe("segmentDescription", () => {
 				.join("");
 			expect(joined).toBe(s);
 		}
+	});
+});
+
+describe("stripColumnTags", () => {
+	it("вырезает тег колонки в середине, шов схлопывается до одного пробела", () => {
+		expect(stripColumnTags("Купить молоко #kanban/dev/todo и хлеб")).toBe("Купить молоко и хлеб");
+	});
+
+	it("тег колонки в конце — без хвостового пробела", () => {
+		expect(stripColumnTags("Позвонить #kanban/dev/doing")).toBe("Позвонить");
+	});
+
+	it("тег колонки в начале — без ведущего пробела", () => {
+		expect(stripColumnTags("#kanban/dev/todo разобрать почту")).toBe("разобрать почту");
+	});
+
+	it("несколько тегов колонок вырезаются, обычные #теги остаются", () => {
+		expect(stripColumnTags("Задача #home #kanban/dev/todo #kanban/dev/review срочно")).toBe(
+			"Задача #home срочно",
+		);
+	});
+
+	it("без тегов колонок строка не меняется (пробелы не нормализуются лишний раз)", () => {
+		expect(stripColumnTags("Купить молоко #home и хлеб")).toBe("Купить молоко #home и хлеб");
+		expect(stripColumnTags("просто текст")).toBe("просто текст");
+	});
+
+	it("#kanban без сегмента колонки (нет '/') не считается тегом колонки", () => {
+		// префикс строго '#kanban/'; одиночный #kanban — обычный тег, остаётся
+		expect(stripColumnTags("тема #kanban заметка")).toBe("тема #kanban заметка");
+	});
+});
+
+describe("displaySegments", () => {
+	it("сегментирует описание, скрывая теги колонок доски", () => {
+		expect(displaySegments("Купить #home #kanban/dev/todo молоко")).toEqual([
+			{ text: "Купить ", tag: false },
+			{ text: "#home", tag: true },
+			{ text: " молоко", tag: false },
+		]);
+	});
+
+	it("без тегов колонок совпадает с segmentDescription", () => {
+		const text = "Купить молоко #home и хлеб";
+		expect(displaySegments(text)).toEqual(segmentDescription(text));
 	});
 });
 

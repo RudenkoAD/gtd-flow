@@ -12,9 +12,9 @@
  * Ноль импортов obsidian: frontmatter приходит через инжектированные порты,
  * структурно совместимые с MetadataAdapter.frontmatter / VaultAdapter.processFrontmatter.
  */
-import type { BoardDef, StatusBucket } from "../core/board/boardFile";
+import type { BoardDef } from "../core/board/boardFile";
 import { isBoardError, parseBoardFrontmatter, parseMatchSpec } from "../core/board/boardFile";
-import { resolveColumn } from "../core/board/membership";
+import { belongsToBoard, resolveColumn } from "../core/board/membership";
 import { applyOrder, patchOrder } from "../core/board/ordering";
 import type { MoveColumn } from "../core/intents/Intent";
 import { isActive, isDone } from "../core/model/gtdState";
@@ -66,9 +66,6 @@ export interface BoardModel {
 	columns: BoardColumnModel[];
 }
 
-/** Соответствие статус-бакета символу статуса для move-column (group-by: status). */
-const STATUS_CHAR: Record<StatusBucket, string> = { todo: " ", doing: "/", done: "x" };
-
 export class BoardService {
 	constructor(private readonly deps: BoardServiceDeps) {}
 
@@ -107,7 +104,9 @@ export class BoardService {
 		});
 		const byCol = new Map<string, Task[]>();
 		for (const t of this.deps.feed.getIndex().all()) {
-			if (!inScope(t, def.scope)) continue;
+			// охват доски: только задачи ЭТОЙ доски (файл доски / тег колонки / scope),
+			// иначе чужая done-задача из другого файла протекала бы в status:done
+			if (!belongsToBoard(t, path, def)) continue;
 			if (!isActive(t, today) && !(hasDoneColumn && isDone(t) && isBoardEligible(t))) continue;
 			const colId = resolveColumn(t, def);
 			if (colId === null) continue;
@@ -128,9 +127,14 @@ export class BoardService {
 
 	/**
 	 * Двухфазная запись (ТЗ §3), строго (1)→(2):
-	 * 1. intent по строке задачи: move-column (снять/добавить тег колонки)
-	 *    либо смена статуса при group-by: status. Внутриколоночный drop
-	 *    строку не трогает — сразу фаза 2.
+	 * 1. intent по строке задачи: move-column меняет ТОЛЬКО теги колонок
+	 *    (снять исходный → добавить целевой). Колонка = организация, а не
+	 *    статус: перенос статуса карточки НЕ трогает (статус меняется лишь
+	 *    чекбоксом). Поэтому drop отклоняется без записи, если:
+	 *      - целевая колонка по статусу (status:*) → reason 'status-column';
+	 *      - карточка выполнена/отменена ([x]/[X]/[-]) → reason 'done-card'
+	 *        (вернуть в работу = снять отметку чекбоксом).
+	 *    Внутриколоночный drop строку не трогает — сразу фаза 2.
 	 * 2. frontmatter доски: вставка 🆔 в ручной порядок целевой колонки.
 	 *    Если 🆔 у задачи не было, после (1) он появляется (ленивая вставка
 	 *    WritebackService) — перечитываем задачу из feed. Реиндексация
@@ -154,34 +158,24 @@ export class BoardService {
 		// Фаза 1 — строка задачи (пропускается для drop в ту же колонку).
 		const fromColId = resolveColumn(task, def);
 		if (fromColId !== toColId) {
-			const intent: MoveColumn = { type: "move-column", key: taskKey, fromTag: null, toTag: null };
-			if (toSpec.kind === "tag") {
-				intent.toTag = "#" + toSpec.tag;
-				// Живой фидбек-баг: done-карточка видима только в status:done-колонке,
-				// и перенос её в рабочую колонку писал тег «в никуда» (карточка
-				// оставалась в «Готово»). Намерение пользователя очевидно — вернуть
-				// в работу: снимаем [x]/[-] (✅/❌ уйдут через applyStatusWithDates)…
-				const ch = task.statusChar;
-				if (ch === "x" || ch === "X" || ch === "-") intent.toStatusChar = " ";
-			} else {
-				intent.toStatusChar = STATUS_CHAR[toSpec.status];
-				// drag в статус-колонку = смена статуса: сопутствующие даты ✅/❌
-				// обязаны вести себя как у set-status (штамп при done, снятие при reopen)
-				intent.date = this.deps.feed.today();
-			}
+			// Колонка = только организация: статус-колонки не принимают drag —
+			// статус меняется исключительно чекбоксом карточки.
+			if (toSpec.kind === "status") return { ok: false, reason: "status-column" };
+			// Выполненную/отменённую карточку возвращают в работу отметкой чекбокса,
+			// а не перетаскиванием (перенос статус не снимает).
+			const ch = task.statusChar;
+			if (ch === "x" || ch === "X" || ch === "-") return { ok: false, reason: "done-card" };
+
+			// Обычный перенос активной карточки: только теги (fromTag → toTag) + order.
+			const intent: MoveColumn = {
+				type: "move-column",
+				key: taskKey,
+				fromTag: null,
+				toTag: "#" + toSpec.tag,
+			};
 			const fromCol = fromColId !== null ? def.columns.find((c) => c.id === fromColId) : undefined;
 			const fromSpec = fromCol !== undefined ? parseMatchSpec(fromCol.match) : null;
 			if (fromSpec !== null && fromSpec.kind === "tag") intent.fromTag = "#" + fromSpec.tag;
-			if (intent.toStatusChar === " " && toSpec.kind === "tag") {
-				// …и при reopen снимаем ВСЕ теги колонок этой доски, кроме целевого и
-				// уже снимаемого fromTag, — иначе задача после снятия [x] уехала бы
-				// в старую колонку по давнему тегу (дубли removeTag недопустимы).
-				const prefix = `#kanban/${def.id}/`;
-				const extra = task.tags.filter(
-					(t) => t.startsWith(prefix) && t !== intent.toTag && t !== intent.fromTag,
-				);
-				if (extra.length > 0) intent.fromTags = extra;
-			}
 			intent.index = insertIndex;
 			const res = await this.deps.dispatcher.dispatch(intent);
 			if (!res.ok) return res; // фаза 1 не прошла — порядок не трогаем
@@ -278,13 +272,6 @@ export class BoardService {
 // ---------------------------------------------------------------------------
 // Чистые помощники (экспортированы для тестов)
 // ---------------------------------------------------------------------------
-
-/** Охват доски: понимаем только префикс 'path:...'; прочие формы scope
- *  (теги и т.п.) — задел на будущее, сейчас не сужают охват. */
-export function inScope(t: Task, scope: string | undefined): boolean {
-	if (scope === undefined || !scope.startsWith("path:")) return true;
-	return t.filePath.startsWith(scope.slice("path:".length));
-}
 
 /** На статус-доску DONE-задачи допускаются той же цепочкой исключений §1,
  *  что и active: шаблоны/чеклисты карточек на доску не протекают. */

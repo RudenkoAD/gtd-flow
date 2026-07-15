@@ -52,6 +52,22 @@ export interface KanbanPersistedState {
 	collapsed?: Record<string, boolean>;
 }
 
+/**
+ * Человекочитаемое уведомление при отказе moveCard (колонка = организация,
+ * не статус). Специальные причины объясняют пользователю, что делать; прочие
+ * причины показываются как есть.
+ */
+export function moveRefusalNotice(reason: string | undefined): string {
+	switch (reason) {
+		case "status-column":
+			return "GTD Flow: Колонка по статусу: статус меняется чекбоксом карточки";
+		case "done-card":
+			return "GTD Flow: Выполненная карточка: снимите отметку, чтобы вернуть в работу";
+		default:
+			return `GTD Flow: ${reason ?? "не удалось перенести карточку"}`;
+	}
+}
+
 /** Новое состояние свёрнутости после клика по шапке колонки (вход не мутируется). */
 export function toggleCollapsed(
 	collapsed: Readonly<Record<string, boolean>>,

@@ -127,49 +127,53 @@ describe("buildMenuModel: статусные переключатели", () => 
 		const items = buildMenuModel(input());
 		const topIds = items.filter((n) => !isSubmenuNode(n)).map((n) => (n as MenuItemModel).id);
 		expect(topIds).toContain("status-done");
-		expect(topIds).toContain("status-doing");
 		expect(topIds).toContain("status-cancel");
 	});
 
-	it("открытая задача: выполнено (с датой), в работу, отменить (с датой)", () => {
+	it("«В работу»/«Вернуть в очередь» убраны из меню (статус — чекбоксом)", () => {
+		// ни для одного статуса не всплывают пункты рабочего перехода '/'
+		for (const statusChar of [" ", "/", "x", "-"]) {
+			const task = makeTask({ filePath: "a.md", statusChar });
+			const got = ids(buildMenuModel(input({ task })));
+			expect(got).not.toContain("status-doing");
+			expect(got).not.toContain("status-pause");
+		}
+	});
+
+	it("открытая задача: выполнено (с датой) и отменить (с датой), без «в работу»", () => {
 		const task = makeTask({ filePath: "a.md", statusChar: " " });
 		const items = buildMenuModel(input({ task }));
 		expect(byId(items, "status-done").action).toEqual({
 			kind: "intent",
 			intent: { type: "set-status", key: task.key, statusChar: "x", date: TODAY },
 		});
-		expect(byId(items, "status-doing").action).toEqual({
-			kind: "intent",
-			intent: { type: "set-status", key: task.key, statusChar: "/" },
-		});
 		expect(byId(items, "status-cancel").action).toEqual({
 			kind: "intent",
 			intent: { type: "set-status", key: task.key, statusChar: "-", date: TODAY },
 		});
 		expect(ids(items)).not.toContain("status-reopen");
-	});
-
-	it("выполненная: «Открыть заново» вместо «Выполнено»", () => {
-		const task = makeTask({ filePath: "a.md", statusChar: "x" });
-		const items = buildMenuModel(input({ task }));
-		expect(byId(items, "status-reopen").action).toEqual({
-			kind: "intent",
-			intent: { type: "set-status", key: task.key, statusChar: " " },
-		});
-		expect(ids(items)).not.toContain("status-done");
-	});
-
-	it("в работе '/': «Вернуть в очередь»", () => {
-		const task = makeTask({ filePath: "a.md", statusChar: "/" });
-		const items = buildMenuModel(input({ task }));
-		expect(byId(items, "status-pause").action).toEqual({
-			kind: "intent",
-			intent: { type: "set-status", key: task.key, statusChar: " " },
-		});
 		expect(ids(items)).not.toContain("status-doing");
 	});
 
-	it("отменённая '-': «Вернуть из отменённых»", () => {
+	it("выполненная: «Выполнено» и «Открыть заново» отсутствуют (снятие — чекбоксом)", () => {
+		const task = makeTask({ filePath: "a.md", statusChar: "x" });
+		const got = ids(buildMenuModel(input({ task })));
+		expect(got).not.toContain("status-done");
+		expect(got).not.toContain("status-reopen");
+		// «Отменить» доступна и для выполненной — статус-секция не пустеет
+		expect(got).toContain("status-cancel");
+	});
+
+	it("в работе '/': трактуется как обычная невыполненная — «Выполнено» + «Отменить»", () => {
+		const task = makeTask({ filePath: "a.md", statusChar: "/" });
+		const got = ids(buildMenuModel(input({ task })));
+		expect(got).toContain("status-done");
+		expect(got).toContain("status-cancel");
+		expect(got).not.toContain("status-doing");
+		expect(got).not.toContain("status-pause");
+	});
+
+	it("отменённая '-': «Вернуть из отменённых» вместо «Отменить»", () => {
 		const task = makeTask({ filePath: "a.md", statusChar: "-" });
 		const items = buildMenuModel(input({ task }));
 		expect(byId(items, "status-uncancel").action).toEqual({
@@ -177,6 +181,8 @@ describe("buildMenuModel: статусные переключатели", () => 
 			intent: { type: "set-status", key: task.key, statusChar: " " },
 		});
 		expect(ids(items)).not.toContain("status-cancel");
+		// отменённая не выполнена — «Выполнено» доступно
+		expect(ids(items)).toContain("status-done");
 	});
 });
 

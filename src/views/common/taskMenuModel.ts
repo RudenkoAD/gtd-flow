@@ -95,37 +95,23 @@ export function buildMenuModel(input: MenuModelInput): MenuNode[] {
 	const { task, today } = input;
 	const items: MenuNode[] = [];
 	const isDone = task.statusChar === "x" || task.statusChar === "X";
-	const isDoing = task.statusChar === "/";
 	const isCancelled = task.statusChar === "-";
 
-	// --- статус: выполнено/заново, в работе '/', отменить '-' ---
-	items.push(
-		isDone
-			? intentItem("status-reopen", "status", "Открыть заново", "rotate-ccw", {
-					type: "set-status",
-					key: task.key,
-					statusChar: " ",
-				})
-			: intentItem("status-done", "status", "Выполнено", "check", {
-					type: "set-status",
-					key: task.key,
-					statusChar: "x",
-					date: today,
-				}),
-	);
-	items.push(
-		isDoing
-			? intentItem("status-pause", "status", "Вернуть в очередь", "undo-2", {
-					type: "set-status",
-					key: task.key,
-					statusChar: " ",
-				})
-			: intentItem("status-doing", "status", "В работу", "play", {
-					type: "set-status",
-					key: task.key,
-					statusChar: "/",
-				}),
-	);
+	// --- статус: только «Выполнено» (пока задача не выполнена) и отмена.
+	// Новая модель доски — «статус = чекбокс»: перевод в работу '/' и возврат в
+	// очередь задаются галочкой карточки, а «Открыть заново» дублировало её
+	// снятие — поэтому эти пункты убраны. Отмена '-' чекбоксом недостижима,
+	// значит её пара-переключатель «Отменить»/«Вернуть из отменённых» остаётся. ---
+	if (!isDone) {
+		items.push(
+			intentItem("status-done", "status", "Выполнено", "check", {
+				type: "set-status",
+				key: task.key,
+				statusChar: "x",
+				date: today,
+			}),
+		);
+	}
 	items.push(
 		isCancelled
 			? intentItem("status-uncancel", "status", "Вернуть из отменённых", "rotate-ccw", {

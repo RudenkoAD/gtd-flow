@@ -45,6 +45,38 @@ export function segmentDescription(text: string): Segment[] {
 	return out;
 }
 
+/** Сегмент — структурный тег колонки доски ('#kanban/<board>/<col>'). */
+function isColumnTagSegment(seg: Segment): boolean {
+	return seg.tag && seg.text.startsWith("#kanban/");
+}
+
+/**
+ * Убирает из текста описания структурные теги колонок '#kanban/...': на доске
+ * колонка и так видна, а во входящих/календаре/тикле эти теги — визуальный шум.
+ * Пробелы на шве вырезанного тега схлопываются, крайние обрезаются. В самом
+ * файле теги остаются — правится ТОЛЬКО отображение. Без тегов колонок строка
+ * возвращается как есть (идемпотентно, без лишней нормализации пробелов).
+ */
+export function stripColumnTags(text: string): string {
+	const segments = segmentDescription(text);
+	if (!segments.some(isColumnTagSegment)) return text;
+	return segments
+		.filter((seg) => !isColumnTagSegment(seg))
+		.map((seg) => seg.text)
+		.join("")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+/**
+ * Сегменты описания для карточки: как segmentDescription, но без структурных
+ * тегов колонок доски (stripColumnTags). Единая точка рендера текста карточки
+ * во всех видах, использующих TaskCard (доска/входящие/тикль).
+ */
+export function displaySegments(text: string): Segment[] {
+	return segmentDescription(stripColumnTags(text));
+}
+
 /** Базовое имя цели вики-ссылки: без пути, без ".md", без #заголовка/#^блока. */
 export function wikiLinkBasename(target: string): string {
 	const noSub = target.split("#")[0]!; // [[note#heading]] / [[note#^block]]

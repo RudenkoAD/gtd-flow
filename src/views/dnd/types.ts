@@ -4,7 +4,16 @@
  * связь только через реестр целей DndPort.
  */
 
-export interface DragPayload { taskKey: string; sourceViewType: string }
+export interface DragPayload {
+  taskKey: string;
+  sourceViewType: string;
+  /** Вертикальное смещение точки захвата от ВЕРХА перетаскиваемого блока.
+   *  Ставится только блоками time-grid календаря: их время = позиция верха,
+   *  и drop-цель восстанавливает верх (clientY − grabOffsetY), чтобы чисто
+   *  горизонтальный drag не сдвигал время на величину хвата. Источники без
+   *  поля (kanban, входящие, чипы месяца) целятся точкой курсора. */
+  grabOffsetY?: number;
+}
 export interface DropContext { clientX: number; clientY: number }
 export interface GtdDropTarget {
   el: HTMLElement;

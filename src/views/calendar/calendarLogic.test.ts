@@ -327,6 +327,16 @@ describe("quickAddLine / appendLine", () => {
 		expect(quickAddLine("", "2026-07-20")).toBeNull();
 	});
 
+	it("время слота time-grid — хвост «📅 <дата> HH:mm»", () => {
+		expect(quickAddLine("Встреча", "2026-07-20", "14:30")).toBe(
+			"- [ ] Встреча 📅 2026-07-20 14:30",
+		);
+		expect(quickAddLine("Без времени", "2026-07-20", null)).toBe(
+			"- [ ] Без времени 📅 2026-07-20",
+		);
+		expect(quickAddLine("   ", "2026-07-20", "14:30")).toBeNull();
+	});
+
 	it("append в пустой/непустой файл — ровно один перевод строки в конце", () => {
 		expect(appendLine("", "- [ ] х")).toBe("- [ ] х\n");
 		expect(appendLine("\n", "- [ ] х")).toBe("- [ ] х\n");
@@ -356,6 +366,14 @@ describe("sanitizeCalendarState", () => {
 	it("принимает валидные mode и anchor", () => {
 		expect(sanitizeCalendarState({ mode: "week", anchor: "2026-07-15" })).toEqual({
 			mode: "week",
+			anchor: "2026-07-15",
+		});
+	});
+
+	it("принимает новые time-grid режимы «3 дня»/«День»", () => {
+		expect(sanitizeCalendarState({ mode: "3days" })).toEqual({ mode: "3days" });
+		expect(sanitizeCalendarState({ mode: "day", anchor: "2026-07-15" })).toEqual({
+			mode: "day",
 			anchor: "2026-07-15",
 		});
 	});

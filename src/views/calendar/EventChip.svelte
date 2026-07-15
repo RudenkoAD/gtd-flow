@@ -19,6 +19,7 @@
 		settings,
 		menuPorts = null,
 		showDate = null,
+		dragAnchor = null,
 	}: {
 		ev: PlacedEvent;
 		today: IsoDate;
@@ -30,6 +31,9 @@
 		menuPorts?: TaskMenuPorts | null;
 		/** Показать дату в самом chip'е (секция просроченных в агенде). */
 		showDate?: IsoDate | null;
+		/** Блок time-grid вокруг чипа: он становится призраком drag'а, а его
+		 *  верх — якорем времени (grabOffsetY в payload). null — обычный чип. */
+		dragAnchor?: HTMLElement | null;
 	} = $props();
 
 	const isDone = $derived(ev.task.statusChar === "x" || ev.task.statusChar === "X");
@@ -71,6 +75,19 @@
 		if (!draggable || dnd === null || e.button !== 0) return;
 		// клик по точке-статусу — не начало drag
 		if (e.target instanceof Element && e.target.closest("input, button, a, select, textarea")) return;
+		if (dragAnchor !== null) {
+			// блок сетки: призрак — весь блок, время при drop — по его верху
+			dnd.startDrag(
+				{
+					taskKey: ev.task.key,
+					sourceViewType: VIEW_TYPES.calendar,
+					grabOffsetY: e.clientY - dragAnchor.getBoundingClientRect().top,
+				},
+				e,
+				dragAnchor,
+			);
+			return;
+		}
 		dnd.startDrag(
 			{ taskKey: ev.task.key, sourceViewType: VIEW_TYPES.calendar },
 			e,

@@ -8,7 +8,10 @@ import { taskToCalendarEvent, type CalendarField } from "../../core/model/projec
 import { isInTickler } from "../../core/query/QueryEngine";
 import { addDaysIso, dayOfWeekSun0, startOfWeek } from "../common/dates";
 
-export type CalendarMode = "month" | "week" | "agenda";
+export type CalendarMode = "month" | "week" | "agenda" | "3days" | "day";
+
+/** Ширина страницы режима «3 дня»: якорь + два следующих дня. */
+export const DAYS3_PAGE_DAYS = 3;
 
 /** Размер страницы агенды: две недели — обозримо и накрывает «эту и следующую». */
 export const AGENDA_PAGE_DAYS = 14;
@@ -204,11 +207,12 @@ export function openTasks(tasks: readonly Task[]): Task[] {
 // Быстрый ввод (клик по пустой области дня)
 // ---------------------------------------------------------------------------
 
-/** Строка захвата `- [ ] <текст> 📅 <дата>`; пустой текст — null (не пишем). */
-export function quickAddLine(text: string, date: IsoDate): string | null {
+/** Строка захвата `- [ ] <текст> 📅 <дата>[ HH:mm]`; пустой текст — null (не пишем).
+ *  time приходит из клика по слоту time-grid — формат хвоста тот же, что у парсера. */
+export function quickAddLine(text: string, date: IsoDate, time: string | null = null): string | null {
 	const trimmed = text.trim();
 	if (trimmed === "") return null;
-	return `- [ ] ${trimmed} 📅 ${date}`;
+	return `- [ ] ${trimmed} 📅 ${date}${time !== null ? ` ${time}` : ""}`;
 }
 
 /** Append строки в конец файла — тот же паттерн '\n', что у WritebackService.moveLine. */
@@ -261,7 +265,9 @@ export function agendaLabel(date: IsoDate): string {
 // viewState
 // ---------------------------------------------------------------------------
 
-const MODES: readonly CalendarMode[] = ["month", "week", "agenda"];
+// Старые сохранённые state (mode ∈ month/week/agenda) остаются валидными —
+// новые режимы только расширяют множество допустимых значений.
+const MODES: readonly CalendarMode[] = ["month", "week", "agenda", "3days", "day"];
 const ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** Раскладка могла прийти чужая/битая (setViewState зовут и другие плагины). */

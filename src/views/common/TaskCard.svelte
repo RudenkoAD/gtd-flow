@@ -10,6 +10,7 @@
 		PRIORITY_ICONS,
 		PRIORITY_LABELS,
 		dateBadges,
+		renderWikiLinks,
 		segmentDescription,
 	} from "./cardFormat";
 
@@ -39,15 +40,23 @@
 		menuPorts?: TaskMenuPorts | null;
 	} = $props();
 
+	// инлайн-редактирование названия (dblclick) — состояние объявлено до
+	// draggable: во время правки drag выключен
+	let editing = $state(false);
+	let editText = $state("");
+
 	// ТЗ §8: на телефоне кросс-видовой drag выключен — startDrag не инициируем,
 	// touch-action возвращается нативному скроллу, длинный тап открывает карточку
-	const draggable = $derived(dnd !== null && dragPayload !== undefined && !Platform.isPhone);
+	const draggable = $derived(
+		dnd !== null && dragPayload !== undefined && !Platform.isPhone && !editing,
+	);
 
 	function isControl(target: EventTarget | null): boolean {
 		return target instanceof Element && target.closest("input, button, a, select, textarea") !== null;
 	}
 
 	function onCardPointerDown(e: PointerEvent): void {
+		if (editing) return; // во время инлайн-редактирования drag/long-press выключены
 		if (isControl(e.target)) return; // клики по контролам — не drag и не long-press
 		if (Platform.isPhone) {
 			startLongPress(e);
@@ -88,8 +97,46 @@
 	}
 
 	const isDone = $derived(task.statusChar === "x" || task.statusChar === "X");
-	const segments = $derived(segmentDescription(task.description));
+	// вики-ссылки → плоский текст (alias/basename, ссылка на свою карточку прячется),
+	// затем сегментация #тегов
+	const segments = $derived(segmentDescription(renderWikiLinks(task.description, task.taskId)));
 	const badges = $derived(dateBadges(task));
+
+	// --- инлайн-редактирование названия (dblclick) ---
+
+	function startEdit(): void {
+		editText = task.description;
+		editing = true;
+	}
+
+	function cancelEdit(): void {
+		editing = false;
+	}
+
+	function commitEdit(): void {
+		const text = editText.trim();
+		editing = false;
+		if (text === "" || text === task.description) return; // пусто/без изменений = отмена
+		void run({ type: "set-text", key: task.key, text });
+	}
+
+	function onEditKeydown(e: KeyboardEvent): void {
+		if (e.key === "Enter") {
+			e.preventDefault();
+			commitEdit();
+		} else if (e.key === "Escape") {
+			// не отдаём Escape наружу — он закрыл бы модал/попап вокруг вида
+			e.preventDefault();
+			e.stopPropagation();
+			cancelEdit();
+		}
+	}
+
+	/** use:-экшен: фокус + выделение сразу после появления input в DOM. */
+	function focusAndSelect(node: HTMLInputElement): void {
+		node.focus();
+		node.select();
+	}
 
 	// --- прогресс карточки n/m (CardPort.progressOf) ---
 	// чек-строки живут в файле-карточке, а не в задаче: их правка НЕ пересоздаёт
@@ -116,9 +163,11 @@
 		if (!res.ok) new Notice(`GTD Flow: ${res.reason ?? "карточка недоступна"}`);
 	}
 
+	// dblclick = инлайн-редактирование названия; открытие карточки осталось
+	// в меню («Открыть карточку»), на бейдже прогресса и на длинном тапе телефона
 	function onCardDblClick(e: MouseEvent): void {
-		if (isControl(e.target)) return;
-		void openCard();
+		if (editing || isControl(e.target)) return;
+		startEdit();
 	}
 
 	// единая точка write-back: отказ — уведомление, а не тихо съеденный клик
@@ -166,13 +215,25 @@
 	/>
 	<div class="gtd-task-body">
 		<div class="gtd-task-desc">
-			{#if task.priority !== "none"}
-				<span class="gtd-task-prio" title={PRIORITY_LABELS[task.priority]}
-					>{PRIORITY_ICONS[task.priority]}</span
-				>
+			{#if editing}
+				<!-- Enter = set-text, Escape/пусто = отмена; blur без Enter — тоже отмена -->
+				<input
+					type="text"
+					class="gtd-task-edit"
+					bind:value={editText}
+					use:focusAndSelect
+					onkeydown={onEditKeydown}
+					onblur={cancelEdit}
+				/>
+			{:else}
+				{#if task.priority !== "none"}
+					<span class="gtd-task-prio" title={PRIORITY_LABELS[task.priority]}
+						>{PRIORITY_ICONS[task.priority]}</span
+					>
+				{/if}
+				{#each segments as seg}{#if seg.tag}<span class="tag">{seg.text}</span
+					>{:else}{seg.text}{/if}{/each}
 			{/if}
-			{#each segments as seg}{#if seg.tag}<span class="tag">{seg.text}</span
-				>{:else}{seg.text}{/if}{/each}
 		</div>
 		{#if badges.length > 0}
 			<div class="gtd-task-badges">
@@ -231,6 +292,10 @@
 	}
 	.gtd-task-desc {
 		overflow-wrap: anywhere;
+	}
+	.gtd-task-edit {
+		width: 100%;
+		font: inherit;
 	}
 	.gtd-task-prio {
 		margin-right: 4px;

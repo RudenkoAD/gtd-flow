@@ -128,32 +128,61 @@ export function buildTaskMenu(ctx: TaskMenuCtx): Menu {
 }
 
 /** Единая точка write-back меню: отказ — уведомление, а не тихо съеденный клик. */
-async function dispatchNoticing(dispatcher: IntentDispatcher, intent: Intent): Promise<void> {
+async function dispatchNoticing(
+	dispatcher: IntentDispatcher,
+	intent: Intent,
+): Promise<IntentResult> {
 	const res = await dispatcher.dispatch(intent);
 	if (!res.ok) new Notice(`GTD Flow: ${res.reason}`);
+	return res;
+}
+
+/**
+ * Defer с явным откликом: карточка после отложки исчезает из текущего вида
+ * (или вовсе не меняется видимо, если 🛫 уже стоял на эту дату) — без Notice
+ * это читалось как «кнопка ничего не делает».
+ */
+async function dispatchDefer(
+	dispatcher: IntentDispatcher,
+	key: string,
+	until: IsoDate,
+): Promise<void> {
+	const res = await dispatchNoticing(dispatcher, { type: "defer", key, until });
+	if (res.ok) new Notice(`Отложена до ${until}`);
 }
 
 async function runMenuAction(ctx: TaskMenuCtx, action: MenuAction): Promise<void> {
 	const ports = ctx.ports ?? null;
 	switch (action.kind) {
 		case "intent":
-			return dispatchNoticing(ctx.dispatcher, action.intent);
+			if (action.intent.type === "defer")
+				return dispatchDefer(ctx.dispatcher, action.intent.key, action.intent.until);
+			return void (await dispatchNoticing(ctx.dispatcher, action.intent));
 
 		case "pick-due": {
-			const date = await pickDate(ctx.app, "Запланировать на", ctx.task.due ?? undefined);
-			if (date === null) return;
-			return dispatchNoticing(ctx.dispatcher, {
+			// «Запланировать…» — единственный поток с временем (📅 HH:mm);
+			// time: null (поле пусто) снимает существующее время, строка — ставит
+			const choice = await pickDate(
+				ctx.app,
+				"Запланировать на",
+				ctx.task.due ?? undefined,
+				true,
+				ctx.task.dueTime,
+			);
+			if (choice === null) return;
+			return void (await dispatchNoticing(ctx.dispatcher, {
 				type: "set-date",
 				key: ctx.task.key,
 				field: "due",
-				date,
-			});
+				date: choice.date,
+				time: choice.time,
+			}));
 		}
 
 		case "pick-defer": {
 			const date = await pickDate(ctx.app, "Отложить до", ctx.task.start ?? undefined);
 			if (date === null) return;
-			return dispatchNoticing(ctx.dispatcher, { type: "defer", key: ctx.task.key, until: date });
+			return dispatchDefer(ctx.dispatcher, ctx.task.key, date);
 		}
 
 		case "pick-column": {
@@ -189,11 +218,11 @@ async function runMenuAction(ctx: TaskMenuCtx, action: MenuAction): Promise<void
 			const choice = await pickProject(ctx.app, found);
 			if (choice === null) return;
 			if (choice.path === ctx.task.filePath) return; // уже в этом проекте — no-op
-			return dispatchNoticing(ctx.dispatcher, {
+			return void (await dispatchNoticing(ctx.dispatcher, {
 				type: "move-line",
 				key: ctx.task.key,
 				toFile: choice.path,
-			});
+			}));
 		}
 
 		case "make-template": {

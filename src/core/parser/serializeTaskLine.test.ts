@@ -4,6 +4,7 @@ import {
 	addTag,
 	removeTag,
 	setDependsOn,
+	setDescription,
 	setField,
 	setPriority,
 	setStatusChar,
@@ -79,6 +80,161 @@ describe("setField: золотые случаи", () => {
 	it("бросает на не-задаче и на не-ISO дате", () => {
 		expect(() => setField("not a task", "due", "2026-01-01")).toThrow();
 		expect(() => setField("- [ ] T", "due", "tomorrow")).toThrow();
+	});
+});
+
+describe("setField: время (4-й аргумент)", () => {
+	it("строка-время устанавливает время при вставке нового поля", () => {
+		expect(setField("- [ ] T", "due", "2026-01-05", "14:30")).toBe(
+			"- [ ] T 📅 2026-01-05 14:30",
+		);
+		expect(setField("- [ ] T", "scheduled", "2026-01-01", "08:00")).toBe(
+			"- [ ] T ⏳ 2026-01-01 08:00",
+		);
+		expect(setField("- [ ] T", "start", "2026-01-01", "23:59")).toBe(
+			"- [ ] T 🛫 2026-01-01 23:59",
+		);
+	});
+
+	it("строка-время на существующем поле (с временем и без)", () => {
+		expect(setField("- [ ] T 📅 2026-01-05", "due", "2026-01-05", "09:15")).toBe(
+			"- [ ] T 📅 2026-01-05 09:15",
+		);
+		expect(setField("- [ ] T 📅 2026-01-05 14:30", "due", "2026-01-05", "09:15")).toBe(
+			"- [ ] T 📅 2026-01-05 09:15",
+		);
+	});
+
+	it("undefined (аргумент опущен) сохраняет существующее время при замене даты", () => {
+		expect(setField("- [ ] T 📅 2026-01-05 14:30 ⏫", "due", "2026-02-01")).toBe(
+			"- [ ] T 📅 2026-02-01 14:30 ⏫",
+		);
+	});
+
+	it("undefined на строке без времени — поведение как раньше", () => {
+		expect(setField("- [ ] T 📅 2026-01-05", "due", "2026-02-01")).toBe(
+			"- [ ] T 📅 2026-02-01",
+		);
+	});
+
+	it("null снимает время, дата остаётся", () => {
+		expect(setField("- [ ] T 📅 2026-01-05 14:30", "due", "2026-01-05", null)).toBe(
+			"- [ ] T 📅 2026-01-05",
+		);
+	});
+
+	it("null на строке без времени — тождество", () => {
+		const line = "- [ ] T 📅 2026-01-05";
+		expect(setField(line, "due", "2026-01-05", null)).toBe(line);
+	});
+
+	it("удаление поля (value = null) сносит и время", () => {
+		expect(setField("- [ ] T 📅 2026-01-05 14:30 ⏫", "due", null)).toBe("- [ ] T ⏫");
+	});
+
+	it("no-op: та же дата и то же время = тождество строки", () => {
+		const line = "- [ ] T 📅 2026-01-05 14:30 ^b1";
+		expect(setField(line, "due", "2026-01-05")).toBe(line);
+		expect(setField(line, "due", "2026-01-05", "14:30")).toBe(line);
+	});
+
+	it("при дублях замена правит последний токен и сохраняет ЕГО время", () => {
+		const line = "- [ ] T 📅 2026-01-01 10:00 x 📅 2026-02-02 11:00";
+		expect(setField(line, "due", "2026-03-03")).toBe(
+			"- [ ] T 📅 2026-01-01 10:00 x 📅 2026-03-03 11:00",
+		);
+	});
+
+	it("время переживает правку соседнего поля", () => {
+		expect(setField("- [ ] T 📅 2026-01-05 14:30", "done", "2026-01-06")).toBe(
+			"- [ ] T 📅 2026-01-05 14:30 ✅ 2026-01-06",
+		);
+	});
+
+	it("throw: мусорное время (писатель не мягче читателя)", () => {
+		for (const bad of ["25:00", "9:30", "14:60", "14:30:00", "1430", ""]) {
+			expect(() => setField("- [ ] T", "due", "2026-01-01", bad), bad).toThrow();
+		}
+	});
+
+	it("throw: время у полей без времени (✅/➕/❌/🔜) — даже null", () => {
+		expect(() => setField("- [ ] T", "done", "2026-01-01", "14:30")).toThrow();
+		expect(() => setField("- [ ] T", "nextSpawn", "2026-01-01", "14:30")).toThrow();
+		expect(() => setField("- [ ] T", "created", "2026-01-01", null)).toThrow();
+	});
+
+	it("throw: время без даты (value = null + строка времени)", () => {
+		expect(() => setField("- [ ] T 📅 2026-01-01 10:00", "due", null, "14:30")).toThrow();
+	});
+
+	it("throw: время, вклеенное в дату value", () => {
+		expect(() => setField("- [ ] T", "due", "2026-01-01 14:30")).toThrow();
+	});
+});
+
+describe("setDescription", () => {
+	it("замена текста; поля и их payload дословно на месте", () => {
+		expect(setDescription("- [ ] Старый текст 📅 2026-01-05 ⏫", "Новый текст")).toBe(
+			"- [ ] Новый текст 📅 2026-01-05 ⏫",
+		);
+	});
+
+	it("фрагментированный текст собирается в один: поля в исходном порядке", () => {
+		expect(setDescription("- [ ] a 📅 2026-01-01 b ⏫ c", "one")).toBe(
+			"- [ ] one 📅 2026-01-01 ⏫",
+		);
+	});
+
+	it("теги в тексте сохраняются и читаются назад", () => {
+		const out = setDescription("- [ ] Old 📅 2026-01-01", "Call mom #home #next");
+		expect(out).toBe("- [ ] Call mom #home #next 📅 2026-01-01");
+		expect(parseTaskLine(out, ctx())!.tags).toEqual(["#home", "#next"]);
+	});
+
+	it("^block-id остаётся на месте", () => {
+		expect(setDescription("- [ ] Old ^b1", "New")).toBe("- [ ] New ^b1");
+	});
+
+	it("🔁-payload, ⛔ с пробелом, NBSP-gap и время — verbatim", () => {
+		const line = `- [ ] Старый 🔁 every 2 weeks on mon, thu 🆔 ab1 ⛔ x1, y2 📅${NBSP}2026-01-05 14:30 ^b1`;
+		expect(setDescription(line, "Новый")).toBe(
+			`- [ ] Новый 🔁 every 2 weeks on mon, thu 🆔 ab1 ⛔ x1, y2 📅${NBSP}2026-01-05 14:30 ^b1`,
+		);
+	});
+
+	it("пустой текст: строка без описания валидна", () => {
+		expect(setDescription("- [ ] Old 📅 2026-01-01", "")).toBe("- [ ] 📅 2026-01-01");
+		expect(setDescription("- [ ] Old 📅 2026-01-01", "   ")).toBe("- [ ] 📅 2026-01-01");
+		expect(setDescription("- [ ] Old", "")).toBe("- [ ]");
+		expect(setDescription("- [ ] Old ^b1", "")).toBe("- [ ] ^b1");
+	});
+
+	it("канонизация пробелов: \\s+ (включая \\n и \\t) → один пробел, trim", () => {
+		expect(setDescription("- [ ] Old", "  a\n b\t c  ")).toBe("- [ ] a b c");
+	});
+
+	it("CRLF: \\r остаётся в самом конце", () => {
+		expect(setDescription("- [ ] Old 📅 2026-01-01 ^b1\r", "New")).toBe(
+			"- [ ] New 📅 2026-01-01 ^b1\r",
+		);
+	});
+
+	it("throw: эмодзи поля в тексте (как addTag)", () => {
+		expect(() => setDescription("- [ ] T", "x 📅 y")).toThrow();
+		expect(() => setDescription("- [ ] T", "x⏫y")).toThrow();
+		expect(() => setDescription("- [ ] T", "повторять 🔁 daily")).toThrow();
+		expect(() => setDescription("- [ ] T", `x ⏳️ y`)).toThrow(); // с U+FE0F
+	});
+
+	it("throw: не-задача", () => {
+		expect(() => setDescription("plain text", "x")).toThrow();
+	});
+
+	it("результат остаётся задачей и парсится", () => {
+		const out = setDescription("- [ ] Old ⏫", "");
+		const t = parseTaskLine(out, ctx())!;
+		expect(t.description).toBe("");
+		expect(t.priority).toBe("high");
 	});
 });
 
@@ -291,6 +447,8 @@ interface GenLine {
 	start: string | null;
 	scheduled: string | null;
 	due: string | null;
+	/** Время у 📅 — генерируется только вместе с датой. */
+	dueTime: string | null;
 	id: string | null;
 	deps: string[] | null;
 	block: string | null;
@@ -326,6 +484,7 @@ const genArb: fc.Arbitrary<GenLine> = fc.record({
 	start: fc.option(dateArb, { nil: null }),
 	scheduled: fc.option(dateArb, { nil: null }),
 	due: fc.option(dateArb, { nil: null }),
+	dueTime: fc.option(fc.constantFrom("00:00", "09:05", "14:30", "23:59"), { nil: null }),
 	id: fc.option(idArb, { nil: null }),
 	deps: fc.option(fc.array(idArb, { minLength: 1, maxLength: 3 }), { nil: null }),
 	block: fc.option(fc.constantFrom("^ab1", "^x-9"), { nil: null }),
@@ -342,7 +501,8 @@ function buildLine(r: GenLine, glues: readonly boolean[] = []): string {
 	if (r.rec !== null) parts.push(`🔁 ${r.rec}`);
 	if (r.start !== null) parts.push(`🛫 ${r.start}`);
 	if (r.scheduled !== null) parts.push(`⏳ ${r.scheduled}`);
-	if (r.due !== null) parts.push(`📅 ${r.due}`);
+	if (r.due !== null)
+		parts.push(r.dueTime !== null ? `📅 ${r.due} ${r.dueTime}` : `📅 ${r.due}`);
 	if (r.id !== null) parts.push(`🆔 ${r.id}`);
 	if (r.deps !== null) parts.push(`⛔ ${r.deps.join(",")}`);
 	let line = `${r.indent}${r.bullet} [${r.status}]`;
@@ -401,14 +561,23 @@ describe("property: правка отражает ровно одно измен
 		);
 	});
 
-	it("setField(null): поле обнуляется, остальное неизменно", () => {
+	it("setField(null): поле обнуляется (вместе со временем), остальное неизменно", () => {
 		fc.assert(
 			fc.property(genArb, fieldArb, (r, f) => {
 				const line = buildLine(r);
 				const before = parseTaskLine(line, ctx())!;
 				const after = setField(line, f, null);
 				const t2 = parseTaskLine(after, ctx());
-				expect(t2).toEqual({ ...before, [f]: null, rawLine: after });
+				// удаление поля сносит и его время: оно живёт внутри payload токена
+				const timeNull =
+					f === "due"
+						? { dueTime: null }
+						: f === "scheduled"
+							? { scheduledTime: null }
+							: f === "start"
+								? { startTime: null }
+								: {};
+				expect(t2).toEqual({ ...before, [f]: null, ...timeNull, rawLine: after });
 			}),
 			{ numRuns: 300 },
 		);
@@ -460,6 +629,8 @@ describe("property: после любой правки строка остаёт
 				expect(tokenizeTaskLine(line), line).not.toBeNull();
 				const outs = [
 					setField(line, "due", v),
+					setField(line, "due", v, "12:00"),
+					setField(line, "due", v, null),
 					setField(line, "due", null),
 					setField(line, "done", null),
 					setField(line, "start", null),
@@ -469,11 +640,71 @@ describe("property: после любой правки строка остаёт
 					setDependsOn(line, []),
 					setStatusChar(line, "x"),
 					addTag(line, "#zzz"),
+					setDescription(line, "new text"),
+					setDescription(line, ""),
 				];
 				if (r.tag !== null) outs.push(removeTag(line, r.tag));
 				for (const out of outs) {
 					expect(tokenizeTaskLine(out), `input: ${line}\noutput: ${out}`).not.toBeNull();
 				}
+			}),
+			{ numRuns: 300 },
+		);
+	});
+});
+
+describe("property: setDescription", () => {
+	it("повторный parse даёт description == канон текста; все поля равны исходным", () => {
+		fc.assert(
+			fc.property(
+				genArb,
+				fc.array(wordArb, { minLength: 0, maxLength: 4 }),
+				fc.constantFrom(" ", "  ", "\t"),
+				(r, ws, sep) => {
+					const line = buildLine(r);
+					const before = parseTaskLine(line, ctx())!;
+					const text = ws.join(sep); // канон = \s+ → ' ' + trim (как у парсера)
+					const after = setDescription(line, text);
+					const t2 = parseTaskLine(after, ctx());
+					expect(t2, `input: ${line}\noutput: ${after}`).not.toBeNull();
+					expect(t2!.description).toBe(text.replace(/\s+/g, " ").trim());
+					for (const f of [
+						"due",
+						"scheduled",
+						"start",
+						"created",
+						"done",
+						"cancelled",
+						"nextSpawn",
+						"dueTime",
+						"scheduledTime",
+						"startTime",
+						"recurrence",
+						"taskId",
+						"spawnedFrom",
+						"priority",
+						"statusChar",
+					] as const) {
+						expect(t2![f], f).toEqual(before[f]);
+					}
+					expect(t2!.dependsOn).toEqual(before.dependsOn);
+				},
+			),
+			{ numRuns: 300 },
+		);
+	});
+
+	it("setField(время) + parse: время читается назад ровно тем же (гейт записи = гейту чтения)", () => {
+		const timeArb = fc
+			.tuple(fc.integer({ min: 0, max: 23 }), fc.integer({ min: 0, max: 59 }))
+			.map(([h, m]) => `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`);
+		fc.assert(
+			fc.property(genArb, dateArb, timeArb, (r, d, hm) => {
+				const line = buildLine(r);
+				const after = setField(line, "due", d, hm);
+				const t2 = parseTaskLine(after, ctx())!;
+				expect(t2.due).toBe(d);
+				expect(t2.dueTime).toBe(hm);
 			}),
 			{ numRuns: 300 },
 		);

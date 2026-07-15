@@ -13,6 +13,9 @@
  * - Отступ и пробел после маркера списка — только пробел/таб (как в Obsidian).
  * - Вариационный селектор U+FE0F после эмодзи поля поглощается в токен поля
  *   (и сохраняется дословно), чтобы «⏳️» распознавалось как «⏳».
+ * - У 📅/⏳/🛫 payload может содержать время: «2026-07-25 14:30». Валидное
+ *   (TIME_RE) время захватывается в payload токена; невалидное остаётся
+ *   следующему текст-сегменту (см. scanDateTimeToken).
  * - Хвостовой '\r' (CRLF-файл, разрезанный по '\n') отделяется в trailingCr и
  *   дословно возвращается в конце serializeTokens: иначе '$' не находил бы
  *   ^block-id, а вставка нового поля оказывалась бы ПОСЛЕ '\r' середи строки.
@@ -27,6 +30,24 @@ import {
 } from "./emoji";
 
 export type FieldName = DateFieldName | ValueFieldName | "priority";
+
+/** Дата-поля, допускающие опциональное время "HH:mm" после даты (фидбек-раунд 1). */
+export type TimedDateFieldName = Extract<DateFieldName, "due" | "scheduled" | "start">;
+
+const TIMED_DATE_FIELDS: ReadonlySet<FieldName> = new Set(["due", "scheduled", "start"]);
+
+export function isTimedDateField(field: FieldName): field is TimedDateFieldName {
+	return TIMED_DATE_FIELDS.has(field);
+}
+
+/** Валидное время "HH:mm", 24 часа. ЕДИНЫЙ гейт: токенизатор захватывает время
+ *  в payload только по нему, парсер и setField валидируют им же — «записали,
+ *  а прочиталось null» невозможно по построению (как с датами). */
+export const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+/** Форма даты БЕЗ календарной валидации: границы захвата — дело токенизатора,
+ *  смысл payload (2026-02-30 — мусор) решает parseDatePayload. */
+const DATE_SHAPE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 export interface FieldToken {
 	kind: "field";
@@ -119,6 +140,21 @@ function scanToken(s: string, from: number): number {
 	return j;
 }
 
+/** Payload дата-поля 📅/⏳/🛫: «дата[ HH:mm]». Валидное время захватывается
+ *  В payload токена (а не в следующий текст-сегмент); невалидное — остаётся
+ *  тексту: дата не ломается, хвост живёт в описании как раньше. Разделитель
+ *  дата↔время — любой \s+ (включая NBSP), захватывается дословно. */
+function scanDateTimeToken(s: string, from: number): number {
+	const dateEnd = scanToken(s, from);
+	if (!DATE_SHAPE_RE.test(s.slice(from, dateEnd))) return dateEnd; // офсет ±Nd / мусор
+	let k = dateEnd;
+	while (k < s.length && isWs(s.charAt(k))) k++;
+	if (k === dateEnd) return dateEnd; // «14:30» приклеено без разделителя — не время
+	const timeEnd = scanToken(s, k);
+	if (timeEnd === k || !TIME_RE.test(s.slice(k, timeEnd))) return dateEnd;
+	return timeEnd;
+}
+
 /** Список ⛔: токен, затем жадно «[\s*],[\s*]токен», пока после запятой есть токен.
  *  Пробелы вокруг запятых терпимы (канон — без пробелов); payload — дословный срез. */
 function scanCommaList(s: string, from: number): number {
@@ -176,6 +212,8 @@ export function tokenizeSegments(rest: string): Segment[] {
 			payloadEnd = j;
 		} else if (m.field === "dependsOn") {
 			payloadEnd = scanCommaList(rest, i);
+		} else if (isTimedDateField(m.field)) {
+			payloadEnd = scanDateTimeToken(rest, i);
 		} else {
 			payloadEnd = scanToken(rest, i);
 		}

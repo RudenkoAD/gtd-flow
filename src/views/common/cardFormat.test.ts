@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { makeTask } from "../../stores/testSupport";
-import { dateBadges, segmentDescription } from "./cardFormat";
+import { dateBadges, renderWikiLinks, segmentDescription, wikiLinkBasename } from "./cardFormat";
 
 describe("segmentDescription", () => {
 	it("выделяет тег в середине текста", () => {
@@ -51,6 +51,71 @@ describe("segmentDescription", () => {
 				.join("");
 			expect(joined).toBe(s);
 		}
+	});
+});
+
+describe("wikiLinkBasename", () => {
+	it("срезает путь и .md", () => {
+		expect(wikiLinkBasename("GTD/Cards/Заметка.md")).toBe("Заметка");
+		expect(wikiLinkBasename("Заметка")).toBe("Заметка");
+	});
+
+	it("срезает #заголовок и #^блок", () => {
+		expect(wikiLinkBasename("Заметка#Раздел")).toBe("Заметка");
+		expect(wikiLinkBasename("Папка/Заметка.md#^abc123")).toBe("Заметка");
+	});
+});
+
+describe("renderWikiLinks", () => {
+	it("[[target|alias]] → alias", () => {
+		expect(renderWikiLinks("см. [[Notes/Проект X.md|проект]]", null)).toBe("см. проект");
+	});
+
+	it("[[target]] → basename без пути и .md", () => {
+		expect(renderWikiLinks("[[GTD/Cards/Ссылка на файл.md]]", null)).toBe("Ссылка на файл");
+	});
+
+	it("ссылка в середине текста", () => {
+		expect(renderWikiLinks("до [[a/b.md|B]] после", null)).toBe("до B после");
+	});
+
+	it("[[c2flv3 Разобрать фотографии с отпуска]] скрывается при taskId=c2flv3", () => {
+		expect(
+			renderWikiLinks("[[c2flv3 Разобрать фотографии с отпуска]]", "c2flv3"),
+		).toBe("");
+	});
+
+	it("скрытая ссылка на карточку в середине текста не оставляет двойной пробел", () => {
+		expect(renderWikiLinks("Фото [[c2flv3 Разобрать фотографии]] дома", "c2flv3")).toBe(
+			"Фото дома",
+		);
+	});
+
+	it("ссылка на карточку с путём скрывается по basename", () => {
+		expect(renderWikiLinks("x [[GTD/Cards/c2flv3 Фото.md]]", "c2flv3")).toBe("x");
+	});
+
+	it("без taskId ссылка на карточку показывается как basename", () => {
+		expect(renderWikiLinks("[[c2flv3 Разобрать фотографии с отпуска]]", null)).toBe(
+			"c2flv3 Разобрать фотографии с отпуска",
+		);
+	});
+
+	it("чужой taskId не прячет ссылку", () => {
+		expect(renderWikiLinks("[[c2flv3 Фото]]", "zzz111")).toBe("c2flv3 Фото");
+	});
+
+	it("пустой alias падает обратно на basename", () => {
+		expect(renderWikiLinks("[[Папка/Заметка.md|]]", null)).toBe("Заметка");
+	});
+
+	it("незакрытые скобки и пустые ссылки остаются текстом", () => {
+		expect(renderWikiLinks("a [[не закрыто", null)).toBe("a [[не закрыто");
+		expect(renderWikiLinks("a [[]] b", null)).toBe("a [[]] b");
+	});
+
+	it("несколько ссылок в одной строке", () => {
+		expect(renderWikiLinks("[[a|A]] и [[dir/b.md]]", null)).toBe("A и b");
 	});
 });
 

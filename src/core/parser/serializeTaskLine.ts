@@ -13,6 +13,8 @@
  *   после удаления «воскресал» бы более ранний дубль.
  * - Вызов на строке-не-задаче — ошибка программы: бросаем, а не молча
  *   возвращаем строку (защита от тихой порчи write-back).
+ * - Исключение из «одного поля» — setDescription: заменяет ВСЕ текстовые
+ *   сегменты одной строкой, поля при этом дословны (см. её комментарий).
  */
 import type { IsoDate, Priority } from "../model/Task";
 import {
@@ -22,12 +24,14 @@ import {
 	VALUE_FIELD_EMOJI,
 	type DateFieldName,
 } from "./emoji";
-import { parseDatePayload } from "./parseTaskLine";
+import { parseDatePayload, splitDateTimePayload } from "./parseTaskLine";
 import {
 	extractTags,
 	isTagChar,
+	isTimedDateField,
 	serializeTokens,
 	tokenizeTaskLine,
+	TIME_RE,
 	type FieldName,
 	type FieldToken,
 	type Segment,
@@ -129,14 +133,56 @@ function setPayloadField(
 	return serializeTokens(t);
 }
 
-/** Вставить/заменить/удалить (value === null) поле-дату. */
-export function setField(rawLine: string, field: DateFieldName, value: IsoDate | null): string {
+/** Время «HH:mm» из ПОСЛЕДНЕГО токена поля — именно его правит замена
+ *  («последний побеждает» и у парсера). Нет поля/времени — null. */
+function existingFieldTime(t: TokenizedTaskLine, field: DateFieldName): string | null {
+	const idxs = fieldIndices(t.segments, field);
+	if (idxs.length === 0) return null;
+	const tok = t.segments[idxs[idxs.length - 1]!] as FieldToken;
+	return splitDateTimePayload(tok.payload).time;
+}
+
+/**
+ * Вставить/заменить/удалить (value === null) поле-дату.
+ *
+ * time — ТОЛЬКО для 📅/⏳/🛫 (due/scheduled/start):
+ * - undefined (аргумент опущен) — сохранить существующее время поля: старые
+ *   вызовы без 4-го аргумента при замене даты НЕ стирают время;
+ * - null — снять время (остаётся голая дата);
+ * - "HH:mm" — установить (валидация TIME_RE, мусор — throw, как у дат).
+ */
+export function setField(
+	rawLine: string,
+	field: DateFieldName,
+	value: IsoDate | null,
+	time?: string | null,
+): string {
 	// писатель не мягче читателя: валидируем ТЕМ ЖЕ parseDatePayload, что и парсер,
 	// иначе записанная дата (2026-13-05) молча читалась бы обратно как null
 	if (value !== null && parseDatePayload(value).kind !== "date") {
 		throw new Error(`serializeTaskLine: не ISO-дата: ${JSON.stringify(value)}`);
 	}
-	return setPayloadField(rawLine, field, DATE_FIELD_EMOJI[field], value);
+	if (time !== undefined) {
+		if (!isTimedDateField(field)) {
+			throw new Error(`serializeTaskLine: поле ${field} не имеет времени`);
+		}
+		if (time !== null && !TIME_RE.test(time)) {
+			throw new Error(`serializeTaskLine: не время HH:mm: ${JSON.stringify(time)}`);
+		}
+		if (time !== null && value === null) {
+			throw new Error(`serializeTaskLine: время без даты: ${JSON.stringify(time)}`);
+		}
+	}
+	if (value === null) {
+		// удаление поля сносит и его время: оно живёт внутри payload токена
+		return setPayloadField(rawLine, field, DATE_FIELD_EMOJI[field], null);
+	}
+	let effTime: string | null = time ?? null;
+	if (time === undefined && isTimedDateField(field)) {
+		effTime = existingFieldTime(mustTokenize(rawLine), field);
+	}
+	const payload = effTime === null ? value : `${value} ${effTime}`;
+	return setPayloadField(rawLine, field, DATE_FIELD_EMOJI[field], payload);
 }
 
 /** Вставить/заменить/удалить 🆔 или 🧬. */
@@ -264,6 +310,39 @@ function removeTagFromText(text: string, tag: string): string {
 		idx = s;
 	}
 	return out;
+}
+
+/**
+ * Полная замена текста описания (инлайн-редактирование карточки).
+ *
+ * Все текстовые сегменты заменяются ОДНОЙ строкой текста; поле-токены остаются
+ * в исходном порядке с исходными байтами (эмодзи + gap + payload — включая
+ * NBSP-разделители и payload 🔁 дословно); ^block-id и хвостовой \r — на месте.
+ * Разделители: ' ' между текстом и первым полем и по ' ' между полями.
+ *
+ * text канонизируется как description парсера (\s+ → ' ', trim; \n сюда же) —
+ * повторный parse даёт description === канон. Пустой канон валиден:
+ * «- [ ] 📅 2026-01-01» — задача без описания.
+ * Эмодзи полей внутри text — throw (как addTag): парсер прочитал бы их
+ * как поля, а не как текст.
+ */
+export function setDescription(rawLine: string, text: string): string {
+	const canon = text.replace(/\s+/g, " ").trim();
+	for (const e of ALL_FIELD_EMOJI) {
+		if (canon.includes(e)) {
+			throw new Error(
+				`serializeTaskLine: эмодзи поля в тексте описания: ${JSON.stringify(text)}`,
+			);
+		}
+	}
+	const t = mustTokenize(rawLine);
+	const fieldToks = t.segments.filter((s): s is FieldToken => s.kind === "field");
+	const segs: Segment[] = [];
+	if (canon !== "") segs.push({ kind: "text", text: ` ${canon}` });
+	for (const f of fieldToks) segs.push({ kind: "text", text: " " }, f);
+	t.segments = segs;
+	coalesceText(t.segments); // « текст» + « » → один сегмент; сериализацию не меняет
+	return serializeTokens(t);
 }
 
 /** Удалить все вхождения тега (плюс по одному смежному пробелу на каждое). */

@@ -130,6 +130,77 @@ describe("parseTaskLine: офсеты ±Nd в шаблонах", () => {
 	});
 });
 
+describe("parseTaskLine: время у 📅/⏳/🛫", () => {
+	it("валидное время → dueTime/scheduledTime/startTime, из description вырезано", () => {
+		const t = parseTaskLine(
+			"- [ ] Врач 🛫 2026-07-20 08:00 ⏳ 2026-07-24 09:30 📅 2026-07-25 14:30",
+			ctx(),
+		)!;
+		expect(t.start).toBe("2026-07-20");
+		expect(t.startTime).toBe("08:00");
+		expect(t.scheduled).toBe("2026-07-24");
+		expect(t.scheduledTime).toBe("09:30");
+		expect(t.due).toBe("2026-07-25");
+		expect(t.dueTime).toBe("14:30");
+		expect(t.description).toBe("Врач");
+	});
+
+	it("без времени — *Time = null", () => {
+		const t = parseTaskLine("- [ ] T 📅 2026-07-25 ⏳ 2026-07-24 🛫 2026-07-20", ctx())!;
+		expect(t.dueTime).toBeNull();
+		expect(t.scheduledTime).toBeNull();
+		expect(t.startTime).toBeNull();
+	});
+
+	it("невалидное время НЕ ломает дату: дата парсится, время null, хвост в description", () => {
+		const t = parseTaskLine("- [ ] Врач 📅 2026-07-25 25:00", ctx())!;
+		expect(t.due).toBe("2026-07-25");
+		expect(t.dueTime).toBeNull();
+		expect(t.description).toBe("Врач 25:00");
+	});
+
+	it("границы формата HH:mm", () => {
+		expect(parseTaskLine("- [ ] T 📅 2026-01-01 00:00", ctx())!.dueTime).toBe("00:00");
+		expect(parseTaskLine("- [ ] T 📅 2026-01-01 23:59", ctx())!.dueTime).toBe("23:59");
+		for (const bad of ["24:00", "9:30", "14:60", "14:30:00"]) {
+			const t = parseTaskLine(`- [ ] T 📅 2026-01-01 ${bad}`, ctx())!;
+			expect(t.due, bad).toBe("2026-01-01");
+			expect(t.dueTime, bad).toBeNull();
+		}
+	});
+
+	it("✅/➕/🔜 времени не имеют — хвост остаётся обычным текстом", () => {
+		const t = parseTaskLine("- [x] T ✅ 2026-07-10 14:30", ctx())!;
+		expect(t.done).toBe("2026-07-10");
+		expect(t.description).toBe("T 14:30");
+	});
+
+	it("невалидная дата с валидным временем — и дата, и время null", () => {
+		const t = parseTaskLine("- [ ] T 📅 2026-02-30 14:30", ctx())!;
+		expect(t.due).toBeNull();
+		expect(t.dueTime).toBeNull();
+	});
+
+	it("дубли: последний токен побеждает и датой, и временем", () => {
+		const t = parseTaskLine("- [ ] T 📅 2026-01-01 10:00 📅 2026-02-02", ctx())!;
+		expect(t.due).toBe("2026-02-02");
+		expect(t.dueTime).toBeNull(); // у последнего дубля времени нет
+		const t2 = parseTaskLine("- [ ] T 📅 2026-01-01 📅 2026-02-02 10:00", ctx())!;
+		expect(t2.dueTime).toBe("10:00");
+	});
+
+	it("NBSP между датой и временем терпим", () => {
+		const t = parseTaskLine(`- [ ] T 📅 2026-07-25${NBSP}14:30`, ctx())!;
+		expect(t.due).toBe("2026-07-25");
+		expect(t.dueTime).toBe("14:30");
+	});
+
+	it("rawLine дословный — время не теряется при round-trip", () => {
+		const line = "- [ ] T 📅 2026-07-25 14:30 ^b1";
+		expect(parseTaskLine(line, ctx())!.rawLine).toBe(line);
+	});
+});
+
 describe("parseDatePayload", () => {
 	it("валидная дата", () => {
 		expect(parseDatePayload("2026-07-15")).toEqual({ kind: "date", date: "2026-07-15" });

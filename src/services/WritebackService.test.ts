@@ -555,6 +555,25 @@ describe("WritebackService: delete-line", () => {
 	});
 });
 
+describe("WritebackService: set-text (фидбек-раунд 1)", () => {
+	it("правит описание, лениво вписывает 🆔 (смена content-key!) и сохраняет поля", async () => {
+		const { port, svc, feed } = makeSvc({ genId: () => "tx1" });
+		const line = "- [ ] старый текст #tag 📅 2026-07-25 14:30";
+		port.files.set(INBOX, line + "\n");
+		feed.replaceFile(INBOX, [parseLine(INBOX, line, 0)]);
+		const key = feed.getIndex().fileTasks(INBOX)[0]!.key;
+
+		const res = await svc.dispatch({ type: "set-text", key, text: "новый текст" });
+
+		expect(res).toEqual({ ok: true });
+		const written = port.files.get(INBOX)!;
+		expect(written).toContain("новый текст");
+		expect(written).not.toContain("старый текст");
+		expect(written).toContain("🆔 tx1"); // structural: без id задача потеряла бы адресуемость
+		expect(written).toContain("📅 2026-07-25 14:30"); // поля (и время) нетронуты
+	});
+});
+
 describe("WritebackService: непокрытые этапы", () => {
 	it("spawn-instances/reorder/графовые → not-implemented-stage", async () => {
 		const { port, svc } = makeSvc();

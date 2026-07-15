@@ -45,6 +45,47 @@ export function segmentDescription(text: string): Segment[] {
 	return out;
 }
 
+/** Базовое имя цели вики-ссылки: без пути, без ".md", без #заголовка/#^блока. */
+export function wikiLinkBasename(target: string): string {
+	const noSub = target.split("#")[0]!; // [[note#heading]] / [[note#^block]]
+	const last = noSub.split("/").pop() ?? noSub;
+	return last.replace(/\.md$/i, "").trim();
+}
+
+/**
+ * Рендер вики-ссылок описания в плоский текст карточки:
+ *   [[target|alias]] → alias, [[target]] → basename (без пути и .md).
+ * Спец-случай: ссылка на собственную карточку-заметку — target или basename
+ * начинается с taskId (файлы карточек именуются "<id> <текст>") — прячется
+ * целиком: о существовании карточки уже сигналит бейдж прогресса n/m.
+ * Незакрытые/пустые скобки остаются текстом как есть.
+ */
+export function renderWikiLinks(text: string, taskId: string | null): string {
+	const re = /\[\[([^[\]|]+)(?:\|([^[\]]*))?\]\]/g;
+	let out = "";
+	let from = 0;
+	for (let m = re.exec(text); m !== null; m = re.exec(text)) {
+		const target = m[1]!.trim();
+		const alias = m[2]?.trim() ?? "";
+		const base = wikiLinkBasename(target);
+		const chunk = text.slice(from, m.index);
+		const hidden =
+			taskId !== null && taskId !== "" && (target.startsWith(taskId) || base.startsWith(taskId));
+		if (hidden) {
+			// схлопнуть двойной пробел на шве: «до [[ссылка]] после» → «до после»
+			out +=
+				/\s$/.test(chunk) && /^\s/.test(text.slice(re.lastIndex))
+					? chunk.replace(/\s+$/, "")
+					: chunk;
+		} else {
+			out += chunk + (alias !== "" ? alias : base);
+		}
+		from = re.lastIndex;
+	}
+	out += text.slice(from);
+	return out.trim();
+}
+
 export const PRIORITY_ICONS: Record<Priority, string> = {
 	highest: "🔺",
 	high: "⏫",

@@ -162,14 +162,13 @@ export default class GtdFlowPlugin extends Plugin {
 		return leaf;
 	}
 
-	/** Раскладка по умолчанию: Входящие | Доска, справа — Календарь. */
+	/** Раскладка по умолчанию: Входящие | Доска | Отложенные — три сплита
+	 *  в основной области (правая боковая панель по умолчанию свёрнута,
+	 *  спрятанные туда «Отложенные» пользователь не видел — фидбек №7). */
 	async openGtdWorkspace(): Promise<void> {
 		await this.activateView("inbox", "tab");
 		await this.activateView("kanban", "split");
-		const right = this.app.workspace.getRightLeaf(false);
-		if (right) {
-			await right.setViewState({ type: VIEW_TYPES.tickler, active: false });
-		}
+		await this.activateView("tickler", "split");
 	}
 
 	async loadSettings(): Promise<void> {

@@ -51,6 +51,7 @@ const KEYED_LINE_TYPES = new Set<Intent["type"]>([
 	"move-column",
 	"defer",
 	"set-id",
+	"set-text",
 ]);
 
 /** Структурные правки требуют адресуемости строки ⇒ ленивый 🆔.
@@ -61,6 +62,9 @@ const STRUCTURAL_TYPES = new Set<Intent["type"]>([
 	"set-priority",
 	"move-column",
 	"defer",
+	// set-text меняет описание, а значит и content-key задачи: без 🆔 задача
+	// после правки потеряла бы адресуемость (старый ключ умирает при реиндексе).
+	"set-text",
 ]);
 
 const BASE36 = "0123456789abcdefghijklmnopqrstuvwxyz";

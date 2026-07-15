@@ -5,6 +5,7 @@
  */
 import type { IsoDate, Priority, Task } from "../../core/model/Task";
 import { taskToCalendarEvent, type CalendarField } from "../../core/model/projections";
+import { isInTickler } from "../../core/query/QueryEngine";
 import { addDaysIso, dayOfWeekSun0, startOfWeek } from "../common/dates";
 
 export type CalendarMode = "month" | "week" | "agenda";
@@ -122,10 +123,31 @@ const PRIORITY_RANK: Record<Priority, number> = {
 	none: 5,
 };
 
+/** Время ("HH:mm") ИМЕННО поля-размещения — того, по которому чип попал в день. */
+export function placedTime(task: Task, field: CalendarField): string | null {
+	switch (field) {
+		case "due":
+			return task.dueTime;
+		case "scheduled":
+			return task.scheduledTime;
+		case "start":
+			return task.startTime;
+	}
+}
+
+/**
+ * «Отложена до»: дата 🛫 задачи в состоянии TICKLER (§1: не done/cancelled,
+ * не шаблон/деталь, start > today), иначе null. Для приглушённого чипа с ⏰.
+ */
+export function deferredUntil(task: Task, today: IsoDate): IsoDate | null {
+	return isInTickler(task, today) ? task.start : null;
+}
+
 /**
  * Раскладка задач по дням через core taskToCalendarEvent (fallback полей —
  * порядок placement). Дни без событий в Map отсутствуют. Внутри дня:
- * приоритет по убыванию, затем описание.
+ * сначала события со временем (по времени asc), затем без времени;
+ * внутри групп — приоритет по убыванию, затем описание.
  */
 export function placeEvents(
 	tasks: readonly Task[],
@@ -144,6 +166,14 @@ export function placeEvents(
 	}
 	for (const list of out.values()) {
 		list.sort((a, b) => {
+			// "HH:mm" лексикографически == хронологически; null (без времени) — в хвост
+			const ta = placedTime(a.task, a.field);
+			const tb = placedTime(b.task, b.field);
+			if (ta !== null || tb !== null) {
+				if (ta === null) return 1;
+				if (tb === null) return -1;
+				if (ta !== tb) return ta < tb ? -1 : 1;
+			}
 			const pr = PRIORITY_RANK[a.task.priority] - PRIORITY_RANK[b.task.priority];
 			if (pr !== 0) return pr;
 			const da = a.task.description;

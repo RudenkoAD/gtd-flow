@@ -6,6 +6,7 @@ import {
 	agendaDays,
 	agendaLabel,
 	appendLine,
+	deferredUntil,
 	dropDateField,
 	monthGrid,
 	monthStart,
@@ -15,6 +16,7 @@ import {
 	nextWeek,
 	openTasks,
 	placeEvents,
+	placedTime,
 	prevAgenda,
 	prevMonth,
 	prevWeek,
@@ -42,6 +44,9 @@ function makeTask(overrides: Partial<Task> = {}): Task {
 		due: null,
 		scheduled: null,
 		start: null,
+		dueTime: null,
+		scheduledTime: null,
+		startTime: null,
 		created: null,
 		done: null,
 		cancelled: null,
@@ -185,6 +190,100 @@ describe("placeEvents", () => {
 		const t = makeTask({ due: "2026-07-20", scheduled: "2026-07-18" });
 		const map = placeEvents([t], ["scheduled", "due"]);
 		expect(map.get("2026-07-18")).toEqual([{ task: t, field: "scheduled" }]);
+	});
+
+	it("события со временем идут раньше и сортируются по времени asc", () => {
+		// приоритет/алфавит нарочно против времени — время должно победить
+		const morning = makeTask({ due: "2026-07-20", dueTime: "09:30", description: "я-задача" });
+		const noon = makeTask({ due: "2026-07-20", dueTime: "14:00", description: "а-задача" });
+		const untimed = makeTask({ due: "2026-07-20", priority: "highest", description: "б-задача" });
+		const map = placeEvents([untimed, noon, morning], PLACEMENT);
+		expect(map.get("2026-07-20")!.map((e) => e.task)).toEqual([morning, noon, untimed]);
+	});
+
+	it("сортировка берёт время поля-размещения, а не другого поля", () => {
+		// размещена по scheduled (08:00); чужое startTime 23:00 не должно влиять
+		const bySched = makeTask({
+			scheduled: "2026-07-18",
+			scheduledTime: "08:00",
+			start: "2026-07-01",
+			startTime: "23:00",
+		});
+		const later = makeTask({ scheduled: "2026-07-18", scheduledTime: "09:00" });
+		const map = placeEvents([later, bySched], PLACEMENT);
+		expect(map.get("2026-07-18")!.map((e) => e.task)).toEqual([bySched, later]);
+	});
+
+	it("равное время — приоритет по убыванию, затем описание", () => {
+		const lowA = makeTask({
+			due: "2026-07-20",
+			dueTime: "10:00",
+			priority: "low",
+			description: "а-задача",
+		});
+		const highB = makeTask({
+			due: "2026-07-20",
+			dueTime: "10:00",
+			priority: "high",
+			description: "б-задача",
+		});
+		const highA = makeTask({
+			due: "2026-07-20",
+			dueTime: "10:00",
+			priority: "high",
+			description: "а-задача",
+		});
+		const map = placeEvents([lowA, highB, highA], PLACEMENT);
+		expect(map.get("2026-07-20")!.map((e) => e.task)).toEqual([highA, highB, lowA]);
+	});
+
+	it("без времени сортировка прежняя: приоритет по убыванию, затем описание", () => {
+		const low = makeTask({ due: "2026-07-20", priority: "low", description: "а-задача" });
+		const high = makeTask({ due: "2026-07-20", priority: "high", description: "я-задача" });
+		const map = placeEvents([low, high], PLACEMENT);
+		expect(map.get("2026-07-20")!.map((e) => e.task)).toEqual([high, low]);
+	});
+});
+
+describe("placedTime", () => {
+	it("маппинг поля-размещения на его время", () => {
+		const t = makeTask({ dueTime: "09:00", scheduledTime: "10:15", startTime: "11:30" });
+		expect(placedTime(t, "due")).toBe("09:00");
+		expect(placedTime(t, "scheduled")).toBe("10:15");
+		expect(placedTime(t, "start")).toBe("11:30");
+	});
+
+	it("времени нет — null", () => {
+		const t = makeTask({ due: "2026-07-20" });
+		expect(placedTime(t, "due")).toBeNull();
+		expect(placedTime(t, "scheduled")).toBeNull();
+		expect(placedTime(t, "start")).toBeNull();
+	});
+});
+
+describe("deferredUntil", () => {
+	const TODAY = "2026-07-15";
+
+	it("start > today — дата пробуждения", () => {
+		expect(deferredUntil(makeTask({ start: "2026-07-16" }), TODAY)).toBe("2026-07-16");
+	});
+
+	it("start == today / в прошлом / отсутствует — null (строгое сравнение §1)", () => {
+		expect(deferredUntil(makeTask({ start: TODAY }), TODAY)).toBeNull();
+		expect(deferredUntil(makeTask({ start: "2026-07-01" }), TODAY)).toBeNull();
+		expect(deferredUntil(makeTask(), TODAY)).toBeNull();
+	});
+
+	it("done/cancelled с будущим start — не отложена (DONE/CANCELLED выше TICKLER)", () => {
+		expect(deferredUntil(makeTask({ start: "2026-08-01", statusChar: "x" }), TODAY)).toBeNull();
+		expect(deferredUntil(makeTask({ start: "2026-08-01", statusChar: "-" }), TODAY)).toBeNull();
+	});
+
+	it("шаблон/деталь карточки — не отложена (TEMPLATE/DETAIL выше TICKLER)", () => {
+		expect(
+			deferredUntil(makeTask({ start: "2026-08-01", container: "recurring" }), TODAY),
+		).toBeNull();
+		expect(deferredUntil(makeTask({ start: "2026-08-01", container: "card" }), TODAY)).toBeNull();
 	});
 });
 

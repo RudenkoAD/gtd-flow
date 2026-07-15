@@ -6,12 +6,21 @@
  * - Офсеты ±Nd (легальны только в шаблонах, ТЗ §6) в due/start/... НЕ попадают —
  *   поле остаётся null, офсет живёт в rawLine и разворачивается движком повторов.
  * - Невалидный payload даты тоже даёт null (но токен уже вырезан из description).
+ * - У 📅/⏳/🛫 payload может нести время «HH:mm» после даты → dueTime/scheduledTime/
+ *   startTime; невалидное время в payload не попадает (токенизатор оставляет его
+ *   тексту), поэтому дата при этом парсится штатно, время = null.
  * - description: текст без токенов полей, схлопнутые пробелы, trim; теги ОСТАЮТСЯ
  *   в description и дополнительно собираются в tags[] (с '#', без дублей).
  */
 import type { ContainerKind, DateOffset, IsoDate, Priority, Task } from "../model/Task";
 import { EMOJI_TO_PRIORITY, type DateFieldName } from "./emoji";
-import { extractTags, tokenizeTaskLine } from "./tokenizer";
+import {
+	extractTags,
+	isTimedDateField,
+	tokenizeTaskLine,
+	TIME_RE,
+	type TimedDateFieldName,
+} from "./tokenizer";
 import { computeKey } from "./taskKey";
 
 export interface ParseContext {
@@ -62,6 +71,19 @@ export function parseDatePayload(payload: string): DatePayload {
 	return { kind: "invalid", raw: payload };
 }
 
+/** Отщепить опциональное время «HH:mm» от payload дата-поля 📅/⏳/🛫.
+ *  Токенизатор кладёт время в payload только валидным, но здесь перепроверяем
+ *  тем же TIME_RE — функция обязана быть корректной на произвольной строке
+ *  (её использует и setField для «сохранить существующее время»). */
+export function splitDateTimePayload(payload: string): {
+	datePart: string;
+	time: string | null;
+} {
+	const m = /^(\S+)\s+(\S+)$/.exec(payload);
+	if (m !== null && TIME_RE.test(m[2]!)) return { datePart: m[1]!, time: m[2]! };
+	return { datePart: payload, time: null };
+}
+
 /** U+FE0F не участвует в таблицах эмодзи — срезаем перед поиском приоритета. */
 function stripVariationSelector(emoji: string): string {
 	let out = "";
@@ -83,6 +105,12 @@ export function parseTaskLine(rawLine: string, ctx: ParseContext): Task | null {
 		done: null,
 		cancelled: null,
 		nextSpawn: null,
+	};
+	// время только у 📅/⏳/🛫; при дублях поля — как и дата — побеждает последнее
+	const times: Record<TimedDateFieldName, string | null> = {
+		due: null,
+		scheduled: null,
+		start: null,
 	};
 	let recurrence: string | null = null;
 	let taskId: string | null = null;
@@ -126,8 +154,16 @@ export function parseTaskLine(rawLine: string, ctx: ParseContext): Task | null {
 				break;
 			}
 			default: {
-				const parsed = parseDatePayload(seg.payload);
-				dates[seg.field] = parsed.kind === "date" ? parsed.date : null;
+				if (isTimedDateField(seg.field)) {
+					const { datePart, time } = splitDateTimePayload(seg.payload);
+					const parsed = parseDatePayload(datePart);
+					const ok = parsed.kind === "date";
+					dates[seg.field] = ok ? parsed.date : null;
+					times[seg.field] = ok ? time : null;
+				} else {
+					const parsed = parseDatePayload(seg.payload);
+					dates[seg.field] = parsed.kind === "date" ? parsed.date : null;
+				}
 			}
 		}
 	}
@@ -153,6 +189,9 @@ export function parseTaskLine(rawLine: string, ctx: ParseContext): Task | null {
 		created: dates.created,
 		done: dates.done,
 		cancelled: dates.cancelled,
+		dueTime: times.due,
+		scheduledTime: times.scheduled,
+		startTime: times.start,
 		recurrence,
 		nextSpawn: dates.nextSpawn,
 		spawnedFrom,

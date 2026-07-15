@@ -37,6 +37,56 @@ describe("resolveLineTransform — однострочные intents", () => {
 		expect(out).toContain("Позвонить маме");
 	});
 
+	it("set-date: time-строка пишет «📅 дата HH:mm»", () => {
+		const out = resolveLineTransform(
+			{ type: "set-date", key: "k", field: "due", date: "2026-07-25", time: "14:30" },
+			"- [ ] Врач",
+		);
+		expect(out).toContain("📅 2026-07-25 14:30");
+	});
+
+	it("set-date: time опущен — существующее время сохраняется (drag по дням)", () => {
+		const out = resolveLineTransform(
+			{ type: "set-date", key: "k", field: "due", date: "2026-07-26" },
+			"- [ ] Врач 📅 2026-07-25 14:30",
+		);
+		expect(out).toContain("📅 2026-07-26 14:30");
+	});
+
+	it("set-date: time = null снимает время, дата остаётся", () => {
+		const out = resolveLineTransform(
+			{ type: "set-date", key: "k", field: "due", date: "2026-07-25", time: null },
+			"- [ ] Врач 📅 2026-07-25 14:30",
+		);
+		expect(out).toContain("📅 2026-07-25");
+		expect(out).not.toContain("14:30");
+	});
+
+	it("set-date: date = null сносит поле вместе со временем", () => {
+		const out = resolveLineTransform(
+			{ type: "set-date", key: "k", field: "due", date: null },
+			"- [ ] Врач 📅 2026-07-25 14:30",
+		);
+		expect(out).not.toContain("📅");
+		expect(out).not.toContain("14:30");
+	});
+
+	it("set-text: заменяет описание, поля и ^block-id нетронуты", () => {
+		const out = resolveLineTransform(
+			{ type: "set-text", key: "k", text: "Новое описание #next" },
+			"- [ ] Старое 📅 2026-07-25 14:30 🆔 t1 ^b1",
+		);
+		expect(out).toBe("- [ ] Новое описание #next 📅 2026-07-25 14:30 🆔 t1 ^b1");
+	});
+
+	it("set-text: пустой текст оставляет валидную строку без описания", () => {
+		const out = resolveLineTransform(
+			{ type: "set-text", key: "k", text: "" },
+			"- [ ] Старое 📅 2026-07-25",
+		);
+		expect(out).toBe("- [ ] 📅 2026-07-25");
+	});
+
 	it("set-status: ' ' → 'x'", () => {
 		const out = resolveLineTransform(
 			{ type: "set-status", key: "k", statusChar: "x" },

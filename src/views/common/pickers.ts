@@ -96,12 +96,36 @@ export function pickProject(
 	});
 }
 
+/** Выбор «Запланировать…»-потока: дата + опциональное время (null = без времени). */
+export interface DateTimeChoice {
+	date: IsoDate;
+	time: string | null;
+}
+
 /**
  * Дата через DatePromptModal (реюз «Отложить: дата…»). null — отмена.
  * DatePromptModal.submit закрывает модал ДО вызова onSubmit, поэтому
  * resolve(null) из onClose тоже уходит в macrotask — выбор побеждает.
+ *
+ * Вторая сигнатура (withTime: true) — ТОЛЬКО для «Запланировать…»: в модале
+ * появляется поле времени, результат — {date, time}; defer-поток остаётся
+ * date-only первой сигнатурой.
  */
-export function pickDate(app: App, title: string, initial?: string): Promise<IsoDate | null> {
+export function pickDate(app: App, title: string, initial?: string): Promise<IsoDate | null>;
+export function pickDate(
+	app: App,
+	title: string,
+	initial: string | undefined,
+	withTime: true,
+	initialTime?: string | null,
+): Promise<DateTimeChoice | null>;
+export function pickDate(
+	app: App,
+	title: string,
+	initial?: string,
+	withTime?: boolean,
+	initialTime?: string | null,
+): Promise<IsoDate | DateTimeChoice | null> {
 	return new Promise((resolve) => {
 		let done = false;
 		class Prompt extends DatePromptModal {
@@ -118,13 +142,15 @@ export function pickDate(app: App, title: string, initial?: string): Promise<Iso
 		new Prompt(
 			app,
 			title,
-			(date) => {
+			(date, time) => {
 				if (!done) {
 					done = true;
-					resolve(date);
+					resolve(withTime === true ? { date, time } : date);
 				}
 			},
 			initial,
+			withTime === true,
+			initialTime,
 		).open();
 	});
 }

@@ -21,8 +21,18 @@ export interface SetDate {
 	type: "set-date";
 	key: string;
 	field: SettableDateField;
-	/** null — удалить поле. */
+	/** null — удалить поле (вместе со временем). */
 	date: IsoDate | null;
+	/** Время «HH:mm» — только для due/scheduled/start (семантика setField):
+	 *  undefined — сохранить существующее время поля, null — снять, строка — установить. */
+	time?: string | null;
+}
+
+/** Полная замена текста описания (инлайн-редактирование карточки). */
+export interface SetText {
+	type: "set-text";
+	key: string;
+	text: string;
 }
 
 export interface SetStatus {
@@ -166,6 +176,7 @@ export interface MoveLine {
 
 export type Intent =
 	| SetDate
+	| SetText
 	| SetStatus
 	| SetPriority
 	| MoveColumn

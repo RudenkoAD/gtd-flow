@@ -172,6 +172,9 @@
 			key: taskKey,
 			field: dropDateField(task, settings.calendarPlacement),
 			date,
+			// time намеренно НЕ передаём (undefined) — существующее время поля
+			// сохраняется (контракт SetDate/setField: undefined = не трогать время,
+			// null = снять). Перенос «14:30-задачи» на другой день оставляет 14:30.
 		});
 		if (!res.ok) new Notice(`GTD Flow: ${res.reason}`);
 	}

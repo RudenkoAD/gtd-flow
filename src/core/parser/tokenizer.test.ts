@@ -154,6 +154,85 @@ describe("tokenizeTaskLine: сегменты", () => {
 	});
 });
 
+describe("tokenizeTaskLine: время в payload дата-полей (📅/⏳/🛫)", () => {
+	it("валидное время попадает в payload токена, а не в следующий текст", () => {
+		const t = tokenizeTaskLine("- [ ] T 📅 2026-07-25 14:30")!;
+		expect(fields(t.segments)[0]!.payload).toBe("2026-07-25 14:30");
+		expect(t.segments[t.segments.length - 1]!.kind).toBe("field"); // хвостового текста нет
+	});
+
+	it("⏳ и 🛫 тоже захватывают время", () => {
+		expect(fields(tokenizeTaskLine("- [ ] T ⏳ 2026-01-01 08:05")!.segments)[0]!.payload).toBe(
+			"2026-01-01 08:05",
+		);
+		expect(fields(tokenizeTaskLine("- [ ] T 🛫 2026-01-01 23:59")!.segments)[0]!.payload).toBe(
+			"2026-01-01 23:59",
+		);
+	});
+
+	it("невалидное время остаётся тексту (дата не ломается)", () => {
+		for (const bad of ["25:00", "9:30", "14:60", "14:30:00", "1430"]) {
+			const t = tokenizeTaskLine(`- [ ] T 📅 2026-07-25 ${bad}`)!;
+			expect(fields(t.segments)[0]!.payload, bad).toBe("2026-07-25");
+			expect(t.segments[t.segments.length - 1]).toEqual({ kind: "text", text: ` ${bad}` });
+		}
+	});
+
+	it("у ✅/❌/➕/🔜 времени нет — «14:30» уходит тексту", () => {
+		for (const emoji of ["✅", "❌", "➕", "🔜"]) {
+			const t = tokenizeTaskLine(`- [ ] T ${emoji} 2026-01-01 14:30`)!;
+			expect(fields(t.segments)[0]!.payload, emoji).toBe("2026-01-01");
+			expect(t.segments[t.segments.length - 1]).toEqual({ kind: "text", text: " 14:30" });
+		}
+	});
+
+	it("после офсета ±Nd время не захватывается (шаблоны)", () => {
+		expect(fields(tokenizeTaskLine("- [ ] Tpl 📅 +14d 14:30")!.segments)[0]!.payload).toBe(
+			"+14d",
+		);
+	});
+
+	it("текст после времени уходит в следующий сегмент", () => {
+		const t = tokenizeTaskLine("- [ ] T 📅 2026-07-25 14:30 rest")!;
+		expect(fields(t.segments)[0]!.payload).toBe("2026-07-25 14:30");
+		expect(t.segments[t.segments.length - 1]).toEqual({ kind: "text", text: " rest" });
+	});
+
+	it("время перед следующим полем не съедает его", () => {
+		const f = fields(tokenizeTaskLine("- [ ] T 📅 2026-07-25 14:30 ⏫")!.segments);
+		expect(f[0]!.payload).toBe("2026-07-25 14:30");
+		expect(f[1]!.field).toBe("priority");
+	});
+
+	it("NBSP между датой и временем захватывается дословно", () => {
+		const line = `- [ ] T 📅 2026-07-25${NBSP}14:30`;
+		const t = tokenizeTaskLine(line)!;
+		expect(fields(t.segments)[0]!.payload).toBe(`2026-07-25${NBSP}14:30`);
+		expect(serializeTokens(t)).toBe(line);
+	});
+
+	it("запятая после даты прерывает захват — время достаётся тексту", () => {
+		expect(
+			fields(tokenizeTaskLine("- [ ] Pay 📅 2026-08-01, 14:30 later")!.segments)[0]!.payload,
+		).toBe("2026-08-01");
+	});
+
+	it("round-trip дословный для строк со временем", () => {
+		const lines = [
+			"- [ ] T 📅 2026-07-25 14:30",
+			"- [ ] T ⏳ 2026-01-01 00:00 🛫 2026-01-02 23:59 ^b1",
+			"- [ ] T 📅 2026-07-25  14:30", // двойной пробел внутри payload — дословно
+			"- [ ] T 📅 2026-07-25 99:99 tail",
+			"- [ ] T 📅 2026-07-25 14:30 ⏫ rest\r",
+		];
+		for (const line of lines) {
+			const t = tokenizeTaskLine(line);
+			expect(t, JSON.stringify(line)).not.toBeNull();
+			expect(serializeTokens(t!)).toBe(line);
+		}
+	});
+});
+
 describe("tokenizeTaskLine: хвостовой \\r (CRLF-файл, разрезанный по \\n)", () => {
 	it("\\r отделяется в trailingCr, ^block-id распознаётся", () => {
 		const t = tokenizeTaskLine("- [ ] Task ^abc\r")!;

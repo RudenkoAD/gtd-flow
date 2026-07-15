@@ -17,6 +17,7 @@ import {
 	addTag,
 	removeTag,
 	setDependsOn,
+	setDescription,
 	setField,
 	setPriority,
 	setStatusChar,
@@ -51,7 +52,11 @@ function applyStatusWithDates(currentLine: string, statusChar: string, date?: Is
 export function resolveLineTransform(intent: Intent, currentLine: string): string | null {
 	switch (intent.type) {
 		case "set-date":
-			return setField(currentLine, intent.field, intent.date);
+			// time: undefined — сохранить время поля, null — снять, строка — установить
+			return setField(currentLine, intent.field, intent.date, intent.time);
+
+		case "set-text":
+			return setDescription(currentLine, intent.text);
 
 		case "set-status":
 			return applyStatusWithDates(currentLine, intent.statusChar, intent.date);

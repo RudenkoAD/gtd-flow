@@ -14,7 +14,7 @@ import type { CardPort } from "./services/CardService";
 import type { Task } from "./core/model/Task";
 import { appendLine } from "./views/calendar/calendarLogic";
 import { pickBoardColumn, pickDate } from "./views/common/pickers";
-import { findTaskAtLine, quickCaptureLine } from "./views/common/taskActions";
+import { captureTarget, findTaskAtLine, quickCaptureLine } from "./views/common/taskActions";
 
 export function registerCommands(plugin: GtdFlowPlugin): void {
 	plugin.addCommand({
@@ -51,7 +51,8 @@ export function registerCommands(plugin: GtdFlowPlugin): void {
 }
 
 // ---------------------------------------------------------------------------
-// Быстрый ввод (паттерн quick-add календаря: append в inboxSources[0])
+// Быстрый ввод (паттерн quick-add календаря: append в первый gtd-inbox файл,
+// фолбэк inboxSources[0])
 // ---------------------------------------------------------------------------
 
 class QuickCaptureModal extends Modal {
@@ -93,7 +94,8 @@ class QuickCaptureModal extends Modal {
 async function capture(plugin: GtdFlowPlugin, text: string): Promise<void> {
 	const line = quickCaptureLine(text);
 	if (line === null) return; // пустой ввод — молча ничего
-	const target = plugin.settings.inboxSources[0];
+	// цель захвата вычисляется В МОМЕНТ ввода: первый gtd-inbox файл, иначе фолбэк
+	const target = captureTarget(plugin.taskStore.index().all(), plugin.settings.inboxSources);
 	if (target === undefined) {
 		new Notice("GTD Flow: не задан файл входящих (inboxSources)");
 		return;

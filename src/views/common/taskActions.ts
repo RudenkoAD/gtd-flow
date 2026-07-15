@@ -82,6 +82,37 @@ export function recurringFilePaths(tasks: Iterable<Task>): string[] {
 	return [...paths].sort();
 }
 
+// ---------------------------------------------------------------------------
+// Цели записи быстрого ввода (файлы gtd-inbox: true)
+// ---------------------------------------------------------------------------
+
+/**
+ * Пути всех gtd-inbox файлов (container === "inbox") из живого индекса —
+ * уникальные, сортированные. Это цели ЗАПИСИ захвата (не force-include запроса,
+ * см. §inbox querySpec): первый по сортировке файл ловит новые задачи быстрого
+ * ввода. Симметрично recurringFilePaths для шаблонов.
+ */
+export function captureTargets(tasks: Iterable<Task>): string[] {
+	const paths = new Set<string>();
+	for (const t of tasks) {
+		if (t.container === "inbox") paths.add(t.filePath);
+	}
+	return [...paths].sort();
+}
+
+/**
+ * Целевой файл записи быстрого ввода: первый помеченный gtd-inbox файл, иначе
+ * фолбэк settings.inboxSources[0] (когда ни один файл не помечен). undefined —
+ * ни помеченных файлов, ни фолбэка: вызывающий показывает Notice и не пишет.
+ * Вычислять В МОМЕНТ ввода (индекс мог измениться с момента монтирования вида).
+ */
+export function captureTarget(
+	tasks: Iterable<Task>,
+	inboxSources: readonly string[],
+): string | undefined {
+	return captureTargets(tasks)[0] ?? inboxSources[0];
+}
+
 export interface TemplateTarget {
 	path: string;
 	/** Файла-шаблонов ещё нет — создать с frontmatter gtd-recurring. */
@@ -103,8 +134,9 @@ export function recurringTemplateTarget(
 	return { path: dir === "" ? "Recurring.md" : `${dir}/Recurring.md`, create: true };
 }
 
-/** Структурный порт создания файла шаблонов; совместим с VaultAdapter. */
-export interface TemplateVaultPort {
+/** Структурный порт «создать файл + править frontmatter»; совместим с VaultAdapter.
+ *  Общий для «Сделать шаблоном…» (gtd-recurring) и «Архивировать» (gtd-archive). */
+export interface FrontmatterVaultPort {
 	ensureFile(path: string): Promise<void>;
 	processFrontmatter(
 		path: string,
@@ -116,7 +148,7 @@ export interface MoveToTemplatesDeps {
 	taskKey: string;
 	recurringFiles: readonly string[];
 	spawnTarget: string;
-	vault: TemplateVaultPort;
+	vault: FrontmatterVaultPort;
 	dispatcher: IntentDispatcher;
 }
 
@@ -140,4 +172,33 @@ export async function moveTaskToTemplates(deps: MoveToTemplatesDeps): Promise<In
 		}
 	}
 	return deps.dispatcher.dispatch({ type: "move-line", key: deps.taskKey, toFile: target.path });
+}
+
+// ---------------------------------------------------------------------------
+// «Архивировать» — гарантия файла архива с флагом gtd-archive: true
+// ---------------------------------------------------------------------------
+
+/**
+ * Гарантировать файл архива с флагом `gtd-archive: true` (образец moveTaskToTemplates):
+ * ensureFile + простановка флага. Флаг ставится ВСЕГДА (идемпотентно) — поэтому новый
+ * файл, существующий без флага и существующий с флагом сходятся к одному состоянию;
+ * это важно, чтобы старый Archive.md без флага дописал его при первой же архивации.
+ *
+ * Вызывать СТРОГО до move-line: иначе перенесённая строка успела бы прожить в файле,
+ * ещё не помеченном контейнером архива, и (пока флага нет) протечь во входящие/календарь.
+ * false — ensureFile/processFrontmatter упали; строку в этом случае НЕ переносим.
+ */
+export async function ensureArchiveFile(
+	vault: FrontmatterVaultPort,
+	path: string,
+): Promise<boolean> {
+	try {
+		await vault.ensureFile(path);
+		await vault.processFrontmatter(path, (fm) => {
+			fm["gtd-archive"] = true;
+		});
+		return true;
+	} catch {
+		return false;
+	}
 }

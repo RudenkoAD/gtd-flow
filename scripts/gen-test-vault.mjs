@@ -11,7 +11,8 @@
  * .obsidian/plugins/gtd-flow/{main.js,manifest.json,styles.css}.
  *
  * Генерирует:
- *   GTD/Inbox.md            — файл захвата (inboxSources по умолчанию)
+ *   GTD/Inbox.md            — файл захвата (gtd-inbox: true — цель быстрого ввода)
+ *   GTD/Archive.md          — архив (gtd-archive: true — полностью инертный контейнер)
  *   GTD/Recurring.md        — каталог шаблонов регулярного ящика
  *   Boards/*.md             — 3 kanban-доски
  *   Projects/*.md           — 3 проекта с цепочками ⛔ и layout
@@ -58,11 +59,15 @@ function write(relPath, content) {
 	writeFileSync(abs, content, "utf8");
 }
 
-// --- GTD/Inbox.md ---
+// --- GTD/Inbox.md: файл захвата (gtd-inbox: true) ---
 
 write(
 	"GTD/Inbox.md",
-	`# Входящие
+	`---
+gtd-inbox: true
+---
+
+# Входящие
 
 - [ ] Позвонить в сервис по поводу машины
 - [ ] Купить подарок 📅 ${isoDate(7)}
@@ -71,6 +76,21 @@ write(
 - [ ] Отложена в прошлое (должна быть видна) 🛫 2026-01-05
 - [ ] Отложена в будущее (видна только в Отложенных) 🛫 2027-01-05
 - [x] Уже сделана ✅ 2026-07-01
+`,
+);
+
+// --- GTD/Archive.md: архив (gtd-archive: true — полностью инертный контейнер) ---
+
+write(
+	"GTD/Archive.md",
+	`---
+gtd-archive: true
+---
+
+# Архив
+
+- [x] Заархивированная задача с датой (в календаре НЕ видна) 📅 ${isoDate(3)} ✅ 2026-07-01
+- [-] Заархивированная отменённая задача ❌ 2026-07-01
 `,
 );
 
@@ -189,7 +209,8 @@ for (let f = 0; f < FILES; f++) {
 	write(`Bulk/bulk-${String(f).padStart(3, "0")}.md`, lines.join("\n") + "\n");
 }
 
-const total = FILES * TASKS + BOARDS.length * 8 + PROJECTS.reduce((s, p) => s + p.n, 0) + 12;
+// хвост 14 = Inbox 7 + Recurring 5 + Archive 2
+const total = FILES * TASKS + BOARDS.length * 8 + PROJECTS.reduce((s, p) => s + p.n, 0) + 14;
 console.log(`Готово: ${targetDir}`);
 console.log(`  Bulk: ${FILES} файлов × ${TASKS} задач, доски: ${BOARDS.length}, проекты: ${PROJECTS.length}`);
 console.log(`  Всего ~${total} задач. Откройте папку как vault и включите GTD Flow.`);

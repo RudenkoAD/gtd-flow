@@ -7,6 +7,7 @@ import {
 	deriveGtdState,
 	eligible,
 	isActive,
+	isArchived,
 	ready,
 	type ResolveDep,
 } from "./gtdState";
@@ -70,6 +71,10 @@ describe("deriveGtdState — каждое состояние цепочки", ()
 		expect(deriveGtdState(makeTask({ container: "events" }), TODAY, noDeps)).toBe("EVENT");
 	});
 
+	it("ARCHIVED: container archive", () => {
+		expect(deriveGtdState(makeTask({ container: "archive" }), TODAY, noDeps)).toBe("ARCHIVED");
+	});
+
 	it("DONE: x и X", () => {
 		expect(deriveGtdState(makeTask({ statusChar: "x" }), TODAY, noDeps)).toBe("DONE");
 		expect(deriveGtdState(makeTask({ statusChar: "X" }), TODAY, noDeps)).toBe("DONE");
@@ -121,6 +126,17 @@ describe("deriveGtdState — конфликты приоритетов цепо�
 	it("чек-строка карточки со статусом x — всё равно DETAIL", () => {
 		const t = makeTask({ container: "card", statusChar: "x" });
 		expect(deriveGtdState(t, TODAY, noDeps)).toBe("DETAIL");
+	});
+
+	it("ARCHIVED побеждает done/cancelled/tickler: заархивированная задача любого статуса — ARCHIVED", () => {
+		const done = makeTask({ container: "archive", statusChar: "x", due: "2026-07-15" });
+		const undone = makeTask({ container: "archive", statusChar: " ", tags: ["#waiting"] });
+		const cancelled = makeTask({ container: "archive", statusChar: "-" });
+		const deferred = makeTask({ container: "archive", start: "2026-08-01" });
+		expect(deriveGtdState(done, TODAY, noDeps)).toBe("ARCHIVED");
+		expect(deriveGtdState(undone, TODAY, noDeps)).toBe("ARCHIVED");
+		expect(deriveGtdState(cancelled, TODAY, noDeps)).toBe("ARCHIVED");
+		expect(deriveGtdState(deferred, TODAY, noDeps)).toBe("ARCHIVED");
 	});
 
 	it("DONE побеждает #waiting и будущий start", () => {
@@ -196,11 +212,20 @@ describe("хелперы eligible/ready/blocked/isActive", () => {
 		expect(eligible(makeTask({ container: "recurring" }), TODAY)).toBe(false);
 	});
 
-	it("isActive исключает TEMPLATE, DETAIL и EVENT", () => {
+	it("isActive исключает TEMPLATE, DETAIL, EVENT и ARCHIVED", () => {
 		expect(isActive(makeTask({ container: "recurring" }), TODAY)).toBe(false);
 		expect(isActive(makeTask({ container: "card" }), TODAY)).toBe(false);
 		expect(isActive(makeTask({ container: "events" }), TODAY)).toBe(false);
+		expect(isActive(makeTask({ container: "archive" }), TODAY)).toBe(false);
 		expect(isActive(makeTask({ container: "project" }), TODAY)).toBe(true);
+		// inbox-контейнер ведёт себя как plain — задача активна
+		expect(isActive(makeTask({ container: "inbox" }), TODAY)).toBe(true);
+	});
+
+	it("isArchived: только container archive", () => {
+		expect(isArchived(makeTask({ container: "archive" }))).toBe(true);
+		expect(isArchived(makeTask({ container: "plain" }))).toBe(false);
+		expect(isArchived(makeTask({ container: "inbox" }))).toBe(false);
 	});
 
 	it("EVENT побеждает done/tickler: событие со статусом x и 🛫 в будущем — всё равно EVENT", () => {

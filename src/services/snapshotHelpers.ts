@@ -55,9 +55,16 @@ export function snapshotListItems(
 const PROJECT_STATUSES: ReadonlySet<string> = new Set(["active", "on-hold", "done", "archived"]);
 
 /**
- * FileContext из frontmatter-объекта. Приоритет флагов повторяет цепочку
- * состояний §1: TEMPLATE (gtd-recurring) > EVENT (gtd-events) > DETAIL
- * (gtd-card-of) > project > board.
+ * FileContext из frontmatter-объекта. Приоритет флагов (по убыванию):
+ * recurring (gtd-recurring) > events (gtd-events) > card (gtd-card-of) >
+ * project (gtd-project) > board (gtd-board) > archive (gtd-archive) >
+ * inbox (gtd-inbox) > plain.
+ *
+ * Первые пять — цепочка состояний §1 (TEMPLATE/EVENT/DETAIL и файлы проекта/доски).
+ * archive и inbox — маркеры контейнеров: archive задаёт полную инертность (ARCHIVED,
+ * вне всех запросов), inbox лишь помечает файл захвата и в деривации состояний
+ * ведёт себя как plain. Оба стоят НИЖЕ содержательных флагов: если файл — доска
+ * или проект, эта роль важнее, чем «архив»/«входящие».
  */
 export function fileContextFromFrontmatter(
 	path: string,
@@ -76,6 +83,8 @@ export function fileContextFromFrontmatter(
 			: { path, container: "project", projectStatus: status };
 	}
 	if (fm["gtd-board"] === true) return { path, container: "board" };
+	if (fm["gtd-archive"] === true) return { path, container: "archive" };
+	if (fm["gtd-inbox"] === true) return { path, container: "inbox" };
 	return { path, container: "plain" };
 }
 

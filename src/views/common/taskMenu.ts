@@ -22,9 +22,10 @@ import { confirm } from "./ConfirmModal";
 import { openTaskInFile } from "./openTask";
 import { pickBoardColumn, pickDate, pickProject } from "./pickers";
 import {
+	ensureArchiveFile,
 	moveTaskToTemplates,
 	recurringFilePaths,
-	type TemplateVaultPort,
+	type FrontmatterVaultPort,
 } from "./taskActions";
 import {
 	buildMenuModel,
@@ -62,7 +63,7 @@ export interface ProjectMenuPort {
 export interface TemplateMenuPort {
 	recurringFiles(): string[];
 	spawnTarget(): string;
-	vault: TemplateVaultPort;
+	vault: FrontmatterVaultPort;
 }
 
 /** Связка портов паритета; каждый опционален — вид работает и без них. */
@@ -71,8 +72,8 @@ export interface TaskMenuPorts {
 	projects?: ProjectMenuPort | null;
 	cards?: CardPort | null;
 	template?: TemplateMenuPort | null;
-	/** Создать файл, если его нет — для «Архивировать» (приёмник archiveFile). */
-	ensureFile?: ((path: string) => Promise<void>) | null;
+	/** Создать файл архива и проставить gtd-archive: true — для «Архивировать». */
+	archive?: FrontmatterVaultPort | null;
 	/** Смена индекса — для реактивного прогресса n/m на карточке. */
 	epoch?: Readable<number> | null;
 }
@@ -87,7 +88,10 @@ export function taskMenuPortsFromPlugin(plugin: GtdFlowPlugin): TaskMenuPorts {
 		boards: plugin.boards ?? null,
 		projects: plugin.projects ?? null,
 		cards: p.cards ?? null,
-		ensureFile: (path) => plugin.vaultAdapter.ensureFile(path),
+		archive: {
+			ensureFile: (path) => plugin.vaultAdapter.ensureFile(path),
+			processFrontmatter: (path, fn) => plugin.vaultAdapter.processFrontmatter(path, fn),
+		},
 		template: {
 			recurringFiles: () => recurringFilePaths(plugin.taskStore.index().all()),
 			spawnTarget: () => plugin.settings.recurring.spawnTarget,
@@ -230,7 +234,8 @@ async function dispatchDefer(ctx: TaskMenuCtx, until: IsoDate): Promise<void> {
 /**
  * «Архивировать» (пункт меню доски для готовых/отменённых): двухфазно —
  * (1) снять ВСЕ теги '#kanban/' задачи одним move-column ⇒ карточка мгновенно
- * уходит со всех досок; (2) убедиться в файле архива и перенести строку туда.
+ * уходит со всех досок; (2) убедиться в файле архива с флагом gtd-archive: true
+ * (контейнер архива — полная инертность) и перенести строку туда.
  * Частичный сбой безопасен: при отказе фазы 2 тег-less строка остаётся в
  * исходном файле (её всегда можно заархивировать повторно), поэтому потери нет.
  */
@@ -252,16 +257,14 @@ async function archiveTask(ctx: TaskMenuCtx): Promise<void> {
 		return;
 	}
 
-	// Фаза 2 — файл архива (создать при отсутствии) + перенос строки.
-	const ensureFile = ctx.ports?.ensureFile;
-	if (ensureFile == null) {
+	// Фаза 2 — файл архива (создать + пометить gtd-archive СТРОГО до move-line) + перенос строки.
+	const archive = ctx.ports?.archive;
+	if (archive == null) {
 		new Notice("GTD Flow: архивирование недоступно");
 		return;
 	}
 	const archiveFile = ctx.settings.archiveFile;
-	try {
-		await ensureFile(archiveFile);
-	} catch {
+	if (!(await ensureArchiveFile(archive, archiveFile))) {
 		new Notice("GTD Flow: не удалось создать файл архива");
 		return;
 	}

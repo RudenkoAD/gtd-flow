@@ -6,6 +6,7 @@
 	import { inboxStore } from "../../stores/derived/queryStore";
 	import type { TaskStore } from "../../stores/taskStore";
 	import TaskCard from "../common/TaskCard.svelte";
+	import { captureTarget } from "../common/taskActions";
 	import type { TaskMenuPorts } from "../common/taskMenu";
 	import VirtualList from "../common/VirtualList.svelte";
 	import type { DndPort } from "../dnd/types";
@@ -48,13 +49,15 @@
 	const shown = $derived(filterTasks($tasks, query));
 	const filtered = $derived(query.trim() !== "");
 
-	// --- быстрый ввод новой задачи (append в inboxSources[0]) ---
+	// --- быстрый ввод новой задачи (append в первый gtd-inbox файл, фолбэк inboxSources[0]) ---
 	let newTask = $state("");
 
 	async function addTask(): Promise<void> {
 		const transform = inboxCaptureTransform(newTask);
 		if (transform === null) return; // пусто после санитации — молча ничего
-		const target = settings.inboxSources[0];
+		// цель захвата вычисляется В МОМЕНТ ввода: первый файл gtd-inbox из живого
+		// индекса, иначе фолбэк на настройку inboxSources[0]
+		const target = captureTarget(taskStore.index().all(), settings.inboxSources);
 		if (target === undefined) {
 			new Notice("GTD Flow: не задан файл входящих (inboxSources)");
 			return;

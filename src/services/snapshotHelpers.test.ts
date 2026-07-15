@@ -122,13 +122,27 @@ describe("fileContextFromFrontmatter", () => {
 		expect(fileContextFromFrontmatter("e.md", { "gtd-events": "yes" }).container).toBe("plain");
 	});
 
-	it("приоритет: recurring > events > card > project > board (цепочка §1)", () => {
+	it("gtd-archive: true — archive; false/мусор — plain", () => {
+		expect(fileContextFromFrontmatter("a.md", { "gtd-archive": true }).container).toBe("archive");
+		expect(fileContextFromFrontmatter("a.md", { "gtd-archive": false }).container).toBe("plain");
+		expect(fileContextFromFrontmatter("a.md", { "gtd-archive": "yes" }).container).toBe("plain");
+	});
+
+	it("gtd-inbox: true — inbox; false/мусор — plain", () => {
+		expect(fileContextFromFrontmatter("i.md", { "gtd-inbox": true }).container).toBe("inbox");
+		expect(fileContextFromFrontmatter("i.md", { "gtd-inbox": false }).container).toBe("plain");
+		expect(fileContextFromFrontmatter("i.md", { "gtd-inbox": "yes" }).container).toBe("plain");
+	});
+
+	it("приоритет: recurring > events > card > project > board > archive > inbox", () => {
 		const all = {
 			"gtd-recurring": true,
 			"gtd-events": true,
 			"gtd-card-of": "x",
 			"gtd-project": true,
 			"gtd-board": true,
+			"gtd-archive": true,
+			"gtd-inbox": true,
 		};
 		expect(fileContextFromFrontmatter("f.md", all).container).toBe("recurring");
 		expect(
@@ -141,6 +155,18 @@ describe("fileContextFromFrontmatter", () => {
 		expect(
 			fileContextFromFrontmatter("f.md", { "gtd-project": true, "gtd-board": true }).container,
 		).toBe("project");
+		// archive и inbox стоят НИЖЕ содержательных флагов: доска важнее «архива»/«входящих»
+		expect(
+			fileContextFromFrontmatter("f.md", {
+				"gtd-board": true,
+				"gtd-archive": true,
+				"gtd-inbox": true,
+			}).container,
+		).toBe("board");
+		// archive выигрывает у inbox при одновременном наличии
+		expect(
+			fileContextFromFrontmatter("f.md", { "gtd-archive": true, "gtd-inbox": true }).container,
+		).toBe("archive");
 	});
 });
 

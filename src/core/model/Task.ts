@@ -16,6 +16,7 @@ export type GtdState =
 	| "TEMPLATE" // задача в файле gtd-recurring: true — шаблон регулярного ящика
 	| "DETAIL" // задача в файле-карточке gtd-card-of — приватный чеклист карточки
 	| "EVENT" // задача в файле gtd-events: true — шаблон повторяющегося события (виден только в календаре)
+	| "ARCHIVED" // задача в файле gtd-archive: true — полностью инертна, вне всех запросов и видов
 	| "DONE"
 	| "CANCELLED"
 	| "TICKLER" // 🛫 start > today
@@ -24,8 +25,23 @@ export type GtdState =
 	| "DOING"
 	| "ACTIVE";
 
-/** Тип файла-контейнера, меняющего интерпретацию задач (frontmatter-флаги). */
-export type ContainerKind = "plain" | "board" | "project" | "recurring" | "card" | "events";
+/**
+ * Тип файла-контейнера, меняющего интерпретацию задач (frontmatter-флаги).
+ * Приоритет распознавания флагов (snapshotHelpers.fileContextFromFrontmatter):
+ * recurring > events > card > project > board > archive > inbox > plain.
+ * - "archive" — gtd-archive: true, полная инертность (состояние ARCHIVED, вне запросов);
+ * - "inbox"   — gtd-inbox: true, маркер файла захвата (в деривации состояний ведёт
+ *               себя как "plain"; служит целью записи быстрого ввода, см. captureTargets).
+ */
+export type ContainerKind =
+	| "plain"
+	| "board"
+	| "project"
+	| "recurring"
+	| "card"
+	| "events"
+	| "archive"
+	| "inbox";
 
 export type ProjectStatus = "active" | "on-hold" | "done" | "archived";
 

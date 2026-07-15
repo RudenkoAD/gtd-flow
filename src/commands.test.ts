@@ -102,6 +102,8 @@ function makePlugin(over?: {
 		app: {},
 		settings: { inboxSources: ["GTD/Inbox.md"] },
 		vaultAdapter: { ensureFile, processFile },
+		// цель захвата теперь ищет gtd-inbox файлы в индексе; пустой индекс ⇒ фолбэк inboxSources[0]
+		taskStore: { index: () => ({ all: () => [] as never[] }) },
 		addCommand: (cmd: Cmd) => commands.set(cmd.id, cmd),
 	};
 	registerCommands(plugin as unknown as GtdFlowPlugin);

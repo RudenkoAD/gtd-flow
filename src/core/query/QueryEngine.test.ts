@@ -137,6 +137,24 @@ describe("inbox — упрощённая формула §1 (фидбек-рау
 		const template = makeTask({ filePath: "GTD/Inbox.md", container: "recurring" });
 		expect(inboxKeys([done, deferred, template])).toEqual([]);
 	});
+
+	it("container inbox ведёт себя как plain: активная задача файла захвата — во входящих", () => {
+		// gtd-inbox лишь помечает файл захвата; на формулу входящих он не влияет
+		const captured = makeTask({ filePath: "GTD/Inbox.md", container: "inbox" });
+		expect(inboxKeys([captured])).toEqual([captured.key]);
+	});
+
+	it("container inbox: те же исключения, что у plain (due/тег доски разбирают задачу)", () => {
+		const withDue = makeTask({ container: "inbox", due: "2026-07-20" });
+		const withBoardTag = makeTask({ container: "inbox", tags: ["#kanban/work/todo"] });
+		expect(inboxKeys([withDue, withBoardTag])).toEqual([]);
+	});
+
+	it("container archive исключён из входящих (полная инертность)", () => {
+		const archived = makeTask({ filePath: "GTD/Archive.md", container: "archive" });
+		// даже снятая галочка в архиве не возвращает задачу во входящие
+		expect(inboxKeys([archived])).toEqual([]);
+	});
 });
 
 describe("inbox — сортировка", () => {
@@ -180,13 +198,15 @@ describe("tickler", () => {
 		expect(evaluate({ kind: "tickler" }, ctxOf([done, cancelled]))).toEqual([]);
 	});
 
-	it("TEMPLATE/DETAIL/EVENT не протекают в тикль (цепочка §1 выше TICKLER)", () => {
+	it("TEMPLATE/DETAIL/EVENT/ARCHIVED не протекают в тикль (цепочка §1 выше TICKLER)", () => {
 		const template = makeTask({ container: "recurring", start: "2026-08-01" });
 		const detail = makeTask({ container: "card", start: "2026-08-01" });
 		const event = makeTask({ container: "events", start: "2026-08-01" });
+		const archived = makeTask({ container: "archive", start: "2026-08-01" });
 		expect(isInTickler(template, TODAY)).toBe(false);
 		expect(isInTickler(detail, TODAY)).toBe(false);
 		expect(isInTickler(event, TODAY)).toBe(false);
+		expect(isInTickler(archived, TODAY)).toBe(false);
 	});
 
 	it("сортировка по start по возрастанию", () => {
@@ -250,6 +270,29 @@ describe("остальные запросы", () => {
 			ctxOf([inDue, boundary, out, bySched, noDates, template]),
 		).map((t) => t.key);
 		expect(keys).toEqual([bySched.key, inDue.key, boundary.key]);
+	});
+
+	it("архив (container archive) не протекает ни в один запрос, включая calendar-range", () => {
+		// зачёркнутая заархивированная задача с датой раньше мелькала в календаре —
+		// теперь архив полностью инертен и исключён отовсюду
+		const doneWithDue = makeTask({ container: "archive", statusChar: "x", due: "2026-07-20" });
+		const undoneWithDue = makeTask({ container: "archive", statusChar: " ", due: "2026-07-21" });
+		const deferred = makeTask({ container: "archive", start: "2026-07-25" });
+		const all = [doneWithDue, undoneWithDue, deferred];
+		expect(inboxKeys(all)).toEqual([]);
+		expect(evaluate({ kind: "tickler" }, ctxOf(all))).toEqual([]);
+		expect(evaluate({ kind: "active" }, ctxOf(all))).toEqual([]);
+		expect(
+			evaluate(
+				{
+					kind: "calendar-range",
+					fromIso: "2026-07-01",
+					toIso: "2026-07-31",
+					placement: ["due", "scheduled", "start"],
+				},
+				ctxOf(all),
+			),
+		).toEqual([]);
 	});
 
 	it("события (container events) не протекают ни в один запрос", () => {

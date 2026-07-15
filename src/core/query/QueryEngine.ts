@@ -5,6 +5,7 @@
 import type { IsoDate, Priority, Task } from "../model/Task";
 import {
 	isActive,
+	isArchived,
 	isCancelled,
 	isDetail,
 	isDone,
@@ -47,9 +48,10 @@ export function isInInbox(t: Task, ctx: QueryContext): boolean {
 /**
  * §1: in tickler := !done && !cancelled && start > today (строго: start == today — не тикль).
  * TEMPLATE/DETAIL/EVENT исключены: по цепочке §1 они выше TICKLER и видны только в своих видах.
+ * ARCHIVED тоже исключён — архив полностью инертен и не протекает ни в один запрос.
  */
 export function isInTickler(t: Task, today: IsoDate): boolean {
-	if (isTemplate(t) || isDetail(t) || isEvent(t)) return false;
+	if (isTemplate(t) || isDetail(t) || isEvent(t) || isArchived(t)) return false;
 	return !isDone(t) && !isCancelled(t) && t.start !== null && t.start > today;
 }
 
@@ -86,8 +88,10 @@ export function evaluate(spec: QuerySpec, ctx: QueryContext): Task[] {
 			const placed: { t: Task; date: IsoDate }[] = [];
 			for (const t of ctx.tasks) {
 				// EVENT-шаблоны рендерятся ОТДЕЛЬНО как виртуальные вхождения (expandOccurrences),
-				// сама строка события в календарь-диапазон как задача не протекает
-				if (isTemplate(t) || isDetail(t) || isEvent(t)) continue;
+				// сама строка события в календарь-диапазон как задача не протекает.
+				// ARCHIVED исключён здесь же: архив полностью инертен — зачёркнутая
+				// заархивированная задача с датой больше не мелькает в календаре.
+				if (isTemplate(t) || isDetail(t) || isEvent(t) || isArchived(t)) continue;
 				const ev = taskToCalendarEvent(t, spec.placement);
 				if (ev === null) continue;
 				if (ev.date < spec.fromIso || ev.date > spec.toIso) continue;

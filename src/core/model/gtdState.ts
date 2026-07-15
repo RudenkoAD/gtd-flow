@@ -35,7 +35,12 @@ export function isEvent(t: Task): boolean {
 	return t.container === "events";
 }
 
-/** active = !done && !cancelled && !deferred && !TEMPLATE && !DETAIL && !EVENT (§1). */
+/** Задача в файле gtd-archive: true — полностью инертна (вне всех запросов и видов). */
+export function isArchived(t: Task): boolean {
+	return t.container === "archive";
+}
+
+/** active = !done && !cancelled && !deferred && !TEMPLATE && !DETAIL && !EVENT && !ARCHIVED (§1). */
 export function isActive(t: Task, today: IsoDate): boolean {
 	return (
 		!isDone(t) &&
@@ -43,7 +48,8 @@ export function isActive(t: Task, today: IsoDate): boolean {
 		!isDeferred(t, today) &&
 		!isTemplate(t) &&
 		!isDetail(t) &&
-		!isEvent(t)
+		!isEvent(t) &&
+		!isArchived(t)
 	);
 }
 
@@ -92,6 +98,10 @@ export function deriveGtdState(task: Task, today: IsoDate, resolveDep: ResolveDe
 	// EVENT сразу после TEMPLATE/DETAIL: повторяющееся событие не имеет статуса
 	// в GTD-смысле (чекбокс виртуален), видно только в календаре — вне цепочки done/tickler
 	if (isEvent(task)) return "EVENT";
+	// ARCHIVED — файл-контейнерное состояние наравне с TEMPLATE/DETAIL/EVENT: контейнеры
+	// взаимоисключающие, поэтому порядок среди них не влияет на результат. Архив полностью
+	// инертен: побеждает done/tickler/waiting — строка не участвует ни в одном запросе.
+	if (isArchived(task)) return "ARCHIVED";
 	if (isDone(task)) return "DONE";
 	if (isCancelled(task)) return "CANCELLED";
 	// 🛫 в будущем побеждает и готовность, и блокировку (TICKLER выше BLOCKED)

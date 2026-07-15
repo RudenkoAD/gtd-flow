@@ -8,6 +8,7 @@
 	import type { TaskStore } from "../../stores/taskStore";
 	import { addDaysIso } from "../common/dates";
 	import { confirm } from "../common/ConfirmModal";
+	import { captureTarget } from "../common/taskActions";
 	import type { TaskMenuPorts } from "../common/taskMenu";
 	import type { DndPort } from "../dnd/types";
 	import DayCell from "./DayCell.svelte";
@@ -262,11 +263,12 @@
 		else if (clearStart) new Notice(`Запланирована на ${date}, возвращена из отложенных`);
 	}
 
-	/** Быстрый ввод: `- [ ] <текст> 📅 <дата>[ HH:mm]` в первый источник входящих. */
+	/** Быстрый ввод: `- [ ] <текст> 📅 <дата>[ HH:mm]` в первый файл захвата
+	 *  (gtd-inbox, фолбэк inboxSources[0]); цель вычисляется В МОМЕНТ ввода. */
 	async function quickAdd(date: IsoDate, text: string, time: string | null = null): Promise<void> {
 		const line = quickAddLine(text, date, time);
 		if (line === null) return;
-		const target = settings.inboxSources[0];
+		const target = captureTarget(taskStore.index().all(), settings.inboxSources);
 		if (target === undefined) {
 			new Notice("GTD Flow: не задан файл входящих (inboxSources)");
 			return;

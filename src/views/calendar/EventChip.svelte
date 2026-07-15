@@ -4,7 +4,13 @@
 	import type { IsoDate } from "../../core/model/Task";
 	import type { IntentDispatcher } from "../../services/WritebackService";
 	import type { GtdFlowSettings } from "../../settings/Settings";
-	import { PRIORITY_ICONS, PRIORITY_LABELS, stripColumnTags } from "../common/cardFormat";
+	import {
+		PRIORITY_ICONS,
+		PRIORITY_LABELS,
+		displaySegments,
+		displayText,
+		renderWikiLinks,
+	} from "../common/cardFormat";
 	import { buildTaskMenu, type TaskMenuPorts } from "../common/taskMenu";
 	import type { DndPort } from "../dnd/types";
 	import { VIEW_TYPES } from "../registry";
@@ -37,9 +43,12 @@
 	} = $props();
 
 	const isDone = $derived(ev.task.statusChar === "x" || ev.task.statusChar === "X");
-	// описание без структурных тегов колонок доски (#kanban/…) — как в TaskCard,
-	// иначе чип календаря тащил бы служебный тег в текст и подсказку
-	const displayText = $derived(stripColumnTags(ev.task.description));
+	// тот же пайплайн отображения, что у TaskCard: вики-ссылки → alias/basename
+	// (ссылка на свою карточку скрывается по taskId), затем сегментация #тегов
+	// без структурных тегов колонок доски (#kanban/…). titleText — плоская версия
+	// для подсказки (title-атрибут).
+	const segments = $derived(displaySegments(renderWikiLinks(ev.task.description, ev.task.taskId)));
+	const titleText = $derived(displayText(ev.task));
 	// ТЗ §8: на телефоне кросс-видовой drag выключен — меню/пикеры вместо него
 	const draggable = $derived(dnd !== null && !Platform.isPhone);
 	/** Время поля-размещения — бейдж "14:30" перед текстом. */
@@ -157,7 +166,7 @@
 	class:is-done={isDone}
 	class:is-draggable={draggable && !editing}
 	class:is-deferred={deferred !== null}
-	title={deferred !== null ? `Отложена до ${deferred}` : displayText}
+	title={deferred !== null ? `Отложена до ${deferred}` : titleText}
 	onpointerdown={onPointerDown}
 	onclick={onClick}
 	oncontextmenu={onContextMenu}
@@ -199,7 +208,10 @@
 		{#if time !== null}
 			<span class="gtd-cal-chip-time">{time}</span>
 		{/if}
-		<span class="gtd-cal-chip-text">{displayText}</span>
+		<span class="gtd-cal-chip-text"
+			>{#each segments as seg}{#if seg.tag}<span class="gtd-cal-chip-tag">{seg.text}</span
+				>{:else}{seg.text}{/if}{/each}</span
+		>
 	{/if}
 </div>
 
@@ -270,6 +282,10 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+	/* подсветка #тегов — как в TaskCard, но компактнее под размер чипа */
+	.gtd-cal-chip-tag {
+		color: var(--text-accent);
 	}
 	.gtd-cal-chip-edit {
 		flex: 1 1 auto;

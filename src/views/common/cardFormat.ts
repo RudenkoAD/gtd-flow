@@ -118,6 +118,17 @@ export function renderWikiLinks(text: string, taskId: string | null): string {
 	return out.trim();
 }
 
+/**
+ * Плоский текст описания задачи для подсказок (title-атрибут) и мест без
+ * сегментной разметки. Тот же пайплайн, что у сегментов TaskCard/EventChip:
+ * вики-ссылки → alias/basename (ссылка на свою карточку по taskId скрывается),
+ * затем вырезаются структурные теги колонок доски (#kanban/…). Равен
+ * конкатенации text-сегментов displaySegments(renderWikiLinks(...)).
+ */
+export function displayText(task: Task): string {
+	return stripColumnTags(renderWikiLinks(task.description, task.taskId));
+}
+
 export const PRIORITY_ICONS: Record<Priority, string> = {
 	highest: "🔺",
 	high: "⏫",

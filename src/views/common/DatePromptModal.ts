@@ -24,10 +24,12 @@ export class DatePromptModal extends Modal {
 		const input = wrap.createEl("input", { type: "date" });
 		input.required = true;
 		if (this.initial !== undefined) input.value = this.initial;
+		bindShowPicker(input);
 		let timeInput: HTMLInputElement | null = null;
 		if (this.withTime) {
 			timeInput = wrap.createEl("input", { type: "time" });
 			if (this.initialTime != null) timeInput.value = this.initialTime;
+			bindShowPicker(timeInput);
 		}
 		const submit = (): void => {
 			const value = input.value;
@@ -55,4 +57,20 @@ export class DatePromptModal extends Modal {
 	override onClose(): void {
 		this.contentEl.empty();
 	}
+}
+
+/**
+ * Клик по полю даты/времени сразу открывает нативный селектор (showPicker),
+ * не отключая клавиатурный ввод. showPicker кидает вне user-gesture
+ * (NotAllowedError) и может отсутствовать в старых рантаймах — обёрнуто в
+ * try/catch и опциональный вызов; Electron/Chromium поддерживает.
+ */
+function bindShowPicker(input: HTMLInputElement): void {
+	input.addEventListener("click", () => {
+		try {
+			(input as HTMLInputElement & { showPicker?: () => void }).showPicker?.();
+		} catch {
+			/* NotAllowedError / нет поддержки — молча, ручной ввод остаётся рабочим */
+		}
+	});
 }

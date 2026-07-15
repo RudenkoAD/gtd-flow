@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+	DEFAULT_DROP_DURATION_MIN,
 	DEFAULT_SCROLL_MIN,
 	EVENT_DURATION_MIN,
 	GRID_END_MIN,
 	GRID_START_MIN,
 	MINUTES_PER_DAY,
+	dropTimeEnd,
 	layoutDay,
 	minutesFromOffsetY,
 	minutesToTime,
@@ -273,6 +275,36 @@ describe("preservedTimeEnd — перенос блока сохраняет дл
 		expect(preservedTimeEnd("10:00", "12:00", "23:00")).toBe("23:59");
 		// от 23:59 любой конец вырождается (не строго позже) — без конца
 		expect(preservedTimeEnd("10:00", "12:00", "23:59")).toBeUndefined();
+	});
+});
+
+describe("dropTimeEnd — конец при drop карточки на слот", () => {
+	it("дефолт 30 минут: карточка без времени поля-размещения", () => {
+		expect(DEFAULT_DROP_DURATION_MIN).toBe(30);
+		expect(dropTimeEnd(null, null, "09:00")).toBe("09:30");
+		expect(dropTimeEnd(null, null, "14:15")).toBe("14:45");
+	});
+
+	it("таймированный блок с длительностью — длительность сохраняется (как preservedTimeEnd)", () => {
+		expect(dropTimeEnd("14:30", "16:00", "09:00")).toBe("10:30");
+		expect(dropTimeEnd("10:00", "12:00", "23:00")).toBe("23:59");
+	});
+
+	it("таймированный блок без конца — конец не появляется (undefined)", () => {
+		expect(dropTimeEnd("14:30", null, "09:00")).toBeUndefined();
+		expect(dropTimeEnd("08:00", null, "23:45")).toBeUndefined();
+	});
+
+	it("хвост суток: слот+30 > 23:59 → без конца (не вырожденный 23:30–23:59)", () => {
+		// 23:29 + 30 = 23:59 — ещё влезает
+		expect(dropTimeEnd(null, null, "23:29")).toBe("23:59");
+		// 23:30 + 30 = 24:00 — вылезает за сутки → без конца
+		expect(dropTimeEnd(null, null, "23:30")).toBeUndefined();
+		expect(dropTimeEnd(null, null, "23:59")).toBeUndefined();
+	});
+
+	it("битый слот — undefined (защита от чужой строки)", () => {
+		expect(dropTimeEnd(null, null, "25:00")).toBeUndefined();
 	});
 });
 

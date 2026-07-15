@@ -36,13 +36,14 @@
 		quickAddLine,
 		weekRange,
 		weekdayNames,
+		WEEK_DAYS,
 		type CalendarMode,
 		type CalendarPersistedState,
 		type CalendarWritePort,
 	} from "./calendarLogic";
 	import { createEventSeries } from "./eventSeries";
 	import { EventSeriesModal } from "./EventSeriesModal";
-	import { preservedTimeEnd } from "./timeGrid";
+	import { dropTimeEnd } from "./timeGrid";
 
 	let {
 		taskStore,
@@ -155,6 +156,11 @@
 				: `${range.from} — ${range.to}`,
 	);
 
+	/** Число колонок почасовой сетки: день — 1, «3 дня» — 3, «Неделя» — 7. */
+	const timeGridDays = $derived(
+		mode === "day" ? 1 : mode === "week" ? WEEK_DAYS : DAYS3_PAGE_DAYS,
+	);
+
 	const MODE_ORDER: readonly { id: CalendarMode; label: string }[] = [
 		{ id: "month", label: "Месяц" },
 		{ id: "week", label: "Неделя" },
@@ -216,14 +222,17 @@
 			return;
 		}
 		const field = dropDateField(task, settings.calendarPlacement);
-		// Блок с длительностью, брошенный на слот, тянет конец за собой: новый
-		// старт + прежняя длительность. Явно, а не undefined: setField при
-		// undefined сохранил бы СТАРЫЙ конец, который после переноса может
-		// оказаться не позже нового начала (throw). У задач без конца —
-		// undefined: timeEnd не трогаем, слот ставит только время (§ фидбека).
+		// Конец интервала при drop на слот тайм-сетки (dropTimeEnd):
+		//  • блок с длительностью тянет конец за собой (новый старт + прежняя
+		//    длительность) — явно, а не undefined: setField при undefined сохранил
+		//    бы СТАРЫЙ конец, который после переноса может оказаться не позже
+		//    нового начала (throw);
+		//  • карточка БЕЗ времени поля-размещения (входящие/доска/полоса «Весь
+		//    день») получает дефолтные 30 минут: time = слот, timeEnd = слот+30;
+		//  • перенос уже-таймированного блока БЕЗ конца — конец не появляется.
 		const timeEnd =
 			typeof time === "string"
-				? preservedTimeEnd(placedTime(task, field), placedTimeEnd(task, field), time)
+				? dropTimeEnd(placedTime(task, field), placedTimeEnd(task, field), time)
 				: undefined;
 		// «🛫 и 📅 взаимоисключающие»: планирование реально отложенной задачи
 		// (🛫 в будущем) возвращает её из отложенных — с подтверждением и одной
@@ -355,9 +364,9 @@
 				/>
 			{/each}
 		</div>
-	{:else if mode === "day" || mode === "3days"}
+	{:else if mode === "day" || mode === "3days" || mode === "week"}
 		<TimeGrid
-			days={agendaDays(range.from, mode === "day" ? 1 : DAYS3_PAGE_DAYS)}
+			days={agendaDays(range.from, timeGridDays)}
 			today={$today}
 			{byDay}
 			{eventsByDay}
@@ -377,36 +386,14 @@
 				<div class="gtd-cal-weekday">{name}</div>
 			{/each}
 		</div>
-		{#if mode === "month"}
-			<div class="gtd-cal-grid">
-				{#each grid.weeks as week (week[0])}
-					{#each week as date (date)}
-						<DayCell
-							{date}
-							today={$today}
-							muted={date.slice(0, 7) !== anchor.slice(0, 7)}
-							compact={true}
-							events={byDay.get(date) ?? []}
-							eventOccurrences={eventsByDay.get(date) ?? []}
-							{dnd}
-							{dispatcher}
-							{app}
-							{settings}
-							{vault}
-							{menuPorts}
-							onDropTask={dropTask}
-							onQuickAdd={quickAdd}
-							onCreateEvent={createEvent}
-						/>
-					{/each}
-				{/each}
-			</div>
-		{:else}
-			<div class="gtd-cal-grid is-week">
-				{#each agendaDays(range.from, 7) as date (date)}
+		<div class="gtd-cal-grid">
+			{#each grid.weeks as week (week[0])}
+				{#each week as date (date)}
 					<DayCell
 						{date}
 						today={$today}
+						muted={date.slice(0, 7) !== anchor.slice(0, 7)}
+						compact={true}
 						events={byDay.get(date) ?? []}
 						eventOccurrences={eventsByDay.get(date) ?? []}
 						{dnd}
@@ -420,8 +407,8 @@
 						onCreateEvent={createEvent}
 					/>
 				{/each}
-			</div>
-		{/if}
+			{/each}
+		</div>
 	{/if}
 </div>
 

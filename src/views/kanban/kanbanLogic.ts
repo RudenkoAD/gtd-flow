@@ -24,24 +24,19 @@ export function pickBoardPath(
 	return boards.length > 0 ? boards[0]!.path : null;
 }
 
-/** Вью-модель колонки: счётчик и свёрнутость поверх модели BoardService. */
+/** Вью-модель колонки: счётчик поверх модели BoardService. */
 export interface ColumnVM {
 	id: string;
 	name: string;
 	count: number;
-	collapsed: boolean;
 	tasks: Task[];
 }
 
-export function buildColumnVMs(
-	columns: readonly BoardColumnModel[],
-	collapsed: Readonly<Record<string, boolean>>,
-): ColumnVM[] {
+export function buildColumnVMs(columns: readonly BoardColumnModel[]): ColumnVM[] {
 	return columns.map((c) => ({
 		id: c.id,
 		name: c.name,
 		count: c.tasks.length,
-		collapsed: collapsed[c.id] === true,
 		tasks: c.tasks,
 	}));
 }
@@ -49,7 +44,6 @@ export function buildColumnVMs(
 /** JSON-сериализуемое состояние вида для workspace-раскладки (ТЗ §4). */
 export interface KanbanPersistedState {
 	boardPath?: string;
-	collapsed?: Record<string, boolean>;
 }
 
 /**
@@ -59,12 +53,4 @@ export interface KanbanPersistedState {
  */
 export function moveRefusalNotice(reason: string | undefined): string {
 	return `GTD Flow: ${reason ?? "не удалось перенести карточку"}`;
-}
-
-/** Новое состояние свёрнутости после клика по шапке колонки (вход не мутируется). */
-export function toggleCollapsed(
-	collapsed: Readonly<Record<string, boolean>>,
-	colId: string,
-): Record<string, boolean> {
-	return { ...collapsed, [colId]: collapsed[colId] !== true };
 }

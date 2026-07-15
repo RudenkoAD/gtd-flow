@@ -13,7 +13,7 @@ import type { KanbanPersistedState } from "./kanbanLogic";
 
 /**
  * Kanban. Компоненту передаётся узкий контекст вместо всего plugin (ТЗ §0);
- * viewState (выбранная доска, свёрнутые колонки) — JSON-сериализуемое (ТЗ §4).
+ * viewState (выбранная доска) — JSON-сериализуемое (ТЗ §4).
  */
 export class KanbanView extends GtdView {
 	// getViewType() вызывается конструктором View до присвоения this.meta (см. GtdView).
@@ -64,19 +64,15 @@ export class KanbanView extends GtdView {
 	}
 }
 
-/** Раскладка могла прийти чужая/битая (setViewState зовут и другие плагины). */
+/**
+ * Раскладка могла прийти чужая/битая (setViewState зовут и другие плагины).
+ * Старое поле `collapsed` (сворачивание колонок убрано по фидбеку) молча
+ * игнорируется — восстановление сохранённого до этого state не ломается.
+ */
 function sanitizeState(state: unknown): KanbanPersistedState | null {
 	if (typeof state !== "object" || state === null || Array.isArray(state)) return null;
 	const s = state as Record<string, unknown>;
 	const next: KanbanPersistedState = {};
 	if (typeof s["boardPath"] === "string") next.boardPath = s["boardPath"];
-	const rawCollapsed = s["collapsed"];
-	if (typeof rawCollapsed === "object" && rawCollapsed !== null && !Array.isArray(rawCollapsed)) {
-		const collapsed: Record<string, boolean> = {};
-		for (const [k, v] of Object.entries(rawCollapsed as Record<string, unknown>)) {
-			if (typeof v === "boolean") collapsed[k] = v;
-		}
-		next.collapsed = collapsed;
-	}
 	return next;
 }

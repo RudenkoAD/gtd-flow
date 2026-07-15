@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { BoardDef } from "../../core/board/boardFile";
 import type { DiscoveredBoard } from "../../services/BoardService";
 import { makeTask } from "../../stores/testSupport";
-import { buildColumnVMs, moveRefusalNotice, pickBoardPath, toggleCollapsed } from "./kanbanLogic";
+import { buildColumnVMs, moveRefusalNotice, pickBoardPath } from "./kanbanLogic";
 
 const DEF: BoardDef = { id: "x", name: "X", groupBy: "tag", columns: [], skippedColumns: [], order: {} };
 const boards: DiscoveredBoard[] = [
@@ -30,19 +30,16 @@ describe("pickBoardPath", () => {
 });
 
 describe("buildColumnVMs", () => {
-	it("счётчики и свёрнутость из состояния вида", () => {
+	it("счётчики из состояния вида", () => {
 		const t1 = makeTask({ filePath: "f.md", lineStart: 1 });
 		const t2 = makeTask({ filePath: "f.md", lineStart: 2 });
-		const vms = buildColumnVMs(
-			[
-				{ id: "todo", name: "Todo", match: "#t", tasks: [t1, t2] },
-				{ id: "done", name: "Done", match: "status:done", tasks: [] },
-			],
-			{ done: true },
-		);
-		expect(vms.map((v) => [v.id, v.count, v.collapsed])).toEqual([
-			["todo", 2, false],
-			["done", 0, true],
+		const vms = buildColumnVMs([
+			{ id: "todo", name: "Todo", match: "#t", tasks: [t1, t2] },
+			{ id: "done", name: "Done", match: "status:done", tasks: [] },
+		]);
+		expect(vms.map((v) => [v.id, v.count])).toEqual([
+			["todo", 2],
+			["done", 0],
 		]);
 	});
 });
@@ -52,15 +49,5 @@ describe("moveRefusalNotice", () => {
 		expect(moveRefusalNotice("line-not-found")).toBe("GTD Flow: line-not-found");
 		expect(moveRefusalNotice("task-not-found")).toBe("GTD Flow: task-not-found");
 		expect(moveRefusalNotice(undefined)).toBe("GTD Flow: не удалось перенести карточку");
-	});
-});
-
-describe("toggleCollapsed", () => {
-	it("переключает и не мутирует вход", () => {
-		const initial = { a: true };
-		const next = toggleCollapsed(initial, "b");
-		expect(next).toEqual({ a: true, b: true });
-		expect(toggleCollapsed(next, "a")).toEqual({ a: false, b: true });
-		expect(initial).toEqual({ a: true });
 	});
 });

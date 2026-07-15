@@ -8,12 +8,7 @@
 	import type { TaskMenuPorts } from "../common/taskMenu";
 	import type { DndPort } from "../dnd/types";
 	import Column from "./Column.svelte";
-	import {
-		buildColumnVMs,
-		pickBoardPath,
-		toggleCollapsed,
-		type KanbanPersistedState,
-	} from "./kanbanLogic";
+	import { buildColumnVMs, pickBoardPath, type KanbanPersistedState } from "./kanbanLogic";
 
 	let {
 		taskStore,
@@ -54,13 +49,11 @@
 		(settings as GtdFlowSettings & { defaultBoardPath?: string }).defaultBoardPath ?? null;
 
 	let selectedPath = $state<string | null>(null);
-	let collapsed = $state<Record<string, boolean>>({});
 
 	// восстановление из viewState (setState приходит после onOpen — поэтому store)
 	$effect(() =>
 		persisted.subscribe((s) => {
 			if (s.boardPath !== undefined) selectedPath = s.boardPath;
-			if (s.collapsed !== undefined) collapsed = { ...s.collapsed };
 		}),
 	);
 
@@ -75,22 +68,14 @@
 		const entry = discovery.boards.find((b) => b.path === shownPath);
 		return entry === undefined ? null : boards.boardModel(entry.path, entry.def);
 	});
-	const columns = $derived(model === null ? [] : buildColumnVMs(model.columns, collapsed));
+	const columns = $derived(model === null ? [] : buildColumnVMs(model.columns));
 
 	function persistNow(): void {
-		persist({
-			...(shownPath !== null ? { boardPath: shownPath } : {}),
-			collapsed,
-		});
+		persist(shownPath !== null ? { boardPath: shownPath } : {});
 	}
 
 	function onSelectBoard(e: Event): void {
 		selectedPath = (e.currentTarget as HTMLSelectElement).value;
-		persistNow();
-	}
-
-	function onToggle(colId: string): void {
-		collapsed = toggleCollapsed(collapsed, colId);
 		persistNow();
 	}
 
@@ -177,7 +162,6 @@
 					{settings}
 					today={$today}
 					{menuPorts}
-					{onToggle}
 				/>
 			{/each}
 			{#if addingCol}

@@ -23,7 +23,6 @@
 		settings,
 		today,
 		menuPorts = null,
-		onToggle,
 	}: {
 		column: ColumnVM;
 		boardPath: string;
@@ -36,7 +35,6 @@
 		today: IsoDate;
 		/** Порты паритета без drag (меню/пикеры/карточка), ТЗ §8 слой 3. */
 		menuPorts?: TaskMenuPorts | null;
-		onToggle: (colId: string) => void;
 	} = $props();
 
 	// ТЗ §8: на телефоне drag не инициируем — жест уходит длинному тапу карточки
@@ -56,7 +54,7 @@
 		return insertIndexByY(rects, y);
 	}
 
-	// Drop-цель — вся колонка (шапка и свёрнутая полоска тоже принимают).
+	// Drop-цель — вся колонка (шапка тоже принимает).
 	// Замыкание drop читает реактивные props — цель всегда бьёт в актуальную доску.
 	$effect(() => {
 		if (dnd === null || colEl === null) return;
@@ -78,16 +76,9 @@
 	}
 
 	// --- переименование колонки: дабл-клик по заголовку ---
-	// Конфликт с одиночным кликом (сворачивание): нельзя сворачивать сразу,
-	// иначе после первого клика шапка сменится на вертикальную полоску и
-	// dblclick прилетит уже в другой элемент. Поэтому collapse откладывается
-	// на 250 мс (типовой double-click interval); второй клик в окне отменяет
-	// таймер и открывает rename. Цена — едва заметная задержка сворачивания.
-	// С drag карточек конфликта нет: заголовок не является drag-источником
+	// Одиночный клик по заголовку намеренно ничего не делает (сворачивание убрано
+	// по фидбеку). С drag карточек конфликта нет: заголовок не drag-источник
 	// (pointerdown навешан только на карточки в теле колонки).
-	const DBLCLICK_MS = 250;
-	let collapseTimer: number | null = null;
-
 	let renaming = $state(false);
 	let renameValue = $state("");
 	let renameInputEl: HTMLInputElement | null = $state(null);
@@ -99,24 +90,7 @@
 		}
 	});
 
-	// таймер не должен сработать после демонтажа колонки
-	$effect(() => () => {
-		if (collapseTimer !== null) window.clearTimeout(collapseTimer);
-	});
-
-	function onHeaderClick(): void {
-		if (collapseTimer !== null) return; // второй клик серии — его обработает dblclick
-		collapseTimer = window.setTimeout(() => {
-			collapseTimer = null;
-			onToggle(column.id); // одиночный клик — сворачивание, как и раньше
-		}, DBLCLICK_MS);
-	}
-
 	function onHeaderDblClick(): void {
-		if (collapseTimer !== null) {
-			window.clearTimeout(collapseTimer);
-			collapseTimer = null;
-		}
 		renaming = true;
 		renameValue = column.name;
 	}
@@ -141,66 +115,47 @@
 	}
 </script>
 
-<section
-	class="gtd-kanban-col"
-	class:is-collapsed={column.collapsed}
-	bind:this={colEl}
-	aria-label={column.name}
->
-	{#if column.collapsed}
+<section class="gtd-kanban-col" bind:this={colEl} aria-label={column.name}>
+	{#if renaming}
+		<div class="gtd-kanban-col-header is-renaming">
+			<input
+				class="gtd-kanban-col-rename"
+				type="text"
+				aria-label="Новое имя колонки"
+				bind:this={renameInputEl}
+				bind:value={renameValue}
+				onkeydown={onRenameKeydown}
+				onblur={commitRename}
+			/>
+		</div>
+	{:else}
+		<!-- одиночный клик ничего не делает; дабл-клик — переименование -->
 		<button
-			class="gtd-kanban-col-strip"
-			aria-expanded="false"
-			onclick={() => onToggle(column.id)}
-			title="Развернуть колонку"
+			class="gtd-kanban-col-header"
+			ondblclick={onHeaderDblClick}
+			title="Дабл-клик — переименовать колонку"
 		>
-			<span class="gtd-kanban-col-strip-name">{column.name}</span>
+			<span class="gtd-kanban-col-name">{column.name}</span>
 			<span class="gtd-kanban-col-count">{column.count}</span>
 		</button>
-	{:else}
-		{#if renaming}
-			<div class="gtd-kanban-col-header is-renaming">
-				<input
-					class="gtd-kanban-col-rename"
-					type="text"
-					aria-label="Новое имя колонки"
-					bind:this={renameInputEl}
-					bind:value={renameValue}
-					onkeydown={onRenameKeydown}
-					onblur={commitRename}
-				/>
-			</div>
-		{:else}
-			<button
-				class="gtd-kanban-col-header"
-				aria-expanded="true"
-				onclick={onHeaderClick}
-				ondblclick={onHeaderDblClick}
-				title="Свернуть колонку (дабл-клик — переименовать)"
-			>
-				<span class="gtd-kanban-col-chevron">▾</span>
-				<span class="gtd-kanban-col-name">{column.name}</span>
-				<span class="gtd-kanban-col-count">{column.count}</span>
-			</button>
-		{/if}
-		<div class="gtd-kanban-col-body">
-			{#if column.tasks.length === 0}
-				<div class="gtd-kanban-col-empty">Пусто</div>
-			{/if}
-			<div class="gtd-kanban-cards" bind:this={listEl}>
-				{#each column.tasks as task (task.key)}
-					<!-- svelte-ignore a11y_no_static_element_interactions -->
-					<div
-						class="gtd-kanban-card"
-						class:is-draggable={cardDraggable}
-						onpointerdown={(e) => onCardPointerDown(e, task.key)}
-					>
-						<TaskCard {task} {dispatcher} {app} {settings} {today} {menuPorts} inBoard={true} />
-					</div>
-				{/each}
-			</div>
-		</div>
 	{/if}
+	<div class="gtd-kanban-col-body">
+		{#if column.tasks.length === 0}
+			<div class="gtd-kanban-col-empty">Пусто</div>
+		{/if}
+		<div class="gtd-kanban-cards" bind:this={listEl}>
+			{#each column.tasks as task (task.key)}
+				<!-- svelte-ignore a11y_no_static_element_interactions -->
+				<div
+					class="gtd-kanban-card"
+					class:is-draggable={cardDraggable}
+					onpointerdown={(e) => onCardPointerDown(e, task.key)}
+				>
+					<TaskCard {task} {dispatcher} {app} {settings} {today} {menuPorts} inBoard={true} />
+				</div>
+			{/each}
+		</div>
+	</div>
 </section>
 
 <style>
@@ -215,18 +170,6 @@
 		border-radius: var(--radius-m, 8px);
 		overflow: hidden;
 	}
-	.gtd-kanban-col.is-collapsed {
-		flex: 0 0 34px;
-	}
-	.gtd-kanban-col-header,
-	.gtd-kanban-col-strip {
-		border: none;
-		box-shadow: none;
-		background: transparent;
-		color: var(--text-normal);
-		cursor: pointer;
-		font-weight: 600;
-	}
 	.gtd-kanban-col-header {
 		flex: none;
 		display: flex;
@@ -234,11 +177,16 @@
 		gap: 6px;
 		width: 100%;
 		padding: 6px 10px;
+		border: none;
 		border-bottom: 1px solid var(--background-modifier-border);
+		box-shadow: none;
+		background: transparent;
+		color: var(--text-normal);
+		cursor: pointer;
+		font-weight: 600;
 		text-align: left;
 	}
-	.gtd-kanban-col-header:hover,
-	.gtd-kanban-col-strip:hover {
+	.gtd-kanban-col-header:hover {
 		background: var(--background-modifier-hover);
 	}
 	.gtd-kanban-col-header.is-renaming,
@@ -249,9 +197,6 @@
 	.gtd-kanban-col-rename {
 		width: 100%;
 		font-weight: 600;
-	}
-	.gtd-kanban-col-chevron {
-		color: var(--text-muted);
 	}
 	.gtd-kanban-col-name {
 		flex: 1 1 auto;
@@ -266,20 +211,6 @@
 		background: var(--background-primary);
 		border-radius: var(--radius-s, 4px);
 		padding: 1px 6px;
-	}
-	.gtd-kanban-col-strip {
-		flex: 1 1 auto;
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		gap: 8px;
-		padding: 10px 4px;
-	}
-	.gtd-kanban-col-strip-name {
-		writing-mode: vertical-rl;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		max-height: 60vh;
 	}
 	.gtd-kanban-col-body {
 		flex: 1 1 auto;

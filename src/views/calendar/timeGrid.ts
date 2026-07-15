@@ -14,6 +14,8 @@ export const DEFAULT_SCROLL_MIN = 8 * 60;
 export const EVENT_DURATION_MIN = 45;
 /** Шаг снапа времени при drag, resize и quick-add. */
 export const SNAP_STEP_MIN = 15;
+/** Длительность по умолчанию для карточки без времени, брошенной на слот сетки. */
+export const DEFAULT_DROP_DURATION_MIN = 30;
 
 /** Тот же формат, что у парсера времени задач: 00:00–23:59. */
 const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
@@ -178,4 +180,27 @@ export function preservedTimeEnd(
 	// у самого низа суток длительность не помещается и конец вырождается —
 	// лучше без конца, чем невалидный ("HH:mm" лексикографика == хронология)
 	return end > newTime ? end : undefined;
+}
+
+/**
+ * timeEnd для set-date при drop карточки на слот тайм-сетки (Calendar.dropTask):
+ * - была длительность (oldTime и oldTimeEnd заданы) — сохраняем её, как перенос
+ *   таймированного блока (preservedTimeEnd);
+ * - был старт БЕЗ конца (oldTime задан, oldTimeEnd === null) — конец не появляется
+ *   (undefined): перенос no-end блока внутри сетки прежнюю логику не меняет;
+ * - времени НЕ было вовсе (oldTime === null: карточка из входящих/доски/полосы
+ *   «Весь день») — дефолтная длительность 30 минут: конец = слот + 30. Если конец
+ *   вылезает за сутки (слот ≥ 23:30, слот+30 > 23:59) — без конца (undefined),
+ *   а не вырожденный «23:30–23:59».
+ */
+export function dropTimeEnd(
+	oldTime: string | null,
+	oldTimeEnd: string | null,
+	newTime: string,
+): string | undefined {
+	if (oldTime !== null) return preservedTimeEnd(oldTime, oldTimeEnd, newTime);
+	const n = timeToMinutes(newTime);
+	if (n === null) return undefined;
+	const end = n + DEFAULT_DROP_DURATION_MIN;
+	return end <= MINUTES_PER_DAY - 1 ? minutesToTime(end) : undefined;
 }

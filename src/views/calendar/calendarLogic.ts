@@ -15,6 +15,9 @@ export type CalendarMode = "month" | "week" | "agenda" | "3days" | "day";
 /** Ширина страницы режима «3 дня»: якорь + два следующих дня. */
 export const DAYS3_PAGE_DAYS = 3;
 
+/** Дней в неделе — число колонок почасовой сетки режима «Неделя». */
+export const WEEK_DAYS = 7;
+
 /** Размер страницы агенды: две недели — обозримо и накрывает «эту и следующую». */
 export const AGENDA_PAGE_DAYS = 14;
 

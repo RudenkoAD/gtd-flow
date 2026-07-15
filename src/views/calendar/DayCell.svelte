@@ -182,6 +182,10 @@
 	.gtd-cal-daynum {
 		flex: none;
 		align-self: flex-start;
+		max-width: 100%;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 		color: var(--text-muted);
 		font-size: var(--font-ui-smaller, 0.85em);
 		padding: 0 4px;

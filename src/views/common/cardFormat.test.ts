@@ -3,6 +3,7 @@ import { makeTask } from "../../stores/testSupport";
 import {
 	dateBadges,
 	displaySegments,
+	displayText,
 	renderWikiLinks,
 	segmentDescription,
 	stripColumnTags,
@@ -103,6 +104,37 @@ describe("displaySegments", () => {
 	it("без тегов колонок совпадает с segmentDescription", () => {
 		const text = "Купить молоко #home и хлеб";
 		expect(displaySegments(text)).toEqual(segmentDescription(text));
+	});
+});
+
+describe("displayText", () => {
+	it("вики-ссылки → alias/basename, теги колонок вырезаются", () => {
+		const t = makeTask({
+			filePath: "a.md",
+			description: "Фото [[a/b.md|B]] #kanban/dev/todo дома",
+		});
+		expect(displayText(t)).toBe("Фото B дома");
+	});
+
+	it("ссылка на свою карточку скрывается по taskId", () => {
+		const t = makeTask({
+			filePath: "a.md",
+			taskId: "c2flv3",
+			description: "Разбор [[c2flv3 Разобрать фото]] дома",
+		});
+		expect(displayText(t)).toBe("Разбор дома");
+	});
+
+	it("равен конкатенации text-сегментов того же пайплайна (как в TaskCard/EventChip)", () => {
+		const t = makeTask({
+			filePath: "a.md",
+			taskId: "c2flv3",
+			description: "x [[dir/n.md|N]] #home #kanban/b/c [[c2flv3 карточка]] y",
+		});
+		const joined = displaySegments(renderWikiLinks(t.description, t.taskId))
+			.map((s) => s.text)
+			.join("");
+		expect(displayText(t)).toBe(joined);
 	});
 });
 

@@ -12,7 +12,13 @@
     "check:core": "node scripts/check-core-purity.mjs",
     "version": "node version-bump.mjs && git add manifest.json versions.json"
   },
-  "keywords": ["obsidian", "gtd", "tasks", "kanban", "calendar"],
+  "keywords": [
+    "obsidian",
+    "gtd",
+    "tasks",
+    "kanban",
+    "calendar"
+  ],
   "author": "Anton Roudenko",
   "license": "MIT",
   "devDependencies": {
@@ -29,7 +35,6 @@
     "vitest": "^3.0.0"
   },
   "dependencies": {
-    "@xyflow/svelte": "^1.6.0",
-    "elkjs": "^0.9.3"
+    "@xyflow/svelte": "^1.6.0"
   }
 }

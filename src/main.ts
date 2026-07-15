@@ -2,6 +2,7 @@ import { Plugin, WorkspaceLeaf } from "obsidian";
 import { VIEW_META, VIEW_TYPES, type GtdViewKind } from "./views/registry";
 import { DEFAULT_SETTINGS, type GtdFlowSettings } from "./settings/Settings";
 import { mergeSettings } from "./settings/mergeSettings";
+import { GtdSettingsTab } from "./settings/SettingsTab";
 import { MetadataAdapter } from "./adapters/MetadataAdapter";
 import { VaultAdapter } from "./adapters/VaultAdapter";
 import { ObsidianClock } from "./adapters/ObsidianClock";
@@ -97,6 +98,7 @@ export default class GtdFlowPlugin extends Plugin {
 			findCardFile: (taskId) => metadata.findByFrontmatterValue("gtd-card-of", taskId),
 		});
 		registerCommands(this);
+		this.addSettingTab(new GtdSettingsTab(this.app, this));
 		// Первичная сборка — вне критического пути старта, строго после
 		// onLayoutReady И полного resolve кэша метаданных (ТЗ §2): до resolve
 		// getFileCache пуст, снапшоты вышли бы без задач и с неверным контекстом,

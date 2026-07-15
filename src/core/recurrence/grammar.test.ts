@@ -99,6 +99,52 @@ describe("parseRule — grammar breadth", () => {
 	});
 });
 
+describe("parseRule — event time ('at' tail, §события)", () => {
+	it("accepts 'at HH:mm' on any frequency", () => {
+		expect(ok("every day at 09:00")).toEqual({ freq: "daily", n: 1, eventTime: "09:00" });
+		expect(ok("every tuesday at 19:00")).toEqual({
+			freq: "weekly",
+			n: 1,
+			byDay: [1],
+			eventTime: "19:00",
+		});
+	});
+	it("accepts 'at HH:mm-HH:mm' interval", () => {
+		expect(ok("every tuesday at 19:00-20:30")).toEqual({
+			freq: "weekly",
+			n: 1,
+			byDay: [1],
+			eventTime: "19:00",
+			eventTimeEnd: "20:30",
+		});
+	});
+	it("combines with 'on' and 'until' clauses in any order", () => {
+		expect(ok("every 2 weeks on mon, thu at 08:15 until 2027-01-01")).toEqual({
+			freq: "weekly",
+			n: 2,
+			byDay: [0, 3],
+			eventTime: "08:15",
+			until: "2027-01-01",
+		});
+		expect(ok("every month on the last day at 23:00-23:59")).toEqual({
+			freq: "monthly",
+			n: 1,
+			day: "last",
+			eventTime: "23:00",
+			eventTimeEnd: "23:59",
+		});
+	});
+	it("rejects invalid time, non-later end, duplicate 'at', missing time", () => {
+		bad("every day at 25:00");
+		bad("every day at 9:00");
+		bad("every day at 19:00-19:00");
+		bad("every day at 20:00-19:00");
+		bad("every day at 19:00-24:00");
+		bad("every day at 09:00 at 10:00");
+		bad("every day at");
+	});
+});
+
 describe("parseRule — rejects", () => {
 	it("rejects empty and bare 'every'", () => {
 		bad("");

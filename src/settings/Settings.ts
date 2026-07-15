@@ -37,6 +37,8 @@ export interface GtdFlowSettings {
 	};
 	cardsFolder: string;
 	cardLinkInLine: boolean;
+	/** Файл-хранилище повторяющихся событий календаря (frontmatter gtd-events: true). */
+	eventsFile: string;
 }
 
 export const DEFAULT_SETTINGS: GtdFlowSettings = {
@@ -63,4 +65,5 @@ export const DEFAULT_SETTINGS: GtdFlowSettings = {
 	},
 	cardsFolder: "GTD/Cards",
 	cardLinkInLine: true,
+	eventsFile: "GTD/Events.md",
 };

@@ -3,7 +3,11 @@
  *
  *   every [N] (day|days|week|weeks|month|months|year|years|weekday|<weekday>)
  *             [on <weekday-list>] [on the <ordinal> | on the last day]
- *             [on <month-name> <day>] [until YYYY-MM-DD]
+ *             [on <month-name> <day>] [at HH:mm[-HH:mm]] [until YYYY-MM-DD]
+ *
+ * Хвост "at HH:mm[-HH:mm]" — время вхождения повторяющегося события календаря
+ * (ТЗ §события): 'every tuesday at 19:00-20:30', 'every day at 09:00'. Для
+ * шаблонов регулярного ящика он игнорируется движком спавна (date-уровень).
  *
  * rrule.js отвергнут сознательно: RFC-семантика ПРОПУСКАЕТ несуществующие даты,
  * а нам нужен клампинг («on the 31st» → Feb 28/29). Регистронезависимо;
@@ -12,14 +16,27 @@
 import type { IsoDate } from "../model/Task";
 import { isValidIsoDate } from "./dateMath";
 
+/**
+ * Опциональное время вхождения (ТЗ §события): хвост " at HH:mm[-HH:mm]" правила.
+ * Значимо ТОЛЬКО для повторяющихся событий календаря; для шаблонов регулярного
+ * ящика игнорируется движком спавна (nextOccurrence/isOccurrence — date-уровень).
+ * eventTimeEnd валиден только вместе с eventTime и строго позже него.
+ */
+export interface EventTime {
+	/** "HH:mm" начала вхождения; отсутствие — «Весь день». */
+	eventTime?: string;
+	/** "HH:mm" конца интервала; только при eventTime и строго позже него. */
+	eventTimeEnd?: string;
+}
+
 export type Rule =
-	| { freq: "daily"; n: number; until?: IsoDate }
-	| { freq: "weekdays"; until?: IsoDate }
+	| ({ freq: "daily"; n: number; until?: IsoDate } & EventTime)
+	| ({ freq: "weekdays"; until?: IsoDate } & EventTime)
 	// byDay: 0=понедельник … 6=воскресенье (см. dateMath.dayOfWeek).
 	// byDay=[] легально («every week until …») — шаг от курсора без привязки к дню.
-	| { freq: "weekly"; n: number; byDay: number[]; until?: IsoDate }
-	| { freq: "monthly"; n: number; day: number | "last"; until?: IsoDate }
-	| { freq: "yearly"; n: number; month: number; day: number; until?: IsoDate };
+	| ({ freq: "weekly"; n: number; byDay: number[]; until?: IsoDate } & EventTime)
+	| ({ freq: "monthly"; n: number; day: number | "last"; until?: IsoDate } & EventTime)
+	| ({ freq: "yearly"; n: number; month: number; day: number; until?: IsoDate } & EventTime);
 
 export interface ParseError {
 	error: string;
@@ -89,6 +106,10 @@ function lookupWeekday(tok: string): number | null {
 
 const ORDINAL_RE = /^(\d+)(st|nd|rd|th)?$/;
 
+/** Валидное время "HH:mm", 24 часа — тот же гейт, что у парсера задач (tokenizer.TIME_RE);
+ *  дублируется локально: core/recurrence не зависит от core/parser. */
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
 export function parseRule(text: string): Rule | ParseError {
 	const tokens = text.trim().toLowerCase().split(/[\s,]+/).filter((t) => t.length > 0);
 	let i = 0;
@@ -127,14 +148,40 @@ export function parseRule(text: string): Rule | ParseError {
 		unitWeekday = wd;
 	}
 
-	// клаузы on/until (порядок свободный, каждая — не более одного раза)
+	// клаузы on/until/at (порядок свободный, каждая — не более одного раза)
 	let until: IsoDate | undefined;
 	let onWeekdays: number[] | null = null;
 	let onMonthDay: number | "last" | null = null;
 	let onDate: { month: number; day: number } | null = null;
+	let eventTime: string | undefined;
+	let eventTimeEnd: string | undefined;
 
 	while (i < tokens.length) {
 		const t = tokens[i];
+		if (t === "at") {
+			// хвост времени вхождения: "at HH:mm" | "at HH:mm-HH:mm"
+			i++;
+			const spec = tokens[i];
+			if (spec === undefined) return { error: "expected a time after 'at'" };
+			if (eventTime !== undefined) return { error: "duplicate 'at'" };
+			const dash = spec.indexOf("-");
+			if (dash === -1) {
+				if (!TIME_RE.test(spec)) return { error: `invalid time '${spec}' after 'at'` };
+				eventTime = spec;
+			} else {
+				const startPart = spec.slice(0, dash);
+				const endPart = spec.slice(dash + 1);
+				if (!TIME_RE.test(startPart) || !TIME_RE.test(endPart)) {
+					return { error: `invalid time range '${spec}' after 'at'` };
+				}
+				// лексикографика "HH:mm" == хронология: конец строго позже начала
+				if (endPart <= startPart) return { error: "'at' end time must be after start time" };
+				eventTime = startPart;
+				eventTimeEnd = endPart;
+			}
+			i++;
+			continue;
+		}
 		if (t === "until") {
 			i++;
 			const dt = tokens[i];
@@ -209,30 +256,37 @@ export function parseRule(text: string): Rule | ParseError {
 		onWeekdays = [...new Set(list)].sort((a, b) => a - b);
 	}
 
-	const withUntil = (r: Rule): Rule => (until !== undefined ? { ...r, until } : r);
+	// хвостовые опции (until + время вхождения) — единым спредом на любой freq
+	const withTail = (r: Rule): Rule => {
+		const out = { ...r };
+		if (until !== undefined) out.until = until;
+		if (eventTime !== undefined) out.eventTime = eventTime;
+		if (eventTimeEnd !== undefined) out.eventTimeEnd = eventTimeEnd;
+		return out;
+	};
 
 	switch (kind) {
 		case "daily":
 			if (onWeekdays !== null || onMonthDay !== null || onDate !== null) {
 				return { error: "daily rules do not take an 'on' clause" };
 			}
-			return withUntil({ freq: "daily", n });
+			return withTail({ freq: "daily", n });
 		case "weekdays":
 			if (hasN) return { error: "'every weekday' does not take an interval" };
 			if (onWeekdays !== null || onMonthDay !== null || onDate !== null) {
 				return { error: "'every weekday' does not take an 'on' clause" };
 			}
-			return withUntil({ freq: "weekdays" });
+			return withTail({ freq: "weekdays" });
 		case "weekday-name":
 			if (onWeekdays !== null || onMonthDay !== null || onDate !== null) {
 				return { error: `'every ${unitTok}' does not take an 'on' clause` };
 			}
-			return withUntil({ freq: "weekly", n, byDay: [unitWeekday] });
+			return withTail({ freq: "weekly", n, byDay: [unitWeekday] });
 		case "weekly":
 			if (onMonthDay !== null || onDate !== null) {
 				return { error: "weekly rules take only 'on <weekday, ...>'" };
 			}
-			return withUntil({ freq: "weekly", n, byDay: onWeekdays ?? [] });
+			return withTail({ freq: "weekly", n, byDay: onWeekdays ?? [] });
 		case "monthly":
 			if (onWeekdays !== null || onDate !== null) {
 				return { error: "monthly rules take only 'on the <day>' / 'on the last day'" };
@@ -241,12 +295,12 @@ export function parseRule(text: string): Rule | ParseError {
 			if (onMonthDay === null) {
 				return { error: "monthly rule requires 'on the <day>' or 'on the last day'" };
 			}
-			return withUntil({ freq: "monthly", n, day: onMonthDay });
+			return withTail({ freq: "monthly", n, day: onMonthDay });
 		case "yearly":
 			if (onWeekdays !== null || onMonthDay !== null) {
 				return { error: "yearly rules take only 'on <month-name> <day>'" };
 			}
 			if (onDate === null) return { error: "yearly rule requires 'on <month-name> <day>'" };
-			return withUntil({ freq: "yearly", n, month: onDate.month, day: onDate.day });
+			return withTail({ freq: "yearly", n, month: onDate.month, day: onDate.day });
 	}
 }

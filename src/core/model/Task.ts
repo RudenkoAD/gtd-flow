@@ -15,6 +15,7 @@ export type Priority = "highest" | "high" | "medium" | "low" | "lowest" | "none"
 export type GtdState =
 	| "TEMPLATE" // задача в файле gtd-recurring: true — шаблон регулярного ящика
 	| "DETAIL" // задача в файле-карточке gtd-card-of — приватный чеклист карточки
+	| "EVENT" // задача в файле gtd-events: true — шаблон повторяющегося события (виден только в календаре)
 	| "DONE"
 	| "CANCELLED"
 	| "TICKLER" // 🛫 start > today
@@ -24,7 +25,7 @@ export type GtdState =
 	| "ACTIVE";
 
 /** Тип файла-контейнера, меняющего интерпретацию задач (frontmatter-флаги). */
-export type ContainerKind = "plain" | "board" | "project" | "recurring" | "card";
+export type ContainerKind = "plain" | "board" | "project" | "recurring" | "card" | "events";
 
 export type ProjectStatus = "active" | "on-hold" | "done" | "archived";
 

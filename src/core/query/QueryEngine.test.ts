@@ -180,11 +180,13 @@ describe("tickler", () => {
 		expect(evaluate({ kind: "tickler" }, ctxOf([done, cancelled]))).toEqual([]);
 	});
 
-	it("TEMPLATE/DETAIL не протекают в тикль (цепочка §1 выше TICKLER)", () => {
+	it("TEMPLATE/DETAIL/EVENT не протекают в тикль (цепочка §1 выше TICKLER)", () => {
 		const template = makeTask({ container: "recurring", start: "2026-08-01" });
 		const detail = makeTask({ container: "card", start: "2026-08-01" });
+		const event = makeTask({ container: "events", start: "2026-08-01" });
 		expect(isInTickler(template, TODAY)).toBe(false);
 		expect(isInTickler(detail, TODAY)).toBe(false);
+		expect(isInTickler(event, TODAY)).toBe(false);
 	});
 
 	it("сортировка по start по возрастанию", () => {
@@ -248,6 +250,29 @@ describe("остальные запросы", () => {
 			ctxOf([inDue, boundary, out, bySched, noDates, template]),
 		).map((t) => t.key);
 		expect(keys).toEqual([bySched.key, inDue.key, boundary.key]);
+	});
+
+	it("события (container events) не протекают ни в один запрос", () => {
+		// событие несёт 🔁-правило; в календарь оно попадает ТОЛЬКО как виртуальное
+		// вхождение (expandOccurrences), но как задача — нигде не видно
+		const event = makeTask({ container: "events", recurrence: "every day at 09:00" });
+		// даже с датой (искусственно) в календарь-диапазон не протекает
+		const eventWithDue = makeTask({ container: "events", due: "2026-07-20" });
+		const all = [event, eventWithDue];
+		expect(inboxKeys(all)).toEqual([]);
+		expect(evaluate({ kind: "tickler" }, ctxOf(all))).toEqual([]);
+		expect(evaluate({ kind: "active" }, ctxOf(all))).toEqual([]);
+		expect(
+			evaluate(
+				{
+					kind: "calendar-range",
+					fromIso: "2026-07-01",
+					toIso: "2026-07-31",
+					placement: ["due", "scheduled", "start"],
+				},
+				ctxOf(all),
+			),
+		).toEqual([]);
 	});
 
 	it("calendar-range: placement решает, какое поле размещает задачу", () => {

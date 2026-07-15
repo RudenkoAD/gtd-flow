@@ -66,6 +66,10 @@ describe("deriveGtdState — каждое состояние цепочки", ()
 		expect(deriveGtdState(makeTask({ container: "card" }), TODAY, noDeps)).toBe("DETAIL");
 	});
 
+	it("EVENT: container events", () => {
+		expect(deriveGtdState(makeTask({ container: "events" }), TODAY, noDeps)).toBe("EVENT");
+	});
+
 	it("DONE: x и X", () => {
 		expect(deriveGtdState(makeTask({ statusChar: "x" }), TODAY, noDeps)).toBe("DONE");
 		expect(deriveGtdState(makeTask({ statusChar: "X" }), TODAY, noDeps)).toBe("DONE");
@@ -192,10 +196,16 @@ describe("хелперы eligible/ready/blocked/isActive", () => {
 		expect(eligible(makeTask({ container: "recurring" }), TODAY)).toBe(false);
 	});
 
-	it("isActive исключает TEMPLATE и DETAIL", () => {
+	it("isActive исключает TEMPLATE, DETAIL и EVENT", () => {
 		expect(isActive(makeTask({ container: "recurring" }), TODAY)).toBe(false);
 		expect(isActive(makeTask({ container: "card" }), TODAY)).toBe(false);
+		expect(isActive(makeTask({ container: "events" }), TODAY)).toBe(false);
 		expect(isActive(makeTask({ container: "project" }), TODAY)).toBe(true);
+	});
+
+	it("EVENT побеждает done/tickler: событие со статусом x и 🛫 в будущем — всё равно EVENT", () => {
+		const t = makeTask({ container: "events", statusChar: "x", start: "2026-08-01" });
+		expect(deriveGtdState(t, TODAY, noDeps)).toBe("EVENT");
 	});
 
 	it("ready: eligible + depsMet", () => {

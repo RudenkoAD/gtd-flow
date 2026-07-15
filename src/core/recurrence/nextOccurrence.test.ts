@@ -15,6 +15,17 @@ describe("nextOccurrence — daily", () => {
 	});
 });
 
+describe("nextOccurrence — eventTime игнорируется (date-уровень, §события)", () => {
+	it("время вхождения не влияет на выбор даты", () => {
+		expect(
+			nextOccurrence({ freq: "daily", n: 1, eventTime: "09:00", eventTimeEnd: "10:00" }, "2026-07-15"),
+		).toBe("2026-07-16");
+		const r: Rule = { freq: "weekly", n: 1, byDay: [4], eventTime: "19:00" };
+		expect(nextOccurrence(r, "2026-07-15")).toBe("2026-07-17"); // как без времени
+		expect(isOccurrence(r, "2026-07-17")).toBe(true);
+	});
+});
+
 describe("nextOccurrence — weekdays", () => {
 	it("skips weekends", () => {
 		expect(nextOccurrence({ freq: "weekdays" }, "2026-07-15")).toBe("2026-07-16"); // ср → чт

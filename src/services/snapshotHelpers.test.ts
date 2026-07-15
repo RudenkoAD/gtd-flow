@@ -116,9 +116,16 @@ describe("fileContextFromFrontmatter", () => {
 		expect(fileContextFromFrontmatter("c.md", { "gtd-card-of": null }).container).toBe("plain");
 	});
 
-	it("приоритет: recurring > card > project > board (цепочка §1)", () => {
+	it("gtd-events: true — events; false/мусор — plain", () => {
+		expect(fileContextFromFrontmatter("e.md", { "gtd-events": true }).container).toBe("events");
+		expect(fileContextFromFrontmatter("e.md", { "gtd-events": false }).container).toBe("plain");
+		expect(fileContextFromFrontmatter("e.md", { "gtd-events": "yes" }).container).toBe("plain");
+	});
+
+	it("приоритет: recurring > events > card > project > board (цепочка §1)", () => {
 		const all = {
 			"gtd-recurring": true,
+			"gtd-events": true,
 			"gtd-card-of": "x",
 			"gtd-project": true,
 			"gtd-board": true,
@@ -126,6 +133,10 @@ describe("fileContextFromFrontmatter", () => {
 		expect(fileContextFromFrontmatter("f.md", all).container).toBe("recurring");
 		expect(
 			fileContextFromFrontmatter("f.md", { ...all, "gtd-recurring": false }).container,
+		).toBe("events");
+		expect(
+			fileContextFromFrontmatter("f.md", { ...all, "gtd-recurring": false, "gtd-events": false })
+				.container,
 		).toBe("card");
 		expect(
 			fileContextFromFrontmatter("f.md", { "gtd-project": true, "gtd-board": true }).container,

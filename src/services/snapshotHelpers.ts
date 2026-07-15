@@ -56,7 +56,8 @@ const PROJECT_STATUSES: ReadonlySet<string> = new Set(["active", "on-hold", "don
 
 /**
  * FileContext из frontmatter-объекта. Приоритет флагов повторяет цепочку
- * состояний §1: TEMPLATE (gtd-recurring) > DETAIL (gtd-card-of) > project > board.
+ * состояний §1: TEMPLATE (gtd-recurring) > EVENT (gtd-events) > DETAIL
+ * (gtd-card-of) > project > board.
  */
 export function fileContextFromFrontmatter(
 	path: string,
@@ -64,6 +65,7 @@ export function fileContextFromFrontmatter(
 ): FileContext {
 	if (fm === null || fm === undefined) return { path, container: "plain" };
 	if (fm["gtd-recurring"] === true) return { path, container: "recurring" };
+	if (fm["gtd-events"] === true) return { path, container: "events" };
 	const cardOf = fm["gtd-card-of"];
 	if (cardOf !== null && cardOf !== undefined && cardOf !== false && String(cardOf).trim() !== "")
 		return { path, container: "card" };

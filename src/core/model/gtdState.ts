@@ -30,9 +30,21 @@ export function isDetail(t: Task): boolean {
 	return t.container === "card";
 }
 
-/** active = !done && !cancelled && !deferred && !TEMPLATE && !DETAIL (§1). */
+/** Шаблон повторяющегося события (gtd-events: true) — виден только в календаре. */
+export function isEvent(t: Task): boolean {
+	return t.container === "events";
+}
+
+/** active = !done && !cancelled && !deferred && !TEMPLATE && !DETAIL && !EVENT (§1). */
 export function isActive(t: Task, today: IsoDate): boolean {
-	return !isDone(t) && !isCancelled(t) && !isDeferred(t, today) && !isTemplate(t) && !isDetail(t);
+	return (
+		!isDone(t) &&
+		!isCancelled(t) &&
+		!isDeferred(t, today) &&
+		!isTemplate(t) &&
+		!isDetail(t) &&
+		!isEvent(t)
+	);
 }
 
 const WAITING_TAG = "#waiting";
@@ -77,6 +89,9 @@ export function blocked(t: Task, resolveDep: ResolveDep): boolean {
 export function deriveGtdState(task: Task, today: IsoDate, resolveDep: ResolveDep): GtdState {
 	if (isTemplate(task)) return "TEMPLATE";
 	if (isDetail(task)) return "DETAIL";
+	// EVENT сразу после TEMPLATE/DETAIL: повторяющееся событие не имеет статуса
+	// в GTD-смысле (чекбокс виртуален), видно только в календаре — вне цепочки done/tickler
+	if (isEvent(task)) return "EVENT";
 	if (isDone(task)) return "DONE";
 	if (isCancelled(task)) return "CANCELLED";
 	// 🛫 в будущем побеждает и готовность, и блокировку (TICKLER выше BLOCKED)

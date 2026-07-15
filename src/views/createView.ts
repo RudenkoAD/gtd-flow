@@ -5,6 +5,7 @@ import type { ViewMeta } from "./registry";
 import { CalendarView } from "./calendar/CalendarView";
 import { InboxView } from "./inbox/InboxView";
 import { KanbanView } from "./kanban/KanbanView";
+import { ProjectView } from "./project/ProjectView";
 import { RecurringView } from "./recurring/RecurringView";
 import { TicklerView } from "./tickler/TicklerView";
 
@@ -21,6 +22,8 @@ export function createGtdView(leaf: WorkspaceLeaf, plugin: GtdFlowPlugin, meta: 
 			return new TicklerView(leaf, plugin, meta);
 		case "recurring":
 			return new RecurringView(leaf, plugin, meta);
+		case "project":
+			return new ProjectView(leaf, plugin, meta);
 		default:
 			return new GtdView(leaf, plugin, meta);
 	}

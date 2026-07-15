@@ -8,6 +8,7 @@ import { IndexerService } from "./services/IndexerService";
 import { WritebackService } from "./services/WritebackService";
 import { BoardService } from "./services/BoardService";
 import { RecurrenceService } from "./services/RecurrenceService";
+import { ProjectService } from "./services/ProjectService";
 import { createTaskStore, type TaskStore } from "./stores/taskStore";
 import { createGtdView } from "./views/createView";
 import { DndService } from "./views/dnd/DndService";
@@ -21,6 +22,7 @@ export default class GtdFlowPlugin extends Plugin {
 	boards!: BoardService;
 	dnd!: DndService;
 	recurrence!: RecurrenceService;
+	projects!: ProjectService;
 	private indexReadyFlag = false;
 
 	async onload(): Promise<void> {
@@ -65,6 +67,16 @@ export default class GtdFlowPlugin extends Plugin {
 			ensureFile: (path) => this.vaultAdapter.ensureFile(path),
 		});
 		clock.onDayRollover(() => void this.recurrence.runPass());
+		this.projects = new ProjectService({
+			feed: this.indexer,
+			write: this.vaultAdapter,
+			readFrontmatter: (path) => metadata.frontmatter(path),
+			patchFrontmatter: async (path, fn) => {
+				await this.vaultAdapter.processFrontmatter(path, fn);
+			},
+			dispatcher: this.dispatcher,
+			todayIso: () => clock.todayIso(),
+		});
 		// Первичная сборка — вне критического пути старта (ТЗ §2).
 		this.app.workspace.onLayoutReady(() => void this.indexer.start());
 
@@ -91,6 +103,7 @@ export default class GtdFlowPlugin extends Plugin {
 
 	onunload(): void {
 		// Виды/события/интервалы зарегистрированы через register* — снимаются автоматически.
+		void this.projects.flushPending();
 		this.taskStore.dispose();
 		this.indexer.dispose();
 	}

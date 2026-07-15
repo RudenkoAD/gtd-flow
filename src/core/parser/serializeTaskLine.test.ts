@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import * as fc from "fast-check";
 import {
+	addExcludedDate,
 	addTag,
 	removeTag,
 	setDependsOn,
 	setDescription,
+	setExcludedDates,
 	setField,
 	setPriority,
 	setStatusChar,
@@ -483,6 +485,59 @@ describe("setValueField / setDependsOn", () => {
 	});
 });
 
+describe("setExcludedDates / addExcludedDate (🚫)", () => {
+	it("setExcludedDates: установка, замена, очистка", () => {
+		expect(setExcludedDates("- [ ] Тр 🔁 every tue", ["2026-07-21"])).toBe(
+			"- [ ] Тр 🔁 every tue 🚫 2026-07-21",
+		);
+		expect(setExcludedDates("- [ ] Тр 🚫 2026-07-21 🆔 e1", ["2026-08-04"])).toBe(
+			"- [ ] Тр 🚫 2026-08-04 🆔 e1",
+		);
+		expect(setExcludedDates("- [ ] Тр 🚫 2026-07-21,2026-08-04 🆔 e1", [])).toBe(
+			"- [ ] Тр 🆔 e1",
+		);
+	});
+	it("addExcludedDate: создаёт поле (в конце строки), дописывает сортированно и без дублей", () => {
+		let line = "- [ ] Тр 🔁 every tue 🆔 e1";
+		line = addExcludedDate(line, "2026-08-04"); // новое поле — в конец, как все сеттеры
+		expect(line).toBe("- [ ] Тр 🔁 every tue 🆔 e1 🚫 2026-08-04");
+		line = addExcludedDate(line, "2026-07-21"); // раньше — встаёт первой в списке
+		expect(line).toBe("- [ ] Тр 🔁 every tue 🆔 e1 🚫 2026-07-21,2026-08-04");
+	});
+	it("addExcludedDate идемпотентен (повтор той же даты — тождество)", () => {
+		const line = addExcludedDate("- [ ] Тр 🔁 every tue", "2026-07-21");
+		expect(addExcludedDate(line, "2026-07-21")).toBe(line);
+	});
+	it("невалидные даты в payload не ломают валидные при дописывании", () => {
+		// invalid 'мусор' и 2026-02-30 выпадают, добавляется новая — остаётся канон
+		const line = addExcludedDate("- [ ] Тр 🚫 2026-08-04,мусор,2026-02-30", "2026-07-21");
+		expect(line).toBe("- [ ] Тр 🚫 2026-07-21,2026-08-04");
+	});
+	it("валидация: не ISO-дата — throw", () => {
+		expect(() => setExcludedDates("- [ ] B", ["not-a-date"])).toThrow();
+		expect(() => addExcludedDate("- [ ] B", "2026-13-40")).toThrow();
+	});
+});
+
+describe("property: 🚫 addExcludedDate идемпотентен и сортирован", () => {
+	it("после add множество дат = объединение, сортировано, без дублей", () => {
+		fc.assert(
+			fc.property(genArb, fc.array(dateArb, { minLength: 1, maxLength: 4 }), (r, adds) => {
+				let line = buildLine(r);
+				for (const d of adds) line = addExcludedDate(line, d);
+				const t = parseTaskLine(line, ctx())!;
+				const expected = [...new Set([...(r.excl ?? []), ...adds])].sort();
+				expect(t.excludedDates).toEqual(expected);
+				// идемпотентность: повторное добавление уже присутствующих — тождество
+				let again = line;
+				for (const d of adds) again = addExcludedDate(again, d);
+				expect(again).toBe(line);
+			}),
+			{ numRuns: 200 },
+		);
+	});
+});
+
 describe("setStatusChar", () => {
 	it("меняет только символ статуса", () => {
 		expect(setStatusChar("  * [ ] Mixed 🔼 stuff ^z9", "x")).toBe("  * [x] Mixed 🔼 stuff ^z9");
@@ -577,6 +632,8 @@ interface GenLine {
 	dueTimeEnd: string | null;
 	id: string | null;
 	deps: string[] | null;
+	/** 🚫 — сорт-уник список дат-исключений (или null — поля нет). */
+	excl: string[] | null;
 	block: string | null;
 }
 
@@ -614,6 +671,13 @@ const genArb: fc.Arbitrary<GenLine> = fc.record({
 	dueTimeEnd: fc.option(fc.constantFrom("09:06", "16:00", "23:59"), { nil: null }),
 	id: fc.option(idArb, { nil: null }),
 	deps: fc.option(fc.array(idArb, { minLength: 1, maxLength: 3 }), { nil: null }),
+	// 🚫 — сорт-уник даты: канон записи setExcludedDates (иначе no-op ≠ тождество)
+	excl: fc.option(
+		fc
+			.array(dateArb, { minLength: 1, maxLength: 3 })
+			.map((ds) => [...new Set(ds)].sort()),
+		{ nil: null },
+	),
 	block: fc.option(fc.constantFrom("^ab1", "^x-9"), { nil: null }),
 });
 
@@ -640,6 +704,7 @@ function buildLine(r: GenLine, glues: readonly boolean[] = []): string {
 	}
 	if (r.id !== null) parts.push(`🆔 ${r.id}`);
 	if (r.deps !== null) parts.push(`⛔ ${r.deps.join(",")}`);
+	if (r.excl !== null) parts.push(`🚫 ${r.excl.join(",")}`);
 	let line = `${r.indent}${r.bullet} [${r.status}]`;
 	parts.forEach((p, i) => {
 		line += i > 0 && glues[i % Math.max(glues.length, 1)] === true ? p : ` ${p}`;
@@ -669,6 +734,7 @@ describe("property: no-op редактирование = тождество ст
 				expect(setValueField(line, "id", t!.taskId)).toBe(line);
 				expect(setValueField(line, "spawnedFrom", t!.spawnedFrom)).toBe(line);
 				if (r.deps !== null) expect(setDependsOn(line, t!.dependsOn)).toBe(line);
+				if (r.excl !== null) expect(setExcludedDates(line, t!.excludedDates)).toBe(line);
 				expect(setPriority(line, t!.priority)).toBe(line);
 				expect(setStatusChar(line, t!.statusChar)).toBe(line);
 				if (r.tag !== null) expect(addTag(line, r.tag)).toBe(line);
@@ -777,6 +843,9 @@ describe("property: после любой правки строка остаёт
 					setPriority(line, "none"),
 					setValueField(line, "id", null),
 					setDependsOn(line, []),
+					setExcludedDates(line, []),
+					setExcludedDates(line, ["2026-06-15"]),
+					addExcludedDate(line, "2026-06-15"),
 					setStatusChar(line, "x"),
 					addTag(line, "#zzz"),
 					setDescription(line, "new text"),
@@ -830,6 +899,7 @@ describe("property: setDescription", () => {
 						expect(t2![f], f).toEqual(before[f]);
 					}
 					expect(t2!.dependsOn).toEqual(before.dependsOn);
+					expect(t2!.excludedDates).toEqual(before.excludedDates);
 				},
 			),
 			{ numRuns: 300 },

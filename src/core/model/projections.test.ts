@@ -39,6 +39,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
 		spawnedFrom: null,
 		priority: "none",
 		dependsOn: [],
+		excludedDates: [],
 		tags: [],
 		container: "plain",
 		projectActive: true,

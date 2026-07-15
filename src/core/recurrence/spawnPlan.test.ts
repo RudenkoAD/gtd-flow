@@ -34,6 +34,7 @@ function makeTemplate(over: Partial<Task> = {}): Task {
 		spawnedFrom: null,
 		priority: "highest",
 		dependsOn: [],
+		excludedDates: [],
 		tags: ["#review"],
 		container: "recurring",
 		projectActive: true,

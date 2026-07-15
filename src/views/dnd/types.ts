@@ -13,6 +13,21 @@ export interface DragPayload {
    *  горизонтальный drag не сдвигал время на величину хвата. Источники без
    *  поля (kanban, входящие, чипы месяца) целятся точкой курсора. */
   grabOffsetY?: number;
+  /** Перенос ОТДЕЛЬНОГО вхождения события (§события, раунд 6). Присутствует
+   *  только у drag'а блока EventOccurrenceChip: drop-цель тайм-сетки роутит его
+   *  в перенос вхождения (а не в set-date задачи). Несёт исходную дату вхождения
+   *  и его время/конец — для сохранения длительности при переносе. */
+  occurrence?: OccurrenceDrag;
+}
+
+export interface OccurrenceDrag {
+  kind: "series" | "single";
+  /** Исходная дата вхождения (у серии — гасится через 🚫). */
+  date: string;
+  /** "HH:mm" начала вхождения или null. */
+  time: string | null;
+  /** "HH:mm" конца интервала вхождения или null. */
+  timeEnd: string | null;
 }
 export interface DropContext { clientX: number; clientY: number }
 export interface GtdDropTarget {

@@ -4,7 +4,7 @@
 	import type { IntentDispatcher } from "../../services/WritebackService";
 	import type { GtdFlowSettings } from "../../settings/Settings";
 	import type { TaskMenuPorts } from "../common/taskMenu";
-	import type { DndPort } from "../dnd/types";
+	import type { DndPort, OccurrenceDrag } from "../dnd/types";
 	import EventOccurrenceChip from "./EventOccurrenceChip.svelte";
 	import TimeGridBlock from "./TimeGridBlock.svelte";
 	import type { CalendarWritePort, EventOccurrence, PlacedEvent } from "./calendarLogic";
@@ -30,6 +30,7 @@
 		onDropTask,
 		onQuickAdd,
 		onCreateEvent = null,
+		onMoveOccurrence = null,
 	}: {
 		date: IsoDate;
 		today: IsoDate;
@@ -50,6 +51,10 @@
 		onQuickAdd: (date: IsoDate, text: string, time: string | null) => Promise<void>;
 		/** ПКМ по пустому слоту — создать событие с временем слота. */
 		onCreateEvent?: ((date: IsoDate, time: string | null) => void) | null;
+		/** Drop блока-вхождения события: перенос на дату колонки + время слота. */
+		onMoveOccurrence?:
+			| ((taskKey: string, occ: OccurrenceDrag, date: IsoDate, time: string) => Promise<void>)
+			| null;
 	} = $props();
 
 	let colEl: HTMLElement | null = $state(null);
@@ -70,7 +75,12 @@
 				const rect = el.getBoundingClientRect();
 				const anchorY = ctx.clientY - (p.grabOffsetY ?? 0);
 				const min = snapMinutes(minutesFromOffsetY(anchorY - rect.top, rect.height));
-				return onDropTask(p.taskKey, date, minutesToTime(min));
+				const time = minutesToTime(min);
+				// вхождение события переносим ОТДЕЛЬНЫМ путём (не set-date задачи)
+				if (p.occurrence !== undefined) {
+					return onMoveOccurrence?.(p.taskKey, p.occurrence, date, time);
+				}
+				return onDropTask(p.taskKey, date, time);
 			},
 		});
 	});
@@ -151,7 +161,7 @@
 	{/each}
 	{#each eventBlocks as eb (eb.occ.task.key)}
 		{#if vault !== null}
-			<EventOccurrenceChip occ={eb.occ} block={eb.block} {app} {dispatcher} {vault} />
+			<EventOccurrenceChip occ={eb.occ} block={eb.block} {app} {dispatcher} {vault} {dnd} />
 		{/if}
 	{/each}
 	{#if addingMin !== null}

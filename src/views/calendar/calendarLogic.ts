@@ -211,48 +211,73 @@ export function placeEvents(
 // ---------------------------------------------------------------------------
 
 /**
- * Одно виртуальное вхождение серии-события на конкретную дату. Не задача в файле:
- * рендерится, но не кликается чекбоксом, не перетаскивается, не редактируется по
- * дабл-клику. `task` — строка-серия (container events), источник меню серии.
+ * Одно вхождение события календаря на конкретную дату (§события). Не обычная
+ * задача: рендерится, но не кликается чекбоксом.
+ * - kind "series" — виртуальное вхождение повторяющейся серии (🔁); `task` —
+ *   строка-серия, якорь меню «Изменить/Удалить серию» и переноса вхождения.
+ * - kind "single" — одноразовое событие (строка в gtd-events БЕЗ 🔁, но с 📅);
+ *   `task` — сама эта строка (перенос правит её собственную дату/время).
  */
 export interface EventOccurrence {
-	/** Строка-серия (container events) — якорь для «Изменить/Удалить серию». */
+	/** Строка события (container events) — якорь меню и правок. */
 	task: Task;
+	/** Серия (виртуальное вхождение) или одноразовое событие. */
+	kind: "series" | "single";
 	date: IsoDate;
-	/** Название = описание серии. */
+	/** Название = описание строки события. */
 	title: string;
-	/** "HH:mm" начала (rule.eventTime) или null — «Весь день». */
+	/** "HH:mm" начала (rule.eventTime / dueTime) или null — «Весь день». */
 	time: string | null;
-	/** "HH:mm" конца интервала (rule.eventTimeEnd) или null. */
+	/** "HH:mm" конца интервала (rule.eventTimeEnd / dueTimeEnd) или null. */
 	timeEnd: string | null;
 }
 
 /**
- * Развернуть серии-события в виртуальные вхождения по видимому диапазону.
- * Битое/пустое правило серии молча пропускается (бейдж ошибки — v2). Внутри дня
- * сортировка как у placeEvents: со временем по времени asc, без времени — в хвост,
- * затем по названию. Ключ вхождения для рендера — task.key (одна серия даёт не
- * более одного вхождения на дату).
+ * Развернуть события (container events) в вхождения по видимому диапазону:
+ * - строка с 🔁 → виртуальные вхождения серии; даты из 🚫 (task.excludedDates)
+ *   пропускаются (перенос/отмена одного занятия). Битое/пустое правило молча
+ *   пропускается (бейдж ошибки — v2).
+ * - строка БЕЗ 🔁, но с 📅 → одноразовое событие на своей дате (📅/dueTime/
+ *   dueTimeEnd), если дата в диапазоне.
+ * Внутри дня сортировка как у placeEvents: со временем по времени asc, без
+ * времени — в хвост, затем по названию. Ключ вхождения для рендера — task.key
+ * (одна строка даёт не более одного вхождения на дату).
  */
 export function expandEventOccurrences(
-	series: readonly Task[],
+	events: readonly Task[],
 	from: IsoDate,
 	to: IsoDate,
 ): Map<IsoDate, EventOccurrence[]> {
 	const out = new Map<IsoDate, EventOccurrence[]>();
-	for (const task of series) {
-		if (task.recurrence === null) continue;
-		const rule = parseRule(task.recurrence);
-		if (isParseError(rule)) continue;
-		const time = rule.eventTime ?? null;
-		const timeEnd = rule.eventTimeEnd ?? null;
-		for (const date of expandOccurrences(rule, from, to)) {
-			let list = out.get(date);
-			if (list === undefined) {
-				list = [];
-				out.set(date, list);
+	const push = (occ: EventOccurrence): void => {
+		let list = out.get(occ.date);
+		if (list === undefined) {
+			list = [];
+			out.set(occ.date, list);
+		}
+		list.push(occ);
+	};
+	for (const task of events) {
+		if (task.recurrence !== null) {
+			const rule = parseRule(task.recurrence);
+			if (isParseError(rule)) continue;
+			const time = rule.eventTime ?? null;
+			const timeEnd = rule.eventTimeEnd ?? null;
+			const exclude =
+				task.excludedDates.length > 0 ? new Set(task.excludedDates) : undefined;
+			for (const date of expandOccurrences(rule, from, to, undefined, exclude)) {
+				push({ task, kind: "series", date, title: task.description, time, timeEnd });
 			}
-			list.push({ task, date, title: task.description, time, timeEnd });
+		} else if (task.due !== null && task.due >= from && task.due <= to) {
+			// одноразовое событие: строка события без 🔁, но с 📅 — на своей дате
+			push({
+				task,
+				kind: "single",
+				date: task.due,
+				title: task.description,
+				time: task.dueTime,
+				timeEnd: task.dueTimeEnd,
+			});
 		}
 	}
 	for (const list of out.values()) {

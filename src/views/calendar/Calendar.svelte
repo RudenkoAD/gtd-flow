@@ -10,7 +10,7 @@
 	import { confirm } from "../common/ConfirmModal";
 	import { captureTarget } from "../common/taskActions";
 	import type { TaskMenuPorts } from "../common/taskMenu";
-	import type { DndPort } from "../dnd/types";
+	import type { DndPort, OccurrenceDrag } from "../dnd/types";
 	import DayCell from "./DayCell.svelte";
 	import EventChip from "./EventChip.svelte";
 	import TimeGrid from "./TimeGrid.svelte";
@@ -42,9 +42,9 @@
 		type CalendarPersistedState,
 		type CalendarWritePort,
 	} from "./calendarLogic";
-	import { createEventSeries } from "./eventSeries";
+	import { createEventSeries, transferEventOccurrence } from "./eventSeries";
 	import { EventSeriesModal } from "./EventSeriesModal";
-	import { dropTimeEnd } from "./timeGrid";
+	import { dropTimeEnd, preservedTimeEnd } from "./timeGrid";
 
 	let {
 		taskStore,
@@ -278,6 +278,36 @@
 		if (!ok) new Notice(`GTD Flow: не удалось записать в ${target}`);
 	}
 
+	/** Drop блока-вхождения события на слот тайм-сетки: перенос на дату колонки +
+	 *  время слота с сохранением длительности вхождения. ОДНА атомарная запись в
+	 *  файле событий (см. transferEventOccurrence): серия гасит вхождение через 🚫
+	 *  и порождает одноразовую строку, одноразовое — правит собственную 📅. */
+	async function moveOccurrence(
+		taskKey: string,
+		occ: OccurrenceDrag,
+		date: IsoDate,
+		time: string,
+	): Promise<void> {
+		const task = taskStore.index().get(taskKey);
+		if (task === undefined) {
+			new Notice("GTD Flow: событие не найдено");
+			return;
+		}
+		// конец = новый старт + прежняя длительность (null, если её не было)
+		const timeEnd = preservedTimeEnd(occ.time, occ.timeEnd, time) ?? null;
+		const res = await transferEventOccurrence({
+			vault,
+			task,
+			kind: occ.kind,
+			fromDate: occ.date,
+			toDate: date,
+			time,
+			timeEnd,
+		});
+		if (res.ok) new Notice(`Перенесено: ${occ.date} → ${date}`);
+		else new Notice(`GTD Flow: ${res.reason}`);
+	}
+
 	/** ПКМ по пустому месту → «Повторяющееся событие…»: модал → createEventSeries.
 	 *  time — из слота тайм-сетки (prefill), null для DayCell (месяц/неделя/агенда). */
 	function createEvent(date: IsoDate, time: string | null): void {
@@ -381,6 +411,7 @@
 			onDropTask={dropTask}
 			onQuickAdd={quickAdd}
 			onCreateEvent={createEvent}
+			onMoveOccurrence={moveOccurrence}
 		/>
 	{:else}
 		<div class="gtd-cal-weekdays">

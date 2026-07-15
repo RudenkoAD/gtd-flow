@@ -4,7 +4,7 @@
 	import type { IntentDispatcher } from "../../services/WritebackService";
 	import type { GtdFlowSettings } from "../../settings/Settings";
 	import type { TaskMenuPorts } from "../common/taskMenu";
-	import type { DndPort } from "../dnd/types";
+	import type { DndPort, OccurrenceDrag } from "../dnd/types";
 	import DayCell from "./DayCell.svelte";
 	import TimeGridCol from "./TimeGridCol.svelte";
 	import {
@@ -31,6 +31,7 @@
 		onDropTask,
 		onQuickAdd,
 		onCreateEvent = null,
+		onMoveOccurrence = null,
 	}: {
 		/** Колонки сетки: 1 (день) или 3 (три дня), подряд. */
 		days: IsoDate[];
@@ -50,6 +51,10 @@
 		onQuickAdd: (date: IsoDate, text: string, time: string | null) => Promise<void>;
 		/** ПКМ по пустому слоту/полосе — создать событие. */
 		onCreateEvent?: ((date: IsoDate, time: string | null) => void) | null;
+		/** Перенос блока-вхождения события на дату колонки + время слота. */
+		onMoveOccurrence?:
+			| ((taskKey: string, occ: OccurrenceDrag, date: IsoDate, time: string) => Promise<void>)
+			| null;
 	} = $props();
 
 	/** Высота часа. Единственный источник — отсюда уходит в CSS через --gtd-tg-hour. */
@@ -158,6 +163,7 @@
 					{onDropTask}
 					{onQuickAdd}
 					{onCreateEvent}
+					{onMoveOccurrence}
 				/>
 			{/each}
 		</div>

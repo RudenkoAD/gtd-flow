@@ -24,7 +24,7 @@ import {
 	VALUE_FIELD_EMOJI,
 	type DateFieldName,
 } from "./emoji";
-import { parseDatePayload, splitDateTimePayload } from "./parseTaskLine";
+import { parseDatePayload, parseExcludedDates, splitDateTimePayload } from "./parseTaskLine";
 import {
 	extractTags,
 	isTagChar,
@@ -248,6 +248,48 @@ export function setDependsOn(rawLine: string, ids: string[]): string {
 		VALUE_FIELD_EMOJI.dependsOn,
 		ids.length === 0 ? null : ids.join(","),
 	);
+}
+
+/** Валидировать ISO-даты 🚫 тем же гейтом, что и парсер (писатель не мягче читателя). */
+function assertExcludedDate(date: string): void {
+	if (parseDatePayload(date).kind !== "date") {
+		throw new Error(`serializeTaskLine: не ISO-дата в 🚫: ${JSON.stringify(date)}`);
+	}
+}
+
+/**
+ * Полная замена списка 🚫 (даты-исключения вхождений серии); пустой список
+ * удаляет поле. Даты пишутся дословно в переданном порядке — канонизацию
+ * (сортировка/дедуп) обеспечивает addExcludedDate. Каждая обязана быть ISO-датой.
+ */
+export function setExcludedDates(rawLine: string, dates: IsoDate[]): string {
+	for (const d of dates) assertExcludedDate(d);
+	return setPayloadField(
+		rawLine,
+		"excludedDates",
+		VALUE_FIELD_EMOJI.excludedDates,
+		dates.length === 0 ? null : dates.join(","),
+	);
+}
+
+/**
+ * Добавить дату-исключение в 🚫: читает текущий payload поля сам (ПОСЛЕДНИЙ
+ * токен — тот, что видит парсер), доописывает дату сортированно и без дублей,
+ * поле создаёт при отсутствии. Идемпотентно (повторная та же дата — тождество).
+ * Невалидные даты из существующего payload при перезаписи выпадают (мутация, не
+ * лослесс-round-trip): 🚫 хранит только машинно осмысленные даты.
+ */
+export function addExcludedDate(rawLine: string, date: IsoDate): string {
+	assertExcludedDate(date);
+	const t = mustTokenize(rawLine);
+	const idxs = fieldIndices(t.segments, "excludedDates");
+	const current =
+		idxs.length === 0
+			? []
+			: parseExcludedDates((t.segments[idxs[idxs.length - 1]!] as FieldToken).payload);
+	// ISO-даты: лексикографическая сортировка == хронологическая
+	const sorted = [...new Set([...current, date])].sort();
+	return setExcludedDates(rawLine, sorted);
 }
 
 export function setStatusChar(rawLine: string, ch: string): string {

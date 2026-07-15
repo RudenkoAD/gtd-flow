@@ -60,6 +60,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
 		spawnedFrom: null,
 		priority: "none",
 		dependsOn: [],
+		excludedDates: [],
 		tags: [],
 		container: "plain",
 		projectActive: true,
@@ -458,5 +459,48 @@ describe("expandEventOccurrences (§события)", () => {
 		const c = event({ description: "весь день", recurrence: "every day" });
 		const list = expandEventOccurrences([a, b, c], "2026-07-15", "2026-07-15").get("2026-07-15")!;
 		expect(list.map((o) => o.title)).toEqual(["А-звонок", "Б-встреча", "весь день"]);
+	});
+
+	it("вхождения серии помечены kind='series'", () => {
+		const ev = event({ recurrence: "every day" });
+		const occ = expandEventOccurrences([ev], "2026-07-15", "2026-07-15").get("2026-07-15")![0]!;
+		expect(occ.kind).toBe("series");
+	});
+
+	it("даты из 🚫 (excludedDates) пропускаются", () => {
+		const ev = event({
+			description: "Тренировка",
+			recurrence: "every day",
+			excludedDates: ["2026-07-16"],
+		});
+		const map = expandEventOccurrences([ev], "2026-07-15", "2026-07-17");
+		expect([...map.keys()].sort()).toEqual(["2026-07-15", "2026-07-17"]);
+	});
+
+	it("одноразовое событие (без 🔁, с 📅) — на своей дате, kind='single'", () => {
+		const single = event({
+			description: "Перенесённая тренировка",
+			due: "2026-07-21",
+			dueTime: "18:00",
+			dueTimeEnd: "19:30",
+			spawnedFrom: "ev1",
+		});
+		const map = expandEventOccurrences([single], "2026-07-15", "2026-07-31");
+		const occ = map.get("2026-07-21")![0]!;
+		expect(occ.kind).toBe("single");
+		expect(occ.title).toBe("Перенесённая тренировка");
+		expect(occ.time).toBe("18:00");
+		expect(occ.timeEnd).toBe("19:30");
+		expect(occ.task).toBe(single);
+	});
+
+	it("одноразовое событие вне диапазона не собирается", () => {
+		const single = event({ due: "2026-08-10" });
+		expect(expandEventOccurrences([single], "2026-07-15", "2026-07-31").size).toBe(0);
+	});
+
+	it("одноразовое без 📅 (и без 🔁) игнорируется", () => {
+		const noop = event({ recurrence: null, due: null });
+		expect(expandEventOccurrences([noop], "2026-07-15", "2026-07-31").size).toBe(0);
 	});
 });

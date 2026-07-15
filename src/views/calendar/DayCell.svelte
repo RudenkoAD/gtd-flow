@@ -64,7 +64,9 @@
 		if (dnd === null || cellEl === null) return;
 		return dnd.registerDropTarget({
 			el: cellEl,
-			accepts: (p) => p.taskKey !== "",
+			// вхождение события (occurrence) сюда не принимаем: его перенос — только
+			// на слот тайм-сетки; set-date по серии сломал бы саму строку серии
+			accepts: (p) => p.taskKey !== "" && p.occurrence === undefined,
 			drop: (p) => onDropTask(p.taskKey, date),
 		});
 	});

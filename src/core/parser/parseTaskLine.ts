@@ -104,6 +104,22 @@ export function splitDateTimePayload(payload: string): {
 	return { datePart: payload, time: null, timeEnd: null };
 }
 
+/**
+ * Разобрать payload поля-списка 🚫 в даты-исключения: split по запятой, trim,
+ * оставить ТОЛЬКО валидные ISO-даты (тем же parseDatePayload, что и остальные
+ * даты). Невалидные элементы молча выпадают — но живут в rawLine (лослесс).
+ * Порядок сохраняется (сортировку/дедуп делает сериализатор при записи).
+ */
+export function parseExcludedDates(payload: string): IsoDate[] {
+	const out: IsoDate[] = [];
+	for (const part of payload.split(",")) {
+		const s = part.trim();
+		if (s === "") continue;
+		if (parseDatePayload(s).kind === "date") out.push(s);
+	}
+	return out;
+}
+
 /** U+FE0F не участвует в таблицах эмодзи — срезаем перед поиском приоритета. */
 function stripVariationSelector(emoji: string): string {
 	let out = "";
@@ -141,6 +157,7 @@ export function parseTaskLine(rawLine: string, ctx: ParseContext): Task | null {
 	let taskId: string | null = null;
 	let spawnedFrom: string | null = null;
 	let dependsOn: string[] = [];
+	let excludedDates: IsoDate[] = [];
 	let priority: Priority = "none";
 	const textParts: string[] = [];
 	const tags: string[] = [];
@@ -176,6 +193,11 @@ export function parseTaskLine(rawLine: string, ctx: ParseContext): Task | null {
 					.split(",")
 					.map((s) => s.trim())
 					.filter((s) => s !== "");
+				break;
+			}
+			case "excludedDates": {
+				// невалидные даты в списке игнорируются (остаются в rawLine)
+				excludedDates = parseExcludedDates(seg.payload);
 				break;
 			}
 			default: {
@@ -226,6 +248,7 @@ export function parseTaskLine(rawLine: string, ctx: ParseContext): Task | null {
 		spawnedFrom,
 		priority,
 		dependsOn,
+		excludedDates,
 		tags,
 		container: ctx.container,
 		projectActive: ctx.projectActive,

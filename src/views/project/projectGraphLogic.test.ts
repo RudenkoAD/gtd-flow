@@ -43,6 +43,7 @@ function makeTask(over: Partial<Task> & { key: string }): Task {
 		spawnedFrom: null,
 		priority: "none",
 		dependsOn: [],
+		excludedDates: [],
 		tags: [],
 		container: "project",
 		projectActive: true,

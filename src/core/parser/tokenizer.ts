@@ -224,7 +224,8 @@ export function tokenizeSegments(rest: string): Segment[] {
 			while (j < rest.length && matchFieldEmoji(rest, j) === null) j++;
 			while (j > i && isWs(rest.charAt(j - 1))) j--;
 			payloadEnd = j;
-		} else if (m.field === "dependsOn") {
+		} else if (m.field === "dependsOn" || m.field === "excludedDates") {
+			// ⛔ (id) и 🚫 (даты) — поля-списки через запятую: одинаковый скан
 			payloadEnd = scanCommaList(rest, i);
 		} else if (isTimedDateField(m.field)) {
 			payloadEnd = scanDateTimeToken(rest, i);

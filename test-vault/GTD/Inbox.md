@@ -1,4 +1,4 @@
-﻿---
+---
 gtd-inbox: true
 ---
 

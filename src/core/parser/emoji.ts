@@ -23,6 +23,7 @@ export const VALUE_FIELD_EMOJI = {
 	id: "🆔", // один токен
 	dependsOn: "⛔", // список id через запятую без пробелов
 	spawnedFrom: "🧬", // один токен
+	excludedDates: "🚫", // список дат-исключений вхождений серии через запятую без пробелов
 } as const;
 
 export type ValueFieldName = keyof typeof VALUE_FIELD_EMOJI;

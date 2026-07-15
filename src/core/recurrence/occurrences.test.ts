@@ -70,6 +70,43 @@ describe("expandOccurrences — weekly/monthly", () => {
 	});
 });
 
+describe("expandOccurrences — исключения (🚫)", () => {
+	it("даты из exclude пропускаются", () => {
+		const r: Rule = { freq: "daily", n: 1 };
+		const exclude = new Set(["2026-07-16", "2026-07-18"]);
+		expect(expandOccurrences(r, "2026-07-15", "2026-07-19", undefined, exclude)).toEqual([
+			"2026-07-15",
+			"2026-07-17",
+			"2026-07-19",
+		]);
+	});
+
+	it("исключение на fromIso/toIso тоже гасит вхождение", () => {
+		const r: Rule = { freq: "daily", n: 1 };
+		const exclude = new Set(["2026-07-15", "2026-07-17"]);
+		expect(expandOccurrences(r, "2026-07-15", "2026-07-17", undefined, exclude)).toEqual([
+			"2026-07-16",
+		]);
+	});
+
+	it("пустой exclude эквивалентен отсутствию", () => {
+		const r: Rule = { freq: "daily", n: 1 };
+		expect(expandOccurrences(r, "2026-07-15", "2026-07-17", undefined, new Set())).toEqual([
+			"2026-07-15",
+			"2026-07-16",
+			"2026-07-17",
+		]);
+	});
+
+	it("исключённые не занимают потолок cap", () => {
+		const r: Rule = { freq: "daily", n: 1 };
+		const exclude = new Set(["2026-07-15", "2026-07-16"]);
+		const out = expandOccurrences(r, "2026-07-15", "2026-07-31", 3, exclude);
+		// первые две даты исключены — cap=3 набирается со след. трёх невыключенных
+		expect(out).toEqual(["2026-07-17", "2026-07-18", "2026-07-19"]);
+	});
+});
+
 describe("expandOccurrences — cap", () => {
 	it("обрывается на потолке", () => {
 		const r: Rule = { freq: "daily", n: 1 };

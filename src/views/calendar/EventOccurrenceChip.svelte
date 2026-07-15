@@ -1,11 +1,20 @@
 <script lang="ts">
-	import { Menu, Notice, type App } from "obsidian";
+	import { Menu, Notice, Platform, type App } from "obsidian";
 	import type { IntentDispatcher } from "../../services/WritebackService";
 	import { confirm } from "../common/ConfirmModal";
+	import { DatePromptModal } from "../common/DatePromptModal";
+	import type { DndPort } from "../dnd/types";
+	import { VIEW_TYPES } from "../registry";
 	import type { EventOccurrence } from "./calendarLogic";
-	import { editEventSeries, splitEventRule, type EventVaultPort } from "./eventSeries";
+	import {
+		editEventSeries,
+		excludeEventOccurrence,
+		splitEventRule,
+		transferEventOccurrence,
+		type EventVaultPort,
+	} from "./eventSeries";
 	import { EventSeriesModal } from "./EventSeriesModal";
-	import type { TimedBlock } from "./timeGrid";
+	import { preservedTimeEnd, type TimedBlock } from "./timeGrid";
 
 	let {
 		occ,
@@ -13,6 +22,7 @@
 		dispatcher,
 		vault,
 		block = null,
+		dnd = null,
 	}: {
 		occ: EventOccurrence;
 		app: App;
@@ -20,8 +30,14 @@
 		vault: EventVaultPort;
 		/** Геометрия для тайм-сетки; null — обычный chip (месяц/неделя/агенда/«Весь день»). */
 		block?: TimedBlock | null;
+		/** DnD-порт: непусто только в блоках тайм-сетки — там вхождение можно тянуть. */
+		dnd?: DndPort | null;
 	} = $props();
 
+	/** Корневой элемент — призрак drag'а и якорь времени (верх блока = время начала). */
+	let rootEl = $state<HTMLElement | null>(null);
+
+	const isSeries = $derived(occ.kind === "series");
 	const leftPct = $derived(block === null ? 0 : (block.laneIndex / block.laneCount) * 100);
 	const widthPct = $derived(block === null ? 100 : 100 / block.laneCount);
 	/** «19:00–20:30» в блоке при собственном конце; иначе бейдж времени в тексте. */
@@ -31,10 +47,22 @@
 	/** Короткий блок (≤30 мин): шапка времени прячется — место названию
 	 *  (та же логика, что у блоков задач; время остаётся в title-подсказке). */
 	const compact = $derived(block !== null && block.endMin - block.startMin <= 30);
+	/** Одиночный маркер: серия — ⟳, одноразовое событие — ◇. */
+	const mark = $derived(isSeries ? "⟳" : "◇");
+	const markLabel = $derived(isSeries ? "Повторяющееся событие" : "Событие");
+	/** Провенанс переноса у одноразового: подсказка «перенесено из серии». */
+	const movedFromSeries = $derived(!isSeries && occ.task.spawnedFrom !== null);
 	const tooltip = $derived(
-		`Повторяющееся событие: ${occ.title}` +
+		(isSeries
+			? "Повторяющееся событие: "
+			: movedFromSeries
+				? "Событие (перенесено из серии): "
+				: "Событие: ") +
+			occ.title +
 			(compact && occ.time !== null ? ` (${rangeLabel ?? occ.time})` : ""),
 	);
+	/** Тянуть можно только блок тайм-сетки на десктопе (как чипы задач, ТЗ §8). */
+	const draggable = $derived(block !== null && dnd !== null && !Platform.isPhone);
 
 	function openEdit(): void {
 		const { rule, time } = splitEventRule(occ.task.recurrence ?? "");
@@ -63,14 +91,99 @@
 		if (!res.ok) new Notice(`GTD Flow: ${res.reason}`);
 	}
 
+	/** Удалить это вхождение серии: 🚫 <дата> (обратимо) — без confirm. */
+	async function deleteOccurrence(): Promise<void> {
+		const res = await excludeEventOccurrence({ vault, task: occ.task, date: occ.date });
+		if (res.ok) new Notice(`Вхождение ${occ.date} удалено`);
+		else new Notice(`GTD Flow: ${res.reason}`);
+	}
+
+	/** Удалить одноразовое событие: удаление строки (delete-line), с confirm как у серии. */
+	async function deleteSingle(): Promise<void> {
+		const ok = await confirm(
+			app,
+			"Удалить событие?",
+			`Удалить событие «${occ.title}» (${occ.date})?`,
+			"Удалить событие",
+		);
+		if (!ok) return;
+		const res = await dispatcher.dispatch({ type: "delete-line", key: occ.task.key });
+		if (!res.ok) new Notice(`GTD Flow: ${res.reason}`);
+	}
+
+	/** Перенести вхождение на выбранные дату+время (та же атомарная запись, что и drag). */
+	async function applyTransfer(toDate: string, time: string | null): Promise<void> {
+		// сохраняем длительность вхождения (конец = новый старт + прежняя длительность)
+		const timeEnd =
+			time === null ? null : (preservedTimeEnd(occ.time, occ.timeEnd, time) ?? null);
+		const res = await transferEventOccurrence({
+			vault,
+			task: occ.task,
+			kind: occ.kind,
+			fromDate: occ.date,
+			toDate,
+			time,
+			timeEnd,
+		});
+		if (res.ok) new Notice(`Перенесено: ${occ.date} → ${toDate}`);
+		else new Notice(`GTD Flow: ${res.reason}`);
+	}
+
+	function openTransfer(): void {
+		new DatePromptModal(
+			app,
+			"Перенести вхождение…",
+			(date, time) => void applyTransfer(date, time),
+			occ.date,
+			true,
+			occ.time,
+		).open();
+	}
+
+	/** Начало drag блока-вхождения: призрак — весь блок, время при drop — по его верху. */
+	function onPointerDown(e: PointerEvent): void {
+		if (!draggable || dnd === null || rootEl === null || e.button !== 0) return;
+		if (e.target instanceof Element && e.target.closest("input, button, a, select, textarea")) return;
+		dnd.startDrag(
+			{
+				taskKey: occ.task.key,
+				sourceViewType: VIEW_TYPES.calendar,
+				grabOffsetY: e.clientY - rootEl.getBoundingClientRect().top,
+				occurrence: { kind: occ.kind, date: occ.date, time: occ.time, timeEnd: occ.timeEnd },
+			},
+			e,
+			rootEl,
+		);
+	}
+
 	function onContextMenu(e: MouseEvent): void {
 		e.preventDefault();
 		e.stopPropagation();
 		const menu = new Menu();
-		menu.addItem((mi) => mi.setTitle("Изменить серию…").setIcon("pencil").onClick(() => openEdit()));
-		menu.addItem((mi) =>
-			mi.setTitle("Удалить серию").setIcon("trash").onClick(() => void deleteSeries()),
-		);
+		if (isSeries) {
+			menu.addItem((mi) =>
+				mi.setTitle("Изменить серию…").setIcon("pencil").onClick(() => openEdit()),
+			);
+			menu.addItem((mi) =>
+				mi.setTitle("Перенести вхождение…").setIcon("calendar-clock").onClick(() => openTransfer()),
+			);
+			menu.addItem((mi) =>
+				mi
+					.setTitle("Удалить это вхождение")
+					.setIcon("calendar-x")
+					.onClick(() => void deleteOccurrence()),
+			);
+			menu.addItem((mi) =>
+				mi.setTitle("Удалить серию").setIcon("trash").onClick(() => void deleteSeries()),
+			);
+		} else {
+			menu.addItem((mi) =>
+				mi.setTitle("Перенести вхождение…").setIcon("calendar-clock").onClick(() => openTransfer()),
+			);
+			menu.addItem((mi) =>
+				mi.setTitle("Удалить событие").setIcon("trash").onClick(() => void deleteSingle()),
+			);
+		}
 		menu.showAtMouseEvent(e);
 	}
 </script>
@@ -79,8 +192,12 @@
 <div
 	class="gtd-cal-chip gtd-cal-event"
 	class:is-block={block !== null}
+	class:is-single={!isSeries}
+	class:is-draggable={draggable}
+	bind:this={rootEl}
 	style={block !== null ? `top:${block.topPct}%; height:${block.heightPct}%; left:${leftPct}%; width:${widthPct}%` : ""}
 	title={tooltip}
+	onpointerdown={onPointerDown}
 	oncontextmenu={onContextMenu}
 >
 	{#if block !== null}
@@ -89,14 +206,14 @@
 			<div class="gtd-tg-ev-range">{rangeLabel}</div>
 		{/if}
 		<div class="gtd-tg-ev-body">
-			<span class="gtd-cal-event-mark" aria-label="Повторяющееся событие">⟳</span>
+			<span class="gtd-cal-event-mark" aria-label={markLabel}>{mark}</span>
 			<span class="gtd-cal-chip-text is-wrapping">{occ.title}</span>
 		</div>
 	{:else}
 		{#if rangeLabel !== null}
 			<span class="gtd-cal-chip-time">{rangeLabel}</span>
 		{/if}
-		<span class="gtd-cal-event-mark" aria-label="Повторяющееся событие">⟳</span>
+		<span class="gtd-cal-event-mark" aria-label={markLabel}>{mark}</span>
 		{#if rangeLabel === null && occ.time !== null}
 			<span class="gtd-cal-chip-time">{occ.time}</span>
 		{/if}
@@ -130,6 +247,15 @@
 		padding: 0;
 		overflow: hidden;
 		z-index: 1; /* под реальными задачами (их блоки z-index:2) */
+	}
+	.gtd-cal-event.is-draggable {
+		cursor: grab;
+		/* pan-y: вертикальный свайп — нативному скроллу сетки; drag — от pointerdown */
+		touch-action: pan-y;
+	}
+	/* одноразовое событие: сплошная рамка отличает его от пунктирной серии */
+	.gtd-cal-event.is-single {
+		border-style: solid;
 	}
 	.gtd-tg-ev-range {
 		flex: none;

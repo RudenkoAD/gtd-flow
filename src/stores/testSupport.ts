@@ -92,6 +92,7 @@ export function makeTask(over: Partial<Task> & { filePath: string }): Task {
 		spawnedFrom: null,
 		priority: "none",
 		dependsOn: [],
+		excludedDates: [],
 		tags: [],
 		container: "plain",
 		projectActive: true,

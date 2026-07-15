@@ -23,18 +23,23 @@ export const DEFAULT_OCCURRENCE_CAP = 500;
  *
  * eventTime/eventTimeEnd правила на разворот НЕ влияют — это date-уровень;
  * время вхождения читается из самого rule на стороне рендера.
+ *
+ * exclude — даты-исключения серии (🚫): вхождение на такой дате пропускается
+ * (перенос/отмена одного занятия). Исключённые в потолок cap не засчитываются,
+ * но верхняя граница toIso завершает разворот в любом случае.
  */
 export function expandOccurrences(
 	rule: Rule,
 	fromIso: IsoDate,
 	toIso: IsoDate,
 	cap: number = DEFAULT_OCCURRENCE_CAP,
+	exclude?: ReadonlySet<IsoDate>,
 ): IsoDate[] {
 	const out: IsoDate[] = [];
 	if (compare(fromIso, toIso) > 0 || cap <= 0) return out;
 	let cur = nextOccurrence(rule, addDays(fromIso, -1)); // первое вхождение ≥ fromIso
 	while (cur !== null && compare(cur, toIso) <= 0 && out.length < cap) {
-		out.push(cur);
+		if (exclude === undefined || !exclude.has(cur)) out.push(cur);
 		cur = nextOccurrence(rule, cur);
 	}
 	return out;

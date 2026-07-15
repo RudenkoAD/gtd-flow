@@ -319,6 +319,27 @@ describe("parseTaskLine: ⛔ зависимости", () => {
 	});
 });
 
+describe("parseTaskLine: 🚫 исключённые даты", () => {
+	it("несколько дат без пробелов", () => {
+		expect(parseTaskLine("- [ ] T 🚫 2026-07-21,2026-08-04", ctx())!.excludedDates).toEqual([
+			"2026-07-21",
+			"2026-08-04",
+		]);
+	});
+	it("невалидные даты выпадают, валидные остаются", () => {
+		const t = parseTaskLine("- [ ] T 🚫 2026-07-21,notadate,2026-02-30,2026-08-04", ctx())!;
+		expect(t.excludedDates).toEqual(["2026-07-21", "2026-08-04"]);
+	});
+	it("порядок сохраняется, токен вырезан из описания", () => {
+		const t = parseTaskLine("- [ ] Тренировка 🚫 2026-08-04,2026-07-21 rest", ctx())!;
+		expect(t.excludedDates).toEqual(["2026-08-04", "2026-07-21"]);
+		expect(t.description).toBe("Тренировка rest");
+	});
+	it("нет поля — пустой массив", () => {
+		expect(parseTaskLine("- [ ] T 🔁 every day", ctx())!.excludedDates).toEqual([]);
+	});
+});
+
 describe("parseTaskLine: теги", () => {
 	it("несколько тегов, включая kanban-колонку и #waiting", () => {
 		const t = parseTaskLine("- [ ] Do it #kanban/work/todo #waiting #x", ctx())!;

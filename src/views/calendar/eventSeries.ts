@@ -4,9 +4,15 @@
  * серии через структурные порты. Ноль импортов obsidian — тестируется в node;
  * запись идёт через порт, совместимый с VaultAdapter.
  */
-import type { Task } from "../../core/model/Task";
+import type { IsoDate, Task } from "../../core/model/Task";
 import { VALUE_FIELD_EMOJI } from "../../core/parser/emoji";
-import { setDescription } from "../../core/parser/serializeTaskLine";
+import { parseTaskLine } from "../../core/parser/parseTaskLine";
+import {
+	addExcludedDate,
+	setDescription,
+	setField,
+	setValueField,
+} from "../../core/parser/serializeTaskLine";
 import { serializeTokens, tokenizeTaskLine, type FieldToken } from "../../core/parser/tokenizer";
 import { isParseError, parseRule } from "../../core/recurrence/grammar";
 import { locateTaskLine } from "../../services/WritebackService";
@@ -100,6 +106,30 @@ export function joinEventRule(rule: string, time: string): string {
 	return t === "" ? r : `${r} at ${t}`;
 }
 
+/**
+ * Строка одноразового события-переноса вхождения серии:
+ * `- [ ] <name> 📅 <date>[ HH:mm[-HH:mm]] [🧬 <seriesId>]`. Пустое имя — null.
+ * Конец интервала пишется только строго позже начала (иначе выпадает — как в
+ * каноне генератора парсера). 🧬 (провенанс серии) добавляется при seriesId.
+ */
+export function buildSingleOccurrenceLine(
+	name: string,
+	date: IsoDate,
+	time: string | null,
+	timeEnd: string | null,
+	seriesId: string | null,
+): string | null {
+	const n = name.replace(/\s+/g, " ").trim();
+	if (n === "") return null;
+	let timeTail = "";
+	if (time !== null) {
+		timeTail = ` ${time}`;
+		if (timeEnd !== null && timeEnd > time) timeTail += `-${timeEnd}`;
+	}
+	const prov = seriesId !== null ? ` ${VALUE_FIELD_EMOJI.spawnedFrom} ${seriesId}` : "";
+	return `- [ ] ${n} 📅 ${date}${timeTail}${prov}`;
+}
+
 // ---------------------------------------------------------------------------
 // Создание / правка серии через порты
 // ---------------------------------------------------------------------------
@@ -168,6 +198,166 @@ export async function editEventSeries(deps: {
 			if (next === lines[idx]) return null; // без изменений — успех без записи
 			lines[idx] = next;
 			return lines.join("\n");
+		});
+	} catch {
+		return { ok: false, reason: "write-failed" };
+	}
+	return failure === null ? { ok: true } : { ok: false, reason: failure };
+}
+
+// ---------------------------------------------------------------------------
+// Операции над ОТДЕЛЬНЫМИ вхождениями (перенос / удаление, раунд 6)
+// ---------------------------------------------------------------------------
+
+const BASE36 = "0123456789abcdefghijklmnopqrstuvwxyz";
+
+/** 6-символьный base36-id серии для ленивого проставления 🆔 при переносе. */
+function defaultEventId(): string {
+	let s = "";
+	for (let i = 0; i < 6; i++) s += BASE36.charAt(Math.floor(Math.random() * BASE36.length));
+	return s;
+}
+
+/** 🆔, уже занятые в файле событий (сверка для ленивого генератора). */
+function existingIds(lines: readonly string[], filePath: string): Set<string> {
+	const ids = new Set<string>();
+	for (let i = 0; i < lines.length; i++) {
+		const t = parseTaskLine(lines[i]!, {
+			filePath,
+			lineStart: i,
+			parentLine: null,
+			heading: null,
+			container: "events",
+			projectActive: true,
+		});
+		if (t?.taskId != null) ids.add(t.taskId);
+	}
+	return ids;
+}
+
+/** Свежий 🆔, не совпадающий с уже занятыми в файле; крайний случай — последний кандидат. */
+function freshEventId(taken: ReadonlySet<string>, genId: () => string): string {
+	let id = genId();
+	for (let attempt = 0; attempt < 64 && taken.has(id); attempt++) id = genId();
+	return id;
+}
+
+/**
+ * Удалить ОДНО вхождение серии: добавить 🚫 <date> к строке серии (addExcludedDate)
+ * одной атомарной правкой. Обратимо (дата живёт в 🚫), потому без confirm.
+ * Локализация строки — по 🆔/описанию (как editEventSeries). Повторный вызов на
+ * уже исключённой дате — успех без записи (addExcludedDate идемпотентен).
+ */
+export async function excludeEventOccurrence(deps: {
+	vault: EventVaultPort;
+	task: Task;
+	date: IsoDate;
+}): Promise<EventWriteResult> {
+	let failure: string | null = "file-not-found";
+	try {
+		await deps.vault.processFile(deps.task.filePath, (content) => {
+			failure = null;
+			const lines = content.split("\n");
+			const idx = locateTaskLine(lines, deps.task.filePath, deps.task);
+			if (idx === -1) {
+				failure = "line-not-found";
+				return null;
+			}
+			const next = addExcludedDate(lines[idx]!, deps.date);
+			if (next === lines[idx]) return null; // уже исключена — успех без записи
+			lines[idx] = next;
+			return lines.join("\n");
+		});
+	} catch {
+		return { ok: false, reason: "write-failed" };
+	}
+	return failure === null ? { ok: true } : { ok: false, reason: failure };
+}
+
+/**
+ * Перенести ОДНО вхождение события на новую дату/время.
+ *
+ * kind "series" — ОДНА атомарная запись в файле событий: строка серии получает
+ *   🚫 <fromDate> (исходное вхождение гаснет) и, если у серии нет 🆔, — ленивый
+ *   🆔 (тем же processFile); следом в файл добавляется строка одноразового
+ *   события `- [ ] <name> 📅 <toDate> <время> 🧬 <🆔 серии>` (провенанс переноса).
+ * kind "single" — правка собственной 📅/времени строки события (setField), тоже
+ *   одной записью. fromDate у single не используется (переносится сама строка).
+ *
+ * time — "HH:mm" начала (null — «Весь день»), timeEnd — конец интервала (null —
+ * без конца; строго позже начала гарантирует вызыватель). Локализация — по
+ * 🆔/описанию (как editEventSeries).
+ */
+export async function transferEventOccurrence(deps: {
+	vault: EventVaultPort;
+	task: Task;
+	kind: "series" | "single";
+	fromDate: IsoDate;
+	toDate: IsoDate;
+	time: string | null;
+	timeEnd: string | null;
+	/** Ленивый генератор 🆔 серии (тесты передают детерминированный). */
+	genId?: () => string;
+}): Promise<EventWriteResult> {
+	const genId = deps.genId ?? defaultEventId;
+	let failure: string | null = "file-not-found";
+	try {
+		await deps.vault.processFile(deps.task.filePath, (content) => {
+			failure = null;
+			const lines = content.split("\n");
+			const idx = locateTaskLine(lines, deps.task.filePath, deps.task);
+			if (idx === -1) {
+				failure = "line-not-found";
+				return null;
+			}
+			if (deps.kind === "single") {
+				// одноразовое событие: правим его собственную дату/время
+				let line: string;
+				try {
+					line = setField(lines[idx]!, "due", deps.toDate, deps.time, deps.timeEnd);
+				} catch {
+					failure = "transform-failed";
+					return null;
+				}
+				if (line === lines[idx]) return null;
+				lines[idx] = line;
+				return lines.join("\n");
+			}
+			// серия: 🚫 исходной даты + ленивый 🆔 + append одноразовой строки.
+			// 🆔 читаем из САМОЙ строки (не из индекса): устойчиво к отставанию
+			// индекса на окне дебаунса — не подменим уже вписанный id новым.
+			let seriesLine = addExcludedDate(lines[idx]!, deps.fromDate);
+			const located = parseTaskLine(lines[idx]!, {
+				filePath: deps.task.filePath,
+				lineStart: idx,
+				parentLine: null,
+				heading: null,
+				container: "events",
+				projectActive: true,
+			});
+			let seriesId = located?.taskId ?? null;
+			if (seriesId === null) {
+				seriesId = freshEventId(existingIds(lines, deps.task.filePath), genId);
+				try {
+					seriesLine = setValueField(seriesLine, "id", seriesId);
+				} catch {
+					failure = "transform-failed";
+					return null;
+				}
+			}
+			const single = buildSingleOccurrenceLine(
+				deps.task.description,
+				deps.toDate,
+				deps.time,
+				deps.timeEnd,
+				seriesId,
+			);
+			if (single === null) {
+				failure = "transform-failed";
+				return null;
+			}
+			lines[idx] = seriesLine;
+			return appendLine(lines.join("\n"), single);
 		});
 	} catch {
 		return { ok: false, reason: "write-failed" };

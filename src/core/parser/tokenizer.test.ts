@@ -99,6 +99,12 @@ describe("tokenizeTaskLine: сегменты", () => {
 		expect(t.segments[t.segments.length - 1]).toEqual({ kind: "text", text: " rest" });
 	});
 
+	it("🚫 список дат через запятую (поле-список как ⛔)", () => {
+		const t = tokenizeTaskLine("- [ ] T 🚫 2026-07-21,2026-08-04 rest")!;
+		expect(fields(t.segments)[0]!.payload).toBe("2026-07-21,2026-08-04");
+		expect(t.segments[t.segments.length - 1]).toEqual({ kind: "text", text: " rest" });
+	});
+
 	it("дата-токен останавливается на запятой (пунктуация не портит дату)", () => {
 		const t = tokenizeTaskLine("- [ ] Pay 📅 2026-08-01, then relax")!;
 		expect(fields(t.segments)[0]!.payload).toBe("2026-08-01");
@@ -370,6 +376,7 @@ describe("serializeTokens: точный round-trip", () => {
 		"- [ ] Tpl 🔁 every month on the 1st 🛫 -3d 📅 +14d",
 		"- [ ] trailing junk after 📅 2026-01-01 some note",
 		"- [ ] ⛔ a1, b2 rest of text #tag",
+		"- [ ] Тренировка 🔁 every tuesday at 19:00 🚫 2026-07-21,2026-08-04 🆔 ev1",
 	];
 	for (const line of gnarly) {
 		it(JSON.stringify(line), () => {

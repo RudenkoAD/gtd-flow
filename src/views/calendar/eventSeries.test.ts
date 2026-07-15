@@ -3,13 +3,17 @@ import type { Task } from "../../core/model/Task";
 import { parseTaskLine } from "../../core/parser/parseTaskLine";
 import {
 	buildEventLine,
+	buildSingleOccurrenceLine,
 	createEventSeries,
 	editEventLine,
 	editEventSeries,
+	excludeEventOccurrence,
 	joinEventRule,
 	splitEventRule,
+	transferEventOccurrence,
 	type EventVaultPort,
 } from "./eventSeries";
+import { preservedTimeEnd } from "./timeGrid";
 
 // ---------------------------------------------------------------------------
 // Фейковый порт файла: карта путь → содержимое + frontmatter
@@ -179,5 +183,161 @@ describe("editEventSeries", () => {
 		const res = await editEventSeries({ vault, task, name: "A", ruleText: "мусор" });
 		expect(res).toEqual({ ok: false, reason: "invalid-rule" });
 		expect(vault.files.get("GTD/Events.md")).toBe("- [ ] A 🔁 every day 🆔 ev1\n");
+	});
+});
+
+describe("buildSingleOccurrenceLine", () => {
+	it("строит строку одноразового переноса с временем и провенансом 🧬", () => {
+		expect(buildSingleOccurrenceLine("  Тренировка  ", "2026-07-21", "18:00", "19:30", "ev1")).toBe(
+			"- [ ] Тренировка 📅 2026-07-21 18:00-19:30 🧬 ev1",
+		);
+	});
+	it("без времени/конца/провенанса — минимальная строка", () => {
+		expect(buildSingleOccurrenceLine("Событие", "2026-07-21", null, null, null)).toBe(
+			"- [ ] Событие 📅 2026-07-21",
+		);
+	});
+	it("конец не строго позже начала — выпадает (как канон парсера)", () => {
+		expect(buildSingleOccurrenceLine("X", "2026-07-21", "10:00", "10:00", null)).toBe(
+			"- [ ] X 📅 2026-07-21 10:00",
+		);
+	});
+	it("длительность сохраняется: preservedTimeEnd + новая строка", () => {
+		// вхождение 19:00-20:30 (90 мин) переносится на старт 09:15 → конец 10:45
+		const end = preservedTimeEnd("19:00", "20:30", "09:15");
+		expect(buildSingleOccurrenceLine("Тр", "2026-07-22", "09:15", end ?? null, "ev1")).toBe(
+			"- [ ] Тр 📅 2026-07-22 09:15-10:45 🧬 ev1",
+		);
+	});
+	it("пустое имя — null", () => {
+		expect(buildSingleOccurrenceLine("  ", "2026-07-21", null, null, null)).toBeNull();
+	});
+});
+
+describe("excludeEventOccurrence — удаление вхождения серии", () => {
+	it("добавляет 🚫 <date> к строке серии", async () => {
+		const vault = new FakeVault();
+		vault.files.set("GTD/Events.md", "- [ ] Тр 🔁 every tue at 19:00 🆔 ev1\n");
+		const task = taskFrom("- [ ] Тр 🔁 every tue at 19:00 🆔 ev1", "GTD/Events.md", 0);
+		const res = await excludeEventOccurrence({ vault, task, date: "2026-07-21" });
+		expect(res.ok).toBe(true);
+		// 🚫 добавляется в конец строки (как все сеттеры полей) — после 🆔
+		expect(vault.files.get("GTD/Events.md")).toBe(
+			"- [ ] Тр 🔁 every tue at 19:00 🆔 ev1 🚫 2026-07-21\n",
+		);
+	});
+	it("повтор той же даты — успех без изменений (идемпотентно)", async () => {
+		const vault = new FakeVault();
+		vault.files.set("GTD/Events.md", "- [ ] Тр 🔁 every tue 🚫 2026-07-21 🆔 ev1\n");
+		const task = taskFrom("- [ ] Тр 🔁 every tue 🚫 2026-07-21 🆔 ev1", "GTD/Events.md", 0);
+		const res = await excludeEventOccurrence({ vault, task, date: "2026-07-21" });
+		expect(res.ok).toBe(true);
+		expect(vault.files.get("GTD/Events.md")).toBe("- [ ] Тр 🔁 every tue 🚫 2026-07-21 🆔 ev1\n");
+	});
+	it("строку не найти — line-not-found", async () => {
+		const vault = new FakeVault();
+		vault.files.set("GTD/Events.md", "- [ ] Другое 🔁 every day 🆔 z\n");
+		const task = taskFrom("- [ ] Тр 🔁 every tue 🆔 ev1", "GTD/Events.md", 0);
+		const res = await excludeEventOccurrence({ vault, task, date: "2026-07-21" });
+		expect(res).toEqual({ ok: false, reason: "line-not-found" });
+	});
+});
+
+describe("transferEventOccurrence — перенос вхождения серии", () => {
+	it("одна запись: 🚫 старой даты + append одноразовой строки с 🧬 серии", async () => {
+		const vault = new FakeVault();
+		vault.files.set("GTD/Events.md", "- [ ] Тр 🔁 every tue at 19:00-20:30 🆔 ev1\n");
+		const task = taskFrom("- [ ] Тр 🔁 every tue at 19:00-20:30 🆔 ev1", "GTD/Events.md", 0);
+		const res = await transferEventOccurrence({
+			vault,
+			task,
+			kind: "series",
+			fromDate: "2026-07-21",
+			toDate: "2026-07-22",
+			time: "18:00",
+			timeEnd: "19:30",
+		});
+		expect(res.ok).toBe(true);
+		// 🚫 в конце строки серии (после 🆔); одноразовая строка — следующей
+		expect(vault.files.get("GTD/Events.md")).toBe(
+			"- [ ] Тр 🔁 every tue at 19:00-20:30 🆔 ev1 🚫 2026-07-21\n" +
+				"- [ ] Тр 📅 2026-07-22 18:00-19:30 🧬 ev1\n",
+		);
+	});
+
+	it("серия без 🆔 — ленивое проставление тем же processFile", async () => {
+		const vault = new FakeVault();
+		vault.files.set("GTD/Events.md", "- [ ] Тр 🔁 every tue at 19:00\n");
+		const task = taskFrom("- [ ] Тр 🔁 every tue at 19:00", "GTD/Events.md", 0);
+		const res = await transferEventOccurrence({
+			vault,
+			task,
+			kind: "series",
+			fromDate: "2026-07-21",
+			toDate: "2026-07-22",
+			time: "18:00",
+			timeEnd: null,
+			genId: () => "newid",
+		});
+		expect(res.ok).toBe(true);
+		expect(vault.files.get("GTD/Events.md")).toBe(
+			"- [ ] Тр 🔁 every tue at 19:00 🚫 2026-07-21 🆔 newid\n" +
+				"- [ ] Тр 📅 2026-07-22 18:00 🧬 newid\n",
+		);
+	});
+
+	it("строку не найти — line-not-found, без записи", async () => {
+		const vault = new FakeVault();
+		vault.files.set("GTD/Events.md", "- [ ] Другое 🔁 every day 🆔 z\n");
+		const task = taskFrom("- [ ] Тр 🔁 every tue 🆔 ev1", "GTD/Events.md", 0);
+		const res = await transferEventOccurrence({
+			vault,
+			task,
+			kind: "series",
+			fromDate: "2026-07-21",
+			toDate: "2026-07-22",
+			time: "18:00",
+			timeEnd: null,
+		});
+		expect(res).toEqual({ ok: false, reason: "line-not-found" });
+		expect(vault.files.get("GTD/Events.md")).toBe("- [ ] Другое 🔁 every day 🆔 z\n");
+	});
+});
+
+describe("transferEventOccurrence — перенос одноразового", () => {
+	it("правит собственную 📅/время строки одной записью", async () => {
+		const vault = new FakeVault();
+		vault.files.set("GTD/Events.md", "- [ ] Событие 📅 2026-07-21 18:00-19:30 🧬 ev1\n");
+		const task = taskFrom("- [ ] Событие 📅 2026-07-21 18:00-19:30 🧬 ev1", "GTD/Events.md", 0);
+		const res = await transferEventOccurrence({
+			vault,
+			task,
+			kind: "single",
+			fromDate: "2026-07-21",
+			toDate: "2026-07-25",
+			time: "20:00",
+			timeEnd: "21:30",
+		});
+		expect(res.ok).toBe(true);
+		expect(vault.files.get("GTD/Events.md")).toBe(
+			"- [ ] Событие 📅 2026-07-25 20:00-21:30 🧬 ev1\n",
+		);
+	});
+
+	it("снятие времени: перенос одноразового на дату без времени", async () => {
+		const vault = new FakeVault();
+		vault.files.set("GTD/Events.md", "- [ ] Событие 📅 2026-07-21 18:00 🧬 ev1\n");
+		const task = taskFrom("- [ ] Событие 📅 2026-07-21 18:00 🧬 ev1", "GTD/Events.md", 0);
+		const res = await transferEventOccurrence({
+			vault,
+			task,
+			kind: "single",
+			fromDate: "2026-07-21",
+			toDate: "2026-07-25",
+			time: null,
+			timeEnd: null,
+		});
+		expect(res.ok).toBe(true);
+		expect(vault.files.get("GTD/Events.md")).toBe("- [ ] Событие 📅 2026-07-25 🧬 ev1\n");
 	});
 });

@@ -1,0 +1,165 @@
+/**
+ * parseTaskLine — строка + контекст файла → Task (ТЗ §2 parser).
+ *
+ * Семантика полей:
+ * - Дубли одного поля: побеждает ПОСЛЕДНЕЕ вхождение (rawLine хранит все).
+ * - Офсеты ±Nd (легальны только в шаблонах, ТЗ §6) в due/start/... НЕ попадают —
+ *   поле остаётся null, офсет живёт в rawLine и разворачивается движком повторов.
+ * - Невалидный payload даты тоже даёт null (но токен уже вырезан из description).
+ * - description: текст без токенов полей, схлопнутые пробелы, trim; теги ОСТАЮТСЯ
+ *   в description и дополнительно собираются в tags[] (с '#', без дублей).
+ */
+import type { ContainerKind, DateOffset, IsoDate, Priority, Task } from "../model/Task";
+import { EMOJI_TO_PRIORITY, type DateFieldName } from "./emoji";
+import { extractTags, tokenizeTaskLine } from "./tokenizer";
+import { computeKey } from "./taskKey";
+
+export interface ParseContext {
+	filePath: string;
+	lineStart: number;
+	parentLine: number | null;
+	heading: string | null;
+	container: ContainerKind;
+	projectActive: boolean;
+}
+
+export type DatePayload =
+	| { kind: "date"; date: IsoDate }
+	| { kind: "offset"; offset: DateOffset }
+	| { kind: "empty" }
+	| { kind: "invalid"; raw: string };
+
+const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+const OFFSET_RE = /^([+-])(\d{1,3})d$/;
+
+/** Дней в месяце (григорианский календарь). Дублирует recurrence/dateMath
+ *  сознательно: parser не зависит от recurrence (dateMath — приватная утилита
+ *  движка повторов), а логика тривиальна и зафиксирована тестами. */
+function daysInMonth(y: number, m: number): number {
+	if (m === 2) return (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0 ? 29 : 28;
+	return [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m - 1]!;
+}
+
+/** Классификация payload поля-даты: дата / офсет ±Nd / мусор.
+ *  Валидация календарная (2026-02-30 → invalid). Это ЕДИНЫЙ гейт для чтения
+ *  и записи: setField валидирует этим же предикатом, поэтому «записали, а
+ *  прочиталось null» невозможно по построению. */
+export function parseDatePayload(payload: string): DatePayload {
+	if (payload === "") return { kind: "empty" };
+	const d = ISO_DATE_RE.exec(payload);
+	if (d !== null) {
+		const year = Number(d[1]);
+		const month = Number(d[2]);
+		const day = Number(d[3]);
+		if (month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth(year, month))
+			return { kind: "date", date: payload };
+		return { kind: "invalid", raw: payload };
+	}
+	const o = OFFSET_RE.exec(payload);
+	if (o !== null) {
+		return { kind: "offset", offset: { sign: o[1] === "-" ? -1 : 1, days: Number(o[2]) } };
+	}
+	return { kind: "invalid", raw: payload };
+}
+
+/** U+FE0F не участвует в таблицах эмодзи — срезаем перед поиском приоритета. */
+function stripVariationSelector(emoji: string): string {
+	let out = "";
+	for (let i = 0; i < emoji.length; i++) {
+		if (emoji.charCodeAt(i) !== 0xfe0f) out += emoji.charAt(i);
+	}
+	return out;
+}
+
+export function parseTaskLine(rawLine: string, ctx: ParseContext): Task | null {
+	const tok = tokenizeTaskLine(rawLine);
+	if (tok === null) return null;
+
+	const dates: Record<DateFieldName, IsoDate | null> = {
+		due: null,
+		scheduled: null,
+		start: null,
+		created: null,
+		done: null,
+		cancelled: null,
+		nextSpawn: null,
+	};
+	let recurrence: string | null = null;
+	let taskId: string | null = null;
+	let spawnedFrom: string | null = null;
+	let dependsOn: string[] = [];
+	let priority: Priority = "none";
+	const textParts: string[] = [];
+	const tags: string[] = [];
+
+	for (const seg of tok.segments) {
+		if (seg.kind === "text") {
+			textParts.push(seg.text);
+			// теги ищем по-сегментно: границы тегов не должны «склеиваться» через поля
+			for (const t of extractTags(seg.text)) if (!tags.includes(t)) tags.push(t);
+			continue;
+		}
+		switch (seg.field) {
+			case "priority": {
+				const p = EMOJI_TO_PRIORITY.get(stripVariationSelector(seg.emoji));
+				if (p !== undefined) priority = p;
+				break;
+			}
+			case "recurrence": {
+				const rule = seg.payload.trim();
+				recurrence = rule === "" ? null : rule;
+				break;
+			}
+			case "id": {
+				taskId = seg.payload === "" ? null : seg.payload;
+				break;
+			}
+			case "spawnedFrom": {
+				spawnedFrom = seg.payload === "" ? null : seg.payload;
+				break;
+			}
+			case "dependsOn": {
+				dependsOn = seg.payload
+					.split(",")
+					.map((s) => s.trim())
+					.filter((s) => s !== "");
+				break;
+			}
+			default: {
+				const parsed = parseDatePayload(seg.payload);
+				dates[seg.field] = parsed.kind === "date" ? parsed.date : null;
+			}
+		}
+	}
+
+	const description = textParts.join("").replace(/\s+/g, " ").trim();
+
+	return {
+		// occurrenceIndex здесь всегда 0 — дизамбигуацию одинаковых строк
+		// в одном файле делает индексатор, пересчитывая key через computeKey
+		key: computeKey({ taskId, filePath: ctx.filePath, description }, 0),
+		taskId,
+		filePath: ctx.filePath,
+		lineStart: ctx.lineStart,
+		lineEnd: ctx.lineStart,
+		parentLine: ctx.parentLine,
+		heading: ctx.heading,
+		description,
+		rawLine,
+		statusChar: tok.statusChar,
+		due: dates.due,
+		scheduled: dates.scheduled,
+		start: dates.start,
+		created: dates.created,
+		done: dates.done,
+		cancelled: dates.cancelled,
+		recurrence,
+		nextSpawn: dates.nextSpawn,
+		spawnedFrom,
+		priority,
+		dependsOn,
+		tags,
+		container: ctx.container,
+		projectActive: ctx.projectActive,
+	};
+}

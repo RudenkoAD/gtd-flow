@@ -1,0 +1,181 @@
+/**
+ * Intents (ТЗ §3): виды не пишут в файлы — они порождают Intent,
+ * WritebackService применяет его атомарно через vault.process().
+ * Строка ищется по 🆔, затем по content-key; не нашли — отмена + уведомление.
+ */
+import type { IsoDate, Priority, ProjectStatus } from "../model/Task";
+
+/** Дата-поля, доступные SetDate. 🔜 меняется только через AdvanceCursor. */
+export type SettableDateField = "due" | "scheduled" | "start" | "created" | "done" | "cancelled";
+
+export interface NodePosition {
+	x: number;
+	y: number;
+}
+
+// ---------------------------------------------------------------------------
+// v1
+// ---------------------------------------------------------------------------
+
+export interface SetDate {
+	type: "set-date";
+	key: string;
+	field: SettableDateField;
+	/** null — удалить поле. */
+	date: IsoDate | null;
+}
+
+export interface SetStatus {
+	type: "set-status";
+	key: string;
+	statusChar: string;
+	/** Дата для ✅/❌ при переходе в done/cancelled; опущена — поле даты не трогаем. */
+	date?: IsoDate;
+}
+
+export interface SetPriority {
+	type: "set-priority";
+	key: string;
+	/** "none" — убрать эмодзи приоритета. */
+	priority: Priority;
+}
+
+export interface MoveColumn {
+	type: "move-column";
+	key: string;
+	/** Тег исходной колонки (#kanban/<board>/<col>) — снять; null, если колонка по статусу. */
+	fromTag: string | null;
+	/** Тег целевой колонки — добавить; null, если колонка по статусу. */
+	toTag: string | null;
+	/** Символ статуса целевой колонки — для досок с group-by: status. */
+	toStatusChar?: string;
+	/** Позиция в ручном порядке целевой колонки (frontmatter доски — вторая запись). */
+	index?: number;
+}
+
+/** Ручной порядок колонки — frontmatter доски, не строки задач. */
+export interface Reorder {
+	type: "reorder";
+	boardPath: string;
+	column: string;
+	orderedKeys: string[];
+}
+
+/** Пишет 🛫 — задача уходит в «Отложенные» (§5). */
+export interface Defer {
+	type: "defer";
+	key: string;
+	until: IsoDate;
+}
+
+/** Ленивая вставка 🆔 при первой структурной правке (autoInjectId). */
+export interface SetId {
+	type: "set-id";
+	key: string;
+	taskId: string;
+}
+
+// ---------------------------------------------------------------------------
+// Регулярные (§8)
+// ---------------------------------------------------------------------------
+
+/** Батч-append копий; внутри process — повторная проверка 🆔 в тексте файла. */
+export interface SpawnInstances {
+	type: "spawn-instances";
+	file: string;
+	lines: string[];
+}
+
+/** Сдвиг курсора 🔜 на строке шаблона. Порядок записи: сначала копия, потом курсор. */
+export interface AdvanceCursor {
+	type: "advance-cursor";
+	templateId: string;
+	date: IsoDate;
+}
+
+/** ТОЛЬКО дедуп: удаление «нетронутых» машинных строк-копий. */
+export interface DeleteLine {
+	type: "delete-line";
+	key: string;
+}
+
+// ---------------------------------------------------------------------------
+// Проекты (§9) — однофайловые атомарные транзакции (строки + layout в одном файле)
+// ---------------------------------------------------------------------------
+
+/** Строка задачи + позиция в frontmatter layout одной записью; 🆔 вставляется сразу. */
+export interface AddNode {
+	type: "add-node";
+	projectPath: string;
+	/** Готовая строка задачи (с 🆔 = taskId). */
+	line: string;
+	taskId: string;
+	position: NodePosition;
+}
+
+/** Ребро source→target ⇒ append sourceId в ⛔ строки targetId.
+ *  Проверка циклов — ДО записи, DFS по индексу (в сервисе). */
+export interface ConnectEdge {
+	type: "connect-edge";
+	projectPath: string;
+	sourceId: string;
+	targetId: string;
+}
+
+export interface DisconnectEdge {
+	type: "disconnect-edge";
+	projectPath: string;
+	sourceId: string;
+	targetId: string;
+}
+
+/** Удаление строки + вычистка id из всех ⛔ + из layout. */
+export interface DeleteNode {
+	type: "delete-node";
+	projectPath: string;
+	taskId: string;
+}
+
+/** Батч позиций за жест (дебаунс ~300мс); только frontmatter layout. */
+export interface MoveNode {
+	type: "move-node";
+	projectPath: string;
+	positions: Record<string, NodePosition>;
+}
+
+export interface SetProjectStatus {
+	type: "set-project-status";
+	projectPath: string;
+	status: ProjectStatus;
+}
+
+// ---------------------------------------------------------------------------
+// Перенос между файлами (drag входящие → проект/регулярные)
+// ---------------------------------------------------------------------------
+
+/** append в цель, потом delete из источника; дубль 🆔 при сбое посередине
+ *  виден линтом — потеря строки исключена порядком записи. */
+export interface MoveLine {
+	type: "move-line";
+	key: string;
+	toFile: string;
+}
+
+export type Intent =
+	| SetDate
+	| SetStatus
+	| SetPriority
+	| MoveColumn
+	| Reorder
+	| Defer
+	| SetId
+	| SpawnInstances
+	| AdvanceCursor
+	| DeleteLine
+	| AddNode
+	| ConnectEdge
+	| DisconnectEdge
+	| DeleteNode
+	| MoveNode
+	| SetProjectStatus
+	| MoveLine;

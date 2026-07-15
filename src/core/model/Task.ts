@@ -1,0 +1,97 @@
+/**
+ * Каноническая in-memory модель задачи (ТЗ §2).
+ * Карточка kanban, событие календаря, входящая и узел графа — проекции этого объекта.
+ *
+ * core/ не импортирует `obsidian` — см. scripts/check-core-purity.mjs.
+ */
+
+/** Календарная дата без времени и таймзоны, формат YYYY-MM-DD.
+ *  Лексикографическое сравнение строк == хронологическому. */
+export type IsoDate = string;
+
+export type Priority = "highest" | "high" | "medium" | "low" | "lowest" | "none";
+
+/** Полная цепочка вывода состояния, по убыванию приоритета (ТЗ §1). */
+export type GtdState =
+	| "TEMPLATE" // задача в файле gtd-recurring: true — шаблон регулярного ящика
+	| "DETAIL" // задача в файле-карточке gtd-card-of — приватный чеклист карточки
+	| "DONE"
+	| "CANCELLED"
+	| "TICKLER" // 🛫 start > today
+	| "WAITING" // #waiting или невыполненные ⛔ вне проекта
+	| "BLOCKED" // член проекта с невыполненными ⛔
+	| "DOING"
+	| "ACTIVE";
+
+/** Тип файла-контейнера, меняющего интерпретацию задач (frontmatter-флаги). */
+export type ContainerKind = "plain" | "board" | "project" | "recurring" | "card";
+
+export type ProjectStatus = "active" | "on-hold" | "done" | "archived";
+
+/** Контекст файла, вычисляемый из frontmatter на этапе индексации. */
+export interface FileContext {
+	path: string;
+	container: ContainerKind;
+	/** Только для container === "project"; отсутствие в frontmatter ⇒ "active". */
+	projectStatus?: ProjectStatus;
+}
+
+export interface Task {
+	// --- идентичность и расположение ---
+	/** Стабильный ключ индекса: "id:<🆔>" либо content-key (путь + хэш описания + порядковый номер). */
+	key: string;
+	/** Значение 🆔, если есть. Предпочтительный якорь для write-back и ⛔. */
+	taskId: string | null;
+	filePath: string;
+	/** Номер строки на момент парса. ТОЛЬКО подсказка — не идентичность. */
+	lineStart: number;
+	lineEnd: number;
+	/** Номер строки родительского пункта списка; null для корневых. */
+	parentLine: number | null;
+	/** Ближайший заголовок выше по файлу. */
+	heading: string | null;
+
+	// --- текст ---
+	/** Текст строки без эмодзи-полей и без тегов колонок досок. */
+	description: string;
+	/** Дословная исходная строка — источник для write-back без потерь. */
+	rawLine: string;
+
+	// --- статус ---
+	/** Символ внутри [ ]. */
+	statusChar: string;
+
+	// --- даты (эмодзи-поля) ---
+	due: IsoDate | null; // 📅
+	scheduled: IsoDate | null; // ⏳
+	start: IsoDate | null; // 🛫  — defer-until для тикля
+	created: IsoDate | null; // ➕
+	done: IsoDate | null; // ✅
+	cancelled: IsoDate | null; // ❌
+
+	// --- регулярные ---
+	/** 🔁 — текст правила, хранится дословно. */
+	recurrence: string | null;
+	/** 🔜 — курсор следующего вхождения (только у шаблонов). */
+	nextSpawn: IsoDate | null;
+	/** 🧬 — id шаблона, из которого порождена копия. */
+	spawnedFrom: string | null;
+
+	// --- прочее ---
+	priority: Priority; // 🔺⏫🔼🔽⏬
+	/** ⛔ — список 🆔, от которых зависит задача. */
+	dependsOn: string[];
+	/** #теги строки (включая #kanban/<board>/<col> и #waiting). */
+	tags: string[];
+
+	// --- контекст файла (заполняется индексатором) ---
+	container: ContainerKind;
+	/** Проект задачи активен (для container === "project"; иначе true). */
+	projectActive: boolean;
+}
+
+/** Дата-офсет вида "-3d"/"+14d" в шаблонах регулярного ящика (ТЗ §6). */
+export interface DateOffset {
+	sign: 1 | -1;
+	days: number;
+}

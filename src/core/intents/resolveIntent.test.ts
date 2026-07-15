@@ -1,0 +1,172 @@
+/**
+ * Golden-строки для resolveLineTransform. Формат полей — Tasks-совместимый:
+ * «<эмодзи> <значение>» (см. src/core/parser/emoji.ts). Ассерты — по вхождению
+ * токенов, чтобы не фиксировать несущественные детали сериализатора (позицию поля).
+ */
+import { describe, expect, it } from "vitest";
+import type { Intent } from "./Intent";
+import { resolveDependsOnTransform, resolveLineTransform } from "./resolveIntent";
+
+describe("resolveLineTransform — однострочные intents", () => {
+	it("set-date: добавляет 📅 к строке без даты", () => {
+		const out = resolveLineTransform(
+			{ type: "set-date", key: "k", field: "due", date: "2026-07-20" },
+			"- [ ] Позвонить маме",
+		);
+		expect(out).not.toBeNull();
+		expect(out).toContain("📅 2026-07-20");
+		expect(out).toContain("Позвонить маме");
+	});
+
+	it("set-date: заменяет существующую 📅", () => {
+		const out = resolveLineTransform(
+			{ type: "set-date", key: "k", field: "due", date: "2026-07-20" },
+			"- [ ] Позвонить маме 📅 2026-07-01",
+		);
+		expect(out).toContain("📅 2026-07-20");
+		expect(out).not.toContain("2026-07-01");
+	});
+
+	it("set-date: null удаляет поле", () => {
+		const out = resolveLineTransform(
+			{ type: "set-date", key: "k", field: "due", date: null },
+			"- [ ] Позвонить маме 📅 2026-07-01",
+		);
+		expect(out).not.toBeNull();
+		expect(out).not.toContain("📅");
+		expect(out).toContain("Позвонить маме");
+	});
+
+	it("set-status: ' ' → 'x'", () => {
+		const out = resolveLineTransform(
+			{ type: "set-status", key: "k", statusChar: "x" },
+			"- [ ] Позвонить маме",
+		);
+		expect(out).not.toBeNull();
+		expect((out as string).startsWith("- [x]")).toBe(true);
+		expect(out).toContain("Позвонить маме");
+	});
+
+	it("set-status: с датой пишет ✅", () => {
+		const out = resolveLineTransform(
+			{ type: "set-status", key: "k", statusChar: "x", date: "2026-07-15" },
+			"- [ ] Позвонить маме",
+		);
+		expect((out as string).startsWith("- [x]")).toBe(true);
+		expect(out).toContain("✅ 2026-07-15");
+	});
+
+	it("set-status: '-' с датой пишет ❌", () => {
+		const out = resolveLineTransform(
+			{ type: "set-status", key: "k", statusChar: "-", date: "2026-07-15" },
+			"- [ ] Позвонить маме",
+		);
+		expect((out as string).startsWith("- [-]")).toBe(true);
+		expect(out).toContain("❌ 2026-07-15");
+	});
+
+	it("set-status: повторное открытие снимает ✅ и ❌", () => {
+		const out = resolveLineTransform(
+			{ type: "set-status", key: "k", statusChar: " " },
+			"- [x] Позвонить маме ✅ 2026-07-10",
+		);
+		expect((out as string).startsWith("- [ ]")).toBe(true);
+		expect(out).not.toContain("✅");
+	});
+
+	it("set-priority: добавляет ⏫", () => {
+		const out = resolveLineTransform(
+			{ type: "set-priority", key: "k", priority: "high" },
+			"- [ ] Позвонить маме",
+		);
+		expect(out).toContain("⏫");
+	});
+
+	it("defer: пишет 🛫", () => {
+		const out = resolveLineTransform(
+			{ type: "defer", key: "k", until: "2026-08-01" },
+			"- [ ] Позвонить маме",
+		);
+		expect(out).toContain("🛫 2026-08-01");
+	});
+
+	it("set-id: пишет 🆔", () => {
+		const out = resolveLineTransform(
+			{ type: "set-id", key: "k", taskId: "abc123" },
+			"- [ ] Позвонить маме",
+		);
+		expect(out).toContain("🆔 abc123");
+	});
+
+	it("advance-cursor: сдвигает 🔜 на строке шаблона", () => {
+		const out = resolveLineTransform(
+			{ type: "advance-cursor", templateId: "rev-prio", date: "2026-08-31" },
+			"- [ ] Ревью приоритетов 🔁 every month on the last day 🆔 rev-prio 🔜 2026-07-31",
+		);
+		expect(out).toContain("🔜 2026-08-31");
+		expect(out).not.toContain("2026-07-31");
+		expect(out).toContain("🔁 every month on the last day");
+	});
+
+	it("move-column: снимает старый тег колонки, добавляет новый", () => {
+		const out = resolveLineTransform(
+			{
+				type: "move-column",
+				key: "k",
+				fromTag: "#kanban/work/todo",
+				toTag: "#kanban/work/doing",
+			},
+			"- [ ] Задача #kanban/work/todo",
+		);
+		expect(out).toContain("#kanban/work/doing");
+		expect(out).not.toContain("#kanban/work/todo");
+	});
+
+	it("move-column: статусная доска меняет статус", () => {
+		const out = resolveLineTransform(
+			{ type: "move-column", key: "k", fromTag: null, toTag: null, toStatusChar: "/" },
+			"- [ ] Задача",
+		);
+		expect((out as string).startsWith("- [/]")).toBe(true);
+	});
+});
+
+describe("resolveLineTransform — многострочные/многофайловые intents ⇒ null", () => {
+	const cases: Intent[] = [
+		{ type: "reorder", boardPath: "GTD/Board.md", column: "todo", orderedKeys: [] },
+		{ type: "spawn-instances", file: "GTD/Inbox.md", lines: ["- [ ] копия"] },
+		{ type: "delete-line", key: "k" },
+		{
+			type: "add-node",
+			projectPath: "Projects/Кухня.md",
+			line: "- [ ] Новая 🆔 n1",
+			taskId: "n1",
+			position: { x: 0, y: 0 },
+		},
+		{ type: "connect-edge", projectPath: "Projects/Кухня.md", sourceId: "a", targetId: "b" },
+		{ type: "disconnect-edge", projectPath: "Projects/Кухня.md", sourceId: "a", targetId: "b" },
+		{ type: "delete-node", projectPath: "Projects/Кухня.md", taskId: "a" },
+		{ type: "move-node", projectPath: "Projects/Кухня.md", positions: { a: { x: 1, y: 2 } } },
+		{ type: "set-project-status", projectPath: "Projects/Кухня.md", status: "on-hold" },
+		{ type: "move-line", key: "k", toFile: "Projects/Кухня.md" },
+	];
+
+	for (const intent of cases) {
+		it(`${intent.type} ⇒ null`, () => {
+			expect(resolveLineTransform(intent, "- [ ] Задача")).toBeNull();
+		});
+	}
+});
+
+describe("resolveDependsOnTransform", () => {
+	it("применяет посчитанный сервисом список ⛔ (через запятую, без пробелов)", () => {
+		const out = resolveDependsOnTransform("- [ ] Заказать материалы ⛔ a1", ["a1", "b2"]);
+		expect(out).toContain("⛔ a1,b2");
+	});
+
+	it("пустой список снимает ⛔", () => {
+		const out = resolveDependsOnTransform("- [ ] Заказать материалы ⛔ a1", []);
+		expect(out).not.toContain("⛔");
+		expect(out).toContain("Заказать материалы");
+	});
+});

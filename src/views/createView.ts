@@ -5,6 +5,7 @@ import type { ViewMeta } from "./registry";
 import { CalendarView } from "./calendar/CalendarView";
 import { InboxView } from "./inbox/InboxView";
 import { KanbanView } from "./kanban/KanbanView";
+import { RecurringView } from "./recurring/RecurringView";
 import { TicklerView } from "./tickler/TicklerView";
 
 /** Фабрика для registerView: реализованные виды — свои классы, остальные — заглушка. */
@@ -18,6 +19,8 @@ export function createGtdView(leaf: WorkspaceLeaf, plugin: GtdFlowPlugin, meta: 
 			return new CalendarView(leaf, plugin, meta);
 		case "tickler":
 			return new TicklerView(leaf, plugin, meta);
+		case "recurring":
+			return new RecurringView(leaf, plugin, meta);
 		default:
 			return new GtdView(leaf, plugin, meta);
 	}

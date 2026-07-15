@@ -7,6 +7,7 @@ import { ObsidianClock } from "./adapters/ObsidianClock";
 import { IndexerService } from "./services/IndexerService";
 import { WritebackService } from "./services/WritebackService";
 import { BoardService } from "./services/BoardService";
+import { RecurrenceService } from "./services/RecurrenceService";
 import { createTaskStore, type TaskStore } from "./stores/taskStore";
 import { createGtdView } from "./views/createView";
 import { DndService } from "./views/dnd/DndService";
@@ -19,17 +20,25 @@ export default class GtdFlowPlugin extends Plugin {
 	dispatcher!: WritebackService;
 	boards!: BoardService;
 	dnd!: DndService;
+	recurrence!: RecurrenceService;
+	private indexReadyFlag = false;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
 
 		const metadata = new MetadataAdapter(this);
+		const clock = new ObsidianClock(this);
 		this.vaultAdapter = new VaultAdapter(this.app);
 		this.indexer = new IndexerService({
 			events: metadata,
-			clock: new ObsidianClock(this),
+			clock,
 			initialScan: () => metadata.initialScan(),
 			debounceMs: this.settings.debounceMs.fileReindex,
+			// Первый spawn-проход регулярных — строго после полной сборки индекса (ТЗ §6).
+			onReady: () => {
+				this.indexReadyFlag = true;
+				void this.recurrence.runPass();
+			},
 		});
 		this.taskStore = createTaskStore(this.indexer);
 		this.dispatcher = new WritebackService({
@@ -46,6 +55,16 @@ export default class GtdFlowPlugin extends Plugin {
 			dispatcher: this.dispatcher,
 		});
 		this.dnd = new DndService(this);
+		this.recurrence = new RecurrenceService({
+			feed: this.indexer,
+			write: this.vaultAdapter,
+			dispatcher: this.dispatcher,
+			settings: () => this.settings.recurring,
+			todayIso: () => clock.todayIso(),
+			indexReady: () => this.indexReadyFlag,
+			ensureFile: (path) => this.vaultAdapter.ensureFile(path),
+		});
+		clock.onDayRollover(() => void this.recurrence.runPass());
 		// Первичная сборка — вне критического пути старта (ТЗ §2).
 		this.app.workspace.onLayoutReady(() => void this.indexer.start());
 

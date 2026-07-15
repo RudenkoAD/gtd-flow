@@ -36,7 +36,7 @@ export interface WritebackDeps {
 }
 
 /** Всё, что нужно для локализации строки: 🆔, нормализованное описание, подсказка. */
-interface LineTarget {
+export interface LineTarget {
 	taskId: string | null;
 	description: string;
 	/** ТОЛЬКО подсказка (advisory): выбор ближайшего кандидата, не идентичность. */
@@ -92,8 +92,11 @@ function parseAt(lines: readonly string[], i: number, filePath: string): Task | 
  * 2) иначе по content-key: строки с тем же normalizedDescription и БЕЗ 🆔
  *    (строка с 🆔 принадлежит id-ключу — захватывать её по содержимому нельзя).
  * Из нескольких кандидатов — ближайший к advisory lineStart. Не нашли → -1.
+ *
+ * Экспортирован: RecurrenceService локализует строку шаблона тем же механизмом
+ * (правка 🔁 не выражается через Intent — recurrence-поле текстовое).
  */
-function locateLine(lines: readonly string[], filePath: string, target: LineTarget): number {
+export function locateTaskLine(lines: readonly string[], filePath: string, target: LineTarget): number {
 	let best = -1;
 	let bestDist = Infinity;
 	for (let i = 0; i < lines.length; i++) {
@@ -131,8 +134,10 @@ export class WritebackService implements IntentDispatcher {
 					return await this.dispatchCursor(intent.templateId, intent);
 				case "move-line":
 					return await this.moveLine(intent);
+				case "delete-line":
+					return await this.deleteLine(intent);
 				default:
-					// spawn-instances/delete-line/reorder/графовые — этапы 4–7
+					// spawn-instances/reorder/графовые — этапы 4–7
 					return { ok: false, reason: "not-implemented-stage" };
 			}
 		} catch {
@@ -178,7 +183,7 @@ export class WritebackService implements IntentDispatcher {
 		await this.deps.write.processFile(path, (content) => {
 			failure = null;
 			const lines = content.split("\n"); // CRLF: '\r' остаётся в строке, tokenizer его бережёт
-			const idx = locateLine(lines, path, target);
+			const idx = locateTaskLine(lines, path, target);
 			if (idx === -1) {
 				failure = "line-not-found";
 				return null;
@@ -233,7 +238,7 @@ export class WritebackService implements IntentDispatcher {
 		await this.deps.write.processFile(task.filePath, (content) => {
 			failure = null;
 			const lines = content.split("\n");
-			const idx = locateLine(lines, task.filePath, task);
+			const idx = locateTaskLine(lines, task.filePath, task);
 			if (idx === -1) {
 				failure = "line-not-found";
 				return null;
@@ -261,7 +266,7 @@ export class WritebackService implements IntentDispatcher {
 		await this.deps.write.processFile(intent.toFile, (content) => {
 			targetSeen = true;
 			const lines = content.split("\n");
-			if (locateLine(lines, intent.toFile, { taskId: movedId, description: "", lineStart: 0 }) !== -1)
+			if (locateTaskLine(lines, intent.toFile, { taskId: movedId, description: "", lineStart: 0 }) !== -1)
 				return null;
 			return content.trimEnd()
 				? content + (content.endsWith("\n") ? "" : "\n") + movedLine + "\n"
@@ -274,7 +279,7 @@ export class WritebackService implements IntentDispatcher {
 		await this.deps.write.processFile(task.filePath, (content) => {
 			delFailure = null;
 			const lines = content.split("\n");
-			const idx = locateLine(lines, task.filePath, {
+			const idx = locateTaskLine(lines, task.filePath, {
 				taskId: movedId,
 				description: task.description,
 				lineStart: task.lineStart,
@@ -287,6 +292,35 @@ export class WritebackService implements IntentDispatcher {
 			return lines.join("\n");
 		});
 		return delFailure === null ? { ok: true } : { ok: false, reason: delFailure };
+	}
+
+	// --- удаление строки (ТОЛЬКО дедуп регулярных, ТЗ §3/§6) ---
+
+	/**
+	 * Удалить ровно одну строку (вместе с её '\n'): локализация тем же
+	 * механизмом, что у правок (🆔, иначе content-key + ближайшая lineStart).
+	 * splice по массиву строк съедает и разделитель: удаление последней строки
+	 * без хвостового '\n' забирает разделитель СЛЕВА — файл не копит пустых строк.
+	 * Повторный dispatch после успеха даёт {ok:false,'line-not-found'} —
+	 * для дедупа это штатный исход: строки уже нет, удалять нечего.
+	 */
+	private async deleteLine(intent: { key: string }): Promise<IntentResult> {
+		const task = this.deps.feed.getIndex().get(intent.key);
+		if (task === undefined) return { ok: false, reason: "task-not-found" };
+
+		let failure: string | null = "file-not-found";
+		await this.deps.write.processFile(task.filePath, (content) => {
+			failure = null;
+			const lines = content.split("\n");
+			const idx = locateTaskLine(lines, task.filePath, task);
+			if (idx === -1) {
+				failure = "line-not-found";
+				return null;
+			}
+			lines.splice(idx, 1);
+			return lines.join("\n");
+		});
+		return failure === null ? { ok: true } : { ok: false, reason: failure };
 	}
 
 	// --- генерация 🆔 ---

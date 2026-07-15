@@ -360,12 +360,75 @@ describe("WritebackService: сохранность содержимого", () =
 	});
 });
 
+describe("WritebackService: delete-line", () => {
+	it("удаляет ровно строку с 🆔 (вместе с '\\n'), соседей не трогает", async () => {
+		const { port, feed, svc } = makeSvc();
+		const victim = parseLine(INBOX, "- [ ] копия 🧬 tpl 🆔 tpl-20260715", 1);
+		feed.replaceFile(INBOX, [victim]);
+		port.files.set(INBOX, "- [ ] первая\n- [ ] копия 🧬 tpl 🆔 tpl-20260715\n- [ ] третья\n");
+
+		const res = await svc.dispatch({ type: "delete-line", key: victim.key });
+
+		expect(res).toEqual({ ok: true });
+		expect(port.files.get(INBOX)).toBe("- [ ] первая\n- [ ] третья\n");
+	});
+
+	it("при дублях 🆔 в одном файле удаляется носитель, ближайший к advisory lineStart", async () => {
+		const { port, feed, svc } = makeSvc();
+		const first = parseLine(INBOX, "- [ ] копия 🆔 dup1", 0);
+		const second = parseLine(INBOX, "- [x] копия 🆔 dup1 ✅ 2026-07-15", 2);
+		feed.replaceFile(INBOX, [first, second]);
+		// хранимый ключ второго носителя уникализирован индексом — берём его оттуда
+		const storedFirst = feed.getIndex().fileTasks(INBOX).find((t) => t.lineStart === 0)!;
+		port.files.set(INBOX, "- [ ] копия 🆔 dup1\nтекст\n- [x] копия 🆔 dup1 ✅ 2026-07-15\n");
+
+		const res = await svc.dispatch({ type: "delete-line", key: storedFirst.key });
+
+		expect(res).toEqual({ ok: true });
+		expect(port.files.get(INBOX)).toBe("текст\n- [x] копия 🆔 dup1 ✅ 2026-07-15\n");
+	});
+
+	it("строка уже исчезла → line-not-found, ноль записей", async () => {
+		const { port, feed, svc } = makeSvc();
+		const victim = parseLine(INBOX, "- [ ] копия 🆔 gone1", 0);
+		feed.replaceFile(INBOX, [victim]);
+		port.files.set(INBOX, "просто текст\n");
+
+		const res = await svc.dispatch({ type: "delete-line", key: victim.key });
+
+		expect(res).toEqual({ ok: false, reason: "line-not-found" });
+		expect(port.writes).toHaveLength(0);
+	});
+
+	it("повторный dispatch идемпотентен: вторая попытка {ok:false,'line-not-found'}", async () => {
+		const { port, feed, svc } = makeSvc();
+		const victim = parseLine(INBOX, "- [ ] копия 🆔 twice1", 0);
+		feed.replaceFile(INBOX, [victim]);
+		port.files.set(INBOX, "- [ ] копия 🆔 twice1\n- [ ] сосед\n");
+
+		const first = await svc.dispatch({ type: "delete-line", key: victim.key });
+		const second = await svc.dispatch({ type: "delete-line", key: victim.key });
+
+		expect(first).toEqual({ ok: true });
+		// это штатный исход для дедупа: строки уже нет, файл не тронут повторно
+		expect(second).toEqual({ ok: false, reason: "line-not-found" });
+		expect(port.files.get(INBOX)).toBe("- [ ] сосед\n");
+		expect(port.writes).toHaveLength(1);
+	});
+
+	it("task-not-found при неизвестном key: порт не трогаем", async () => {
+		const { port, svc } = makeSvc();
+		const res = await svc.dispatch({ type: "delete-line", key: "нет такого" });
+		expect(res).toEqual({ ok: false, reason: "task-not-found" });
+		expect(port.calls).toBe(0);
+	});
+});
+
 describe("WritebackService: непокрытые этапы", () => {
-	it("spawn-instances/delete-line/reorder/графовые → not-implemented-stage", async () => {
+	it("spawn-instances/reorder/графовые → not-implemented-stage", async () => {
 		const { port, svc } = makeSvc();
 		const intents: Intent[] = [
 			{ type: "spawn-instances", file: "x.md", lines: ["- [ ] a"] },
-			{ type: "delete-line", key: "k" },
 			{ type: "reorder", boardPath: "b.md", column: "c", orderedKeys: [] },
 			{ type: "connect-edge", projectPath: "p.md", sourceId: "a", targetId: "b" },
 			{ type: "move-node", projectPath: "p.md", positions: {} },

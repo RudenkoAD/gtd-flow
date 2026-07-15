@@ -1,0 +1,28 @@
+import type { Component } from "svelte";
+import type GtdFlowPlugin from "../../main";
+import type { RecurrencePort } from "../../services/RecurrenceService";
+import { GtdView } from "../GtdView";
+import Recurring from "./Recurring.svelte";
+
+/**
+ * Регулярные. Компоненту передаётся узкий контекст вместо всего plugin (ТЗ §0).
+ * Действия идут через RecurrencePort, не через IntentDispatcher: единственный
+ * «пишущий создатель строк» — RecurrenceService (ТЗ §8).
+ */
+export class RecurringView extends GtdView {
+	protected override component(): Component<any> {
+		return Recurring as unknown as Component<any>;
+	}
+
+	protected override props(): Record<string, unknown> {
+		// recurrence появляется на плагине при интеграции этапа 6 в main.ts;
+		// без него вид работает read-only с подсказкой
+		const plugin = this.plugin as GtdFlowPlugin & { recurrence?: RecurrencePort };
+		return {
+			taskStore: plugin.taskStore,
+			settings: plugin.settings,
+			app: plugin.app,
+			recurrence: plugin.recurrence ?? null,
+		};
+	}
+}

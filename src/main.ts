@@ -12,6 +12,7 @@ import { BoardService } from "./services/BoardService";
 import { RecurrenceService } from "./services/RecurrenceService";
 import { ProjectService } from "./services/ProjectService";
 import { CardService } from "./services/CardService";
+import { DayStatusService } from "./services/DayStatusService";
 import { registerCommands } from "./commands";
 import { createTaskStore, type TaskStore } from "./stores/taskStore";
 import { createGtdView } from "./views/createView";
@@ -28,6 +29,7 @@ export default class GtdFlowPlugin extends Plugin {
 	recurrence!: RecurrenceService;
 	projects!: ProjectService;
 	cards!: CardService;
+	dayStatus!: DayStatusService;
 	private indexReadyFlag = false;
 
 	async onload(): Promise<void> {
@@ -98,6 +100,36 @@ export default class GtdFlowPlugin extends Plugin {
 			},
 			findCardFile: (taskId) => metadata.findByFrontmatterValue("gtd-card-of", taskId),
 		});
+		this.dayStatus = new DayStatusService({
+			discoverFile: () => metadata.findByFrontmatterValue("gtd-day-status", true),
+			readFrontmatter: (path) => metadata.frontmatter(path),
+			readFile: (path) => this.vaultAdapter.readFile(path),
+			processFile: (path, transform) => this.vaultAdapter.processFile(path, transform),
+			ensureFile: (path) => this.vaultAdapter.ensureFile(path),
+			processFrontmatter: async (path, fn) => {
+				await this.vaultAdapter.processFrontmatter(path, fn);
+			},
+			defaultFilePath: () => this.settings.dayStatusFile,
+			onVaultChange: (cb) => {
+				// после полного резолва кэша (в т.ч. первого после старта/перезагрузки)
+				// — файл статусов уже обнаружим по frontmatter-флагу
+				this.registerEvent(this.app.metadataCache.on("resolved", () => cb()));
+				// refresh когда меняется сам файл статусов или файл с флагом
+				this.registerEvent(
+					this.app.metadataCache.on("changed", (file, _data, cache) => {
+						if (cache?.frontmatter?.["gtd-day-status"] === true || file.path === this.dayStatus.filePath())
+							cb();
+					}),
+				);
+				this.registerEvent(
+					this.app.vault.on("delete", (file) => {
+						if (file.path === this.dayStatus.filePath()) cb();
+					}),
+				);
+				this.registerEvent(this.app.vault.on("rename", () => cb()));
+			},
+		});
+		this.dayStatus.start();
 		registerCommands(this);
 		this.addSettingTab(new GtdSettingsTab(this.app, this));
 		// Первичная сборка — вне критического пути старта, строго после
@@ -108,10 +140,13 @@ export default class GtdFlowPlugin extends Plugin {
 		// завершиться раньше layout-ready, и события до следующей правки не будет.
 		const layoutReady = new Promise<void>((res) => this.app.workspace.onLayoutReady(res));
 		const cacheResolved = new Promise<void>((res) => metadata.onResolved(res));
-		void Promise.all([layoutReady, cacheResolved]).then(() =>
+		void Promise.all([layoutReady, cacheResolved]).then(() => {
+			// первичный refresh статусов дней — строго после резолва кэша (иначе
+			// findByFrontmatterValue закэширует пустой обратный индекс, см. start())
+			void this.dayStatus.refresh();
 			// .catch: rejection скана не должен пропадать беззвучно
-			this.indexer.start().catch((e: unknown) => console.error("GTD Flow: сбой первичной сборки индекса", e)),
-		);
+			return this.indexer.start().catch((e: unknown) => console.error("GTD Flow: сбой первичной сборки индекса", e));
+		});
 
 		for (const meta of Object.values(VIEW_META)) {
 			this.registerView(meta.type, (leaf) => createGtdView(leaf, this, meta));

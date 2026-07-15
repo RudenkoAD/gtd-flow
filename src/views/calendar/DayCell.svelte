@@ -23,6 +23,9 @@
 		muted = false,
 		compact = false,
 		label = null,
+		statusColor = null,
+		statusName = null,
+		painting = false,
 		onDropTask,
 		onQuickAdd,
 		onCreateEvent = null,
@@ -46,6 +49,12 @@
 		compact?: boolean;
 		/** Заголовок вместо номера дня (агенда: «Ср 2026-07-15»). */
 		label?: string | null;
+		/** Цвет статуса дня (фича покраски) или null — тонирует ячейку и полосу. */
+		statusColor?: string | null;
+		/** Имя статуса дня — подпись на полосе и в подсказке. */
+		statusName?: string | null;
+		/** День входит в активный диапазон покраски (подсветка превью). */
+		painting?: boolean;
 		/** Drop карточки любого вида на этот день (ТЗ §8). */
 		onDropTask: (taskKey: string, date: IsoDate) => Promise<void>;
 		/** Быстрый ввод задачи с датой этого дня. */
@@ -75,7 +84,7 @@
 	function onCellClick(e: MouseEvent): void {
 		if (
 			e.target instanceof Element &&
-			e.target.closest(".gtd-cal-chip, button, input, a, select, textarea")
+			e.target.closest(".gtd-cal-chip, .gtd-cal-statusband, button, input, a, select, textarea")
 		)
 			return;
 		adding = true;
@@ -87,7 +96,7 @@
 		if (onCreateEvent === null) return;
 		if (
 			e.target instanceof Element &&
-			e.target.closest(".gtd-cal-chip, button, input, a, select, textarea")
+			e.target.closest(".gtd-cal-chip, .gtd-cal-statusband, button, input, a, select, textarea")
 		)
 			return;
 		e.preventDefault();
@@ -124,10 +133,22 @@
 	class:is-muted={muted}
 	class:is-today={date === today}
 	class:is-compact={compact}
+	class:has-status={statusColor !== null}
+	style={statusColor !== null ? `--gtd-ds-color: ${statusColor}` : undefined}
 	bind:this={cellEl}
 	onclick={onCellClick}
 	oncontextmenu={onCellContextMenu}
 >
+	<!-- полоса-статус: цель клика/протяжки покраски (data-gtd-ds-date), подпись статуса -->
+	<div
+		class="gtd-cal-statusband"
+		class:is-set={statusColor !== null}
+		class:is-painting={painting}
+		data-gtd-ds-date={date}
+		title={statusName !== null ? `Статус дня: ${statusName}` : "Покрасить день"}
+	>
+		<span class="gtd-cal-statusband-label">{statusName ?? ""}</span>
+	</div>
 	<div class="gtd-cal-daynum" class:is-today={date === today}>
 		{label ?? Number(date.slice(8, 10))}
 	</div>
@@ -180,6 +201,44 @@
 	}
 	.gtd-cal-cell.is-today {
 		background: var(--background-modifier-hover);
+	}
+	/* статус дня тонирует ячейку и выигрывает у muted/today по фону (правило ниже) */
+	.gtd-cal-cell.has-status {
+		background: color-mix(in srgb, var(--gtd-ds-color) 16%, transparent);
+	}
+	.gtd-cal-statusband {
+		flex: none;
+		height: 15px;
+		margin: -2px -4px 2px; /* растянуть на всю ширину ячейки поверх паддинга */
+		display: flex;
+		align-items: center;
+		padding: 0 5px;
+		border-radius: 0 0 var(--radius-s, 4px) var(--radius-s, 4px);
+		cursor: pointer;
+		border-bottom: 1px solid transparent;
+	}
+	.gtd-cal-statusband:hover {
+		border-bottom-color: var(--background-modifier-border);
+		background: var(--background-modifier-hover);
+	}
+	.gtd-cal-statusband.is-set {
+		background: color-mix(in srgb, var(--gtd-ds-color) 60%, var(--background-primary));
+		border-bottom-color: var(--gtd-ds-color);
+	}
+	.gtd-cal-statusband.is-painting {
+		outline: 2px solid var(--interactive-accent);
+		outline-offset: -2px;
+	}
+	.gtd-cal-statusband-label {
+		font-size: var(--font-ui-smaller, 0.75em);
+		line-height: 1;
+		color: var(--text-muted);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.gtd-cal-statusband.is-set .gtd-cal-statusband-label {
+		color: var(--text-normal);
 	}
 	.gtd-cal-daynum {
 		flex: none;

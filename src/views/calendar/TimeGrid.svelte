@@ -7,6 +7,7 @@
 	import type { DndPort, OccurrenceDrag } from "../dnd/types";
 	import DayCell from "./DayCell.svelte";
 	import TimeGridCol from "./TimeGridCol.svelte";
+	import type { PaintController } from "./dayStatusPaint";
 	import {
 		agendaLabel,
 		placedTime,
@@ -28,6 +29,9 @@
 		settings,
 		vault = null,
 		menuPorts = null,
+		dayStatusColor = () => null,
+		dayStatusPainting = () => false,
+		paintHandlers = null,
 		onDropTask,
 		onQuickAdd,
 		onCreateEvent = null,
@@ -46,6 +50,12 @@
 		/** Порт файла событий — правка серии из меню вхождения. */
 		vault?: CalendarWritePort | null;
 		menuPorts?: TaskMenuPorts | null;
+		/** Статус (имя+цвет) даты для покраски шапок/колонок или null. */
+		dayStatusColor?: (date: IsoDate) => { name: string; color: string } | null;
+		/** Дата в активном превью покраски (подсветка). */
+		dayStatusPainting?: (date: IsoDate) => boolean;
+		/** pointer-жест покраски по ряду шапок дней; null — статусы выключены. */
+		paintHandlers?: PaintController | null;
 		/** time: строка — слот сетки, null — полоса «Весь день» (снять время). */
 		onDropTask: (taskKey: string, date: IsoDate, time: string | null) => Promise<void>;
 		onQuickAdd: (
@@ -123,7 +133,14 @@
 <div class="gtd-tg" style="--gtd-tg-hour: {HOUR_PX}px; --gtd-tg-cols: {days.length}">
 	<!-- Заголовок-дата + полоса «Весь день»: реюз DayCell — те же чипы,
 	     drop без времени (time: null) и quick-add без времени. -->
-	<div class="gtd-tg-top">
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<div
+		class="gtd-tg-top"
+		onpointerdown={paintHandlers?.pointerdown}
+		onpointermove={paintHandlers?.pointermove}
+		onpointerup={paintHandlers?.pointerup}
+		onpointercancel={paintHandlers?.pointercancel}
+	>
 		<div class="gtd-tg-gutter" aria-hidden="true"></div>
 		{#each dayLayouts as d (d.date)}
 			<DayCell
@@ -138,6 +155,9 @@
 				{settings}
 				{vault}
 				{menuPorts}
+				statusColor={dayStatusColor(d.date)?.color ?? null}
+				statusName={dayStatusColor(d.date)?.name ?? null}
+				painting={dayStatusPainting(d.date)}
 				onDropTask={(taskKey, date) => onDropTask(taskKey, date, null)}
 				onQuickAdd={(date, text) => onQuickAdd(date, text, null)}
 				onCreateEvent={onCreateEvent === null
@@ -159,6 +179,7 @@
 					{today}
 					blocks={d.blocks}
 					eventBlocks={eventDayLayouts[i]?.blocks ?? []}
+					statusColor={dayStatusColor(d.date)?.color ?? null}
 					{dnd}
 					{dispatcher}
 					{app}

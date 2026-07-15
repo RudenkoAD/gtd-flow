@@ -45,6 +45,9 @@
 	import { createEventSeries, transferEventOccurrence } from "./eventSeries";
 	import { EventSeriesModal } from "./EventSeriesModal";
 	import { dropTimeEnd, preservedTimeEnd } from "./timeGrid";
+	import { createPaintController, type PaintPreview } from "./dayStatusPaint";
+	import { EMPTY_DAY_STATUS_MODEL, statusForDate, type DayStatusModel } from "../../core/daystatus/dayStatus";
+	import type { DayStatusPort } from "../../services/DayStatusService";
 
 	let {
 		taskStore,
@@ -54,6 +57,7 @@
 		dnd,
 		vault,
 		menuPorts = null,
+		dayStatus = null,
 		persisted,
 		persist,
 	}: {
@@ -67,6 +71,8 @@
 		menuPorts?: TaskMenuPorts | null;
 		/** Быстрый ввод пишет в inboxSources[0] (структурный порт VaultAdapter). */
 		vault: CalendarWritePort;
+		/** Порт статусов дней (покраска календаря) или null. */
+		dayStatus?: DayStatusPort | null;
 		/** Состояние из workspace-раскладки; приходит ПОСЛЕ монтирования. */
 		persisted: Readable<CalendarPersistedState>;
 		persist: (s: CalendarPersistedState) => void;
@@ -141,6 +147,22 @@
 		}),
 	);
 	const eventsByDay = $derived(expandEventOccurrences(eventSeries, range.from, range.to));
+
+	// --- статусы дней (покраска календаря) ---
+	let dsModel = $state<DayStatusModel>(EMPTY_DAY_STATUS_MODEL);
+	$effect(() => dayStatus?.model.subscribe((m) => (dsModel = m)));
+	/** Статус (имя+цвет) даты или null — читает реактивную модель. */
+	const dsFor = (date: IsoDate): { name: string; color: string } | null =>
+		dayStatus === null ? null : statusForDate(dsModel, date);
+	/** Активное превью диапазона покраски (подсветка во время протяжки). */
+	let dsPreview = $state<PaintPreview | null>(null);
+	const dsInPreview = (date: IsoDate): boolean =>
+		dsPreview !== null && date >= dsPreview.from && date <= dsPreview.to;
+	const paint = createPaintController({
+		app,
+		port: () => dayStatus,
+		setPreview: (p) => (dsPreview = p),
+	});
 
 	const byDay = $derived(placeEvents(rangeTasks, settings.calendarPlacement));
 	const overdue = $derived(openTasks(overdueRaw));
@@ -396,6 +418,8 @@
 					{settings}
 					{vault}
 					{menuPorts}
+					statusColor={dsFor(date)?.color ?? null}
+					statusName={dsFor(date)?.name ?? null}
 					onDropTask={dropTask}
 					onQuickAdd={quickAdd}
 					onCreateEvent={createEvent}
@@ -414,6 +438,9 @@
 			{settings}
 			{vault}
 			{menuPorts}
+			dayStatusColor={dsFor}
+			dayStatusPainting={dsInPreview}
+			paintHandlers={dayStatus === null ? null : paint}
 			onDropTask={dropTask}
 			onQuickAdd={quickAdd}
 			onCreateEvent={createEvent}
@@ -425,7 +452,14 @@
 				<div class="gtd-cal-weekday">{name}</div>
 			{/each}
 		</div>
-		<div class="gtd-cal-grid">
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div
+			class="gtd-cal-grid"
+			onpointerdown={paint.pointerdown}
+			onpointermove={paint.pointermove}
+			onpointerup={paint.pointerup}
+			onpointercancel={paint.pointercancel}
+		>
 			{#each grid.weeks as week (week[0])}
 				{#each week as date (date)}
 					<DayCell
@@ -441,6 +475,9 @@
 						{settings}
 						{vault}
 						{menuPorts}
+						statusColor={dsFor(date)?.color ?? null}
+						statusName={dsFor(date)?.name ?? null}
+						painting={dsInPreview(date)}
 						onDropTask={dropTask}
 						onQuickAdd={quickAdd}
 						onCreateEvent={createEvent}

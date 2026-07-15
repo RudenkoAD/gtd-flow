@@ -41,6 +41,7 @@ export class CalendarView extends GtdView {
 			menuPorts: taskMenuPortsFromPlugin(plugin),
 			// структурный порт CalendarWritePort — совместим с VaultAdapter
 			vault: plugin.vaultAdapter,
+			dayStatus: plugin.dayStatus,
 			persisted: { subscribe: this.persisted.subscribe },
 			persist: (s: CalendarPersistedState) => {
 				this.lastState = s;

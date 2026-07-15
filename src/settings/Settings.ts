@@ -43,6 +43,9 @@ export interface GtdFlowSettings {
 	eventsFile: string;
 	/** Файл-приёмник «Архивировать» (пункт меню доски для готовых/отменённых). */
 	archiveFile: string;
+	/** Файл статусов дней для покраски календаря (frontmatter gtd-day-status: true);
+	 *  используется при первом создании, обнаружение — по флагу. */
+	dayStatusFile: string;
 }
 
 export const DEFAULT_SETTINGS: GtdFlowSettings = {
@@ -71,4 +74,5 @@ export const DEFAULT_SETTINGS: GtdFlowSettings = {
 	cardLinkInLine: true,
 	eventsFile: "GTD/Events.md",
 	archiveFile: "GTD/Archive.md",
+	dayStatusFile: "GTD/DayStatus.md",
 };

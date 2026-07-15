@@ -22,6 +22,7 @@
 		today,
 		blocks,
 		eventBlocks = [],
+		statusColor = null,
 		dnd,
 		dispatcher,
 		app,
@@ -39,6 +40,8 @@
 		blocks: { block: TimedBlock; ev: PlacedEvent }[];
 		/** Виртуальные блоки серий-событий со временем (§события). */
 		eventBlocks?: { block: TimedBlock; occ: EventOccurrence }[];
+		/** Цвет статуса дня (покраска колонки) или null. */
+		statusColor?: string | null;
 		dnd: DndPort | null;
 		dispatcher: IntentDispatcher;
 		app: App;
@@ -216,6 +219,8 @@
 <div
 	class="gtd-tg-col"
 	class:is-today={date === today}
+	class:has-status={statusColor !== null}
+	style={statusColor !== null ? `--gtd-ds-color: ${statusColor}` : undefined}
 	bind:this={colEl}
 	onpointerdown={onColPointerDown}
 	onpointermove={onColPointerMove}
@@ -297,6 +302,10 @@
 	}
 	.gtd-tg-col.is-today {
 		background-color: var(--background-modifier-hover);
+	}
+	/* лёгкая тонировка колонки по статусу дня (правило ниже is-today — выигрывает фон) */
+	.gtd-tg-col.has-status {
+		background-color: color-mix(in srgb, var(--gtd-ds-color) 10%, transparent);
 	}
 	.gtd-tg-quickadd {
 		position: absolute;

@@ -1,0 +1,16 @@
+/* GTD Flow — plugin styles. View-specific styles are colocated in Svelte components
+   (compiled with css: "injected"); this file holds shared tokens and overrides. */
+
+.gtd-flow-view {
+	height: 100%;
+	display: flex;
+	flex-direction: column;
+}
+
+.gtd-flow-placeholder {
+	display: flex;
+	height: 100%;
+	align-items: center;
+	justify-content: center;
+	color: var(--text-muted);
+}

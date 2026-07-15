@@ -143,6 +143,98 @@ describe("WritebackService: локализация строки", () => {
 	});
 });
 
+describe("WritebackService: протухший индекс при двойниках (content-key)", () => {
+	/** Индекс знает ДВЕ id-less строки-двойника; в файле одна уже получила 🆔. */
+	function staleTwinSetup(over: HarnessOptions = {}) {
+		const h = makeSvc(over);
+		const t0 = parseLine(INBOX, "- [ ] позвонить маме", 0);
+		const t1 = parseLine(INBOX, "- [ ] позвонить маме", 1);
+		h.feed.replaceFile(INBOX, [t0, t1]);
+		const stored0 = h.feed.getIndex().fileTasks(INBOX).find((t) => t.lineStart === 0)!;
+		return { ...h, stored0 };
+	}
+
+	it("ленивый 🆔 у цели в окне дебаунса: правка НЕ уходит в строку-двойник (stale-index)", async () => {
+		const { port, svc, stored0 } = staleTwinSetup({ autoInjectId: false });
+		// строка 0 уже несёт 🆔 (структурная правка другого диспетчера до реиндекса):
+		// id-less кандидат в файле остался один — и это ЧУЖАЯ задача (строка 1)
+		port.files.set(INBOX, "- [ ] позвонить маме 🆔 aa1 🛫 2026-07-20\n- [ ] позвонить маме\n");
+
+		const res = await svc.dispatch({
+			type: "set-status",
+			key: stored0.key,
+			statusChar: "x",
+			date: "2026-07-15",
+		});
+
+		expect(res).toEqual({ ok: false, reason: "stale-index" });
+		expect(port.writes).toHaveLength(0); // двойник не отмечен «сделанным»
+	});
+
+	it("память вписанных 🆔: следующая правка тем же ключом адресуется по id, а не по content-key", async () => {
+		const { port, svc, stored0 } = staleTwinSetup({ genId: () => "aa1" });
+		port.files.set(INBOX, "- [ ] позвонить маме\n- [ ] позвонить маме\n");
+
+		const defer = await svc.dispatch({ type: "defer", key: stored0.key, until: "2026-07-20" });
+		expect(defer).toEqual({ ok: true });
+		// индекс НЕ пересобран (дебаунс) — чек-офф тем же ключом идёт по памяти 🆔
+		const res = await svc.dispatch({
+			type: "set-status",
+			key: stored0.key,
+			statusChar: "x",
+			date: "2026-07-15",
+		});
+
+		expect(res).toEqual({ ok: true });
+		expect(port.files.get(INBOX)).toBe(
+			"- [x] позвонить маме 🆔 aa1 🛫 2026-07-20 ✅ 2026-07-15\n- [ ] позвонить маме\n",
+		);
+	});
+
+	it("set-id запоминается: карточка привязывается к СВОЕЙ строке, а не к двойнику", async () => {
+		const { port, svc, stored0 } = staleTwinSetup();
+		port.files.set(INBOX, "- [ ] позвонить маме\n- [ ] позвонить маме\n");
+
+		const setId = await svc.dispatch({ type: "set-id", key: stored0.key, taskId: "card1" });
+		expect(setId).toEqual({ ok: true });
+		const res = await svc.dispatch({
+			type: "set-date",
+			key: stored0.key,
+			field: "due",
+			date: "2026-08-01",
+		});
+
+		expect(res).toEqual({ ok: true });
+		expect(port.files.get(INBOX)).toBe(
+			"- [ ] позвонить маме 🆔 card1 📅 2026-08-01\n- [ ] позвонить маме\n",
+		);
+	});
+
+	it("move-line при протухшем индексе (двойник уже с 🆔) — fail-closed без записей", async () => {
+		const { port, svc, stored0 } = staleTwinSetup({ genId: () => "mv1" });
+		port.files.set(INBOX, "- [ ] позвонить маме 🆔 zz9\n- [ ] позвонить маме\n");
+		port.files.set("GTD/Project.md", "");
+
+		const res = await svc.dispatch({ type: "move-line", key: stored0.key, toFile: "GTD/Project.md" });
+
+		expect(res).toEqual({ ok: false, reason: "stale-index" });
+		expect(port.writes).toHaveLength(0); // чужой двойник не уехал в другой файл
+	});
+
+	it("move-line по памяти 🆔: переносится именно строка с вписанным id", async () => {
+		const { port, svc, stored0 } = staleTwinSetup({ genId: () => "aa1" });
+		port.files.set(INBOX, "- [ ] позвонить маме\n- [ ] позвонить маме\n");
+		port.files.set("GTD/Project.md", "");
+
+		await svc.dispatch({ type: "defer", key: stored0.key, until: "2026-07-20" }); // впишет 🆔 aa1
+		const res = await svc.dispatch({ type: "move-line", key: stored0.key, toFile: "GTD/Project.md" });
+
+		expect(res).toEqual({ ok: true });
+		expect(port.files.get(INBOX)).toBe("- [ ] позвонить маме\n"); // двойник остался
+		expect(port.files.get("GTD/Project.md")).toBe("- [ ] позвонить маме 🆔 aa1 🛫 2026-07-20\n");
+	});
+});
+
 describe("WritebackService: ленивый 🆔", () => {
 	it("структурная правка вставляет 🆔 и правку одной записью", async () => {
 		const { port, feed, svc } = makeSvc({ genId: () => "aa1" });
@@ -386,6 +478,45 @@ describe("WritebackService: delete-line", () => {
 
 		expect(res).toEqual({ ok: true });
 		expect(port.files.get(INBOX)).toBe("текст\n- [x] копия 🆔 dup1 ✅ 2026-07-15\n");
+	});
+
+	it("сдвиг строк после первого удаления: протухшая подсказка НЕ роняет под нож изменённого кипера", async () => {
+		const { port, feed, svc } = makeSvc();
+		// три носителя одного 🆔: две пристин-копии и изменённый пользователем кипер
+		const p0 = parseLine(INBOX, "- [ ] копия 🆔 dup2", 0);
+		const p1 = parseLine(INBOX, "- [ ] копия 🆔 dup2", 1);
+		const keeper = parseLine(INBOX, "- [x] копия 🆔 dup2 ✅ 2026-07-15", 2);
+		feed.replaceFile(INBOX, [p0, p1, keeper]);
+		const stored = feed.getIndex().fileTasks(INBOX);
+		const k0 = stored.find((t) => t.lineStart === 0)!;
+		const k1 = stored.find((t) => t.lineStart === 1)!;
+		port.files.set(
+			INBOX,
+			"- [ ] копия 🆔 dup2\n- [ ] копия 🆔 dup2\n- [x] копия 🆔 dup2 ✅ 2026-07-15\n",
+		);
+
+		const first = await svc.dispatch({ type: "delete-line", key: k0.key });
+		// индекс НЕ пересобран: у второй жертвы подсказка lineStart=1 теперь
+		// указывает на кипера, съехавшего со строки 2 на строку 1
+		const second = await svc.dispatch({ type: "delete-line", key: k1.key });
+
+		expect(first).toEqual({ ok: true });
+		expect(second).toEqual({ ok: true });
+		// работа пользователя цела — удалены обе пристин-копии
+		expect(port.files.get(INBOX)).toBe("- [x] копия 🆔 dup2 ✅ 2026-07-15\n");
+	});
+
+	it("текст строки разошёлся со знанием индекса → line-not-found (правку пользователя не удаляем)", async () => {
+		const { port, feed, svc } = makeSvc();
+		const victim = parseLine(INBOX, "- [ ] копия 🆔 edited1", 0);
+		feed.replaceFile(INBOX, [victim]);
+		// пользователь успел дописать текст между сборкой индекса и записью
+		port.files.set(INBOX, "- [ ] копия 🆔 edited1 и созвон\n");
+
+		const res = await svc.dispatch({ type: "delete-line", key: victim.key });
+
+		expect(res).toEqual({ ok: false, reason: "line-not-found" });
+		expect(port.writes).toHaveLength(0);
 	});
 
 	it("строка уже исчезла → line-not-found, ноль записей", async () => {

@@ -209,9 +209,11 @@
 		background: var(--background-primary);
 	}
 	.gtd-kanban-card.is-draggable {
-		/* без touch-action: none тач отдаст жест нативному скроллу до long-press;
-		   на телефоне drag выключен — скролл и длинный тап остаются нативными */
-		touch-action: none;
+		/* pan-y, не none: вертикальный свайп — нативному скроллу колонки (иначе
+		   заполненная колонка непрокручиваема тачем); long-press без движения
+		   активирует drag, дальше pan гасит touchmove-guard DndService;
+		   на телефоне drag выключен — скролл и длинный тап полностью нативные */
+		touch-action: pan-y;
 		cursor: grab;
 	}
 	.gtd-kanban-card.is-draggable:active {

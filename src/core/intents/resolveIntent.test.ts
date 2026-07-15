@@ -129,6 +129,26 @@ describe("resolveLineTransform — однострочные intents", () => {
 		);
 		expect((out as string).startsWith("- [/]")).toBe(true);
 	});
+
+	it("move-column: drag из Done снимает устаревший ✅ (те же правила, что set-status)", () => {
+		// регресс: раньше строка становилась '- [ ] … ✅ 2026-07-10' —
+		// незакрытая задача с датой выполнения (порча Tasks-формата)
+		const out = resolveLineTransform(
+			{ type: "move-column", key: "k", fromTag: null, toTag: null, toStatusChar: " ", date: "2026-07-15" },
+			"- [x] Починить баг 🆔 t1 ✅ 2026-07-10",
+		);
+		expect((out as string).startsWith("- [ ]")).toBe(true);
+		expect(out).not.toContain("✅");
+	});
+
+	it("move-column: drag в Done с датой штампует ✅ (паритет с чекбоксом)", () => {
+		const out = resolveLineTransform(
+			{ type: "move-column", key: "k", fromTag: null, toTag: null, toStatusChar: "x", date: "2026-07-15" },
+			"- [ ] Починить баг 🆔 t1",
+		);
+		expect((out as string).startsWith("- [x]")).toBe(true);
+		expect(out).toContain("✅ 2026-07-15");
+	});
 });
 
 describe("resolveLineTransform — многострочные/многофайловые intents ⇒ null", () => {

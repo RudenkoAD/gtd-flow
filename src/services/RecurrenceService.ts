@@ -29,6 +29,7 @@ import {
 } from "../core/recurrence/spawnPlan";
 import { classifyDuplicates, type DuplicateCarrier } from "../core/recurrence/dedup";
 import {
+	locateExactTaskLine,
 	locateTaskLine,
 	type IntentDispatcher,
 	type WritePort,
@@ -327,13 +328,52 @@ export class RecurrenceService implements RecurrencePort {
 				report.conflicts.push(...res.conflict.map((t) => t.key));
 				continue;
 			}
-			for (const t of res.remove) {
-				const r = await this.deps.dispatcher.dispatch({ type: "delete-line", key: t.key });
-				if (r.ok) report.deduped++;
-				// 'line-not-found' — штатный исход: второе устройство уже удалило
-				else if (r.reason !== "line-not-found") {
-					report.errors.push({ templateId: null, message: `dedup delete ${t.key}: ${r.reason}` });
-				}
+			await this.removeCarriers(res.remove, report);
+		}
+	}
+
+	/**
+	 * Батч-удаление проигравших носителей группы: ВСЕ жертвы одного файла —
+	 * одним processFile, чтобы ни одно удаление не наблюдало сдвигов строк от
+	 * предыдущего (последовательные delete-line с протухшими подсказками
+	 * lineStart роняли под нож кипера). Пояс и подтяжки: каждая жертва
+	 * дополнительно локализуется locateExactTaskLine — только строка,
+	 * текстуально равная её rawLine; изменённого пользователем кипера фильтр
+	 * не отдаст, а идентичные пристин-копии взаимозаменяемы, поэтому
+	 * «ближайшая к подсказке» из ещё не занятых (claimed) безопасна.
+	 */
+	private async removeCarriers(remove: readonly Task[], report: SpawnReport): Promise<void> {
+		const byFile = new Map<string, Task[]>();
+		for (const t of remove) {
+			const list = byFile.get(t.filePath);
+			if (list) list.push(t);
+			else byFile.set(t.filePath, [t]);
+		}
+		for (const [path, victims] of byFile) {
+			try {
+				let removed = 0;
+				let transformRan = false;
+				await this.deps.write.processFile(path, (content) => {
+					transformRan = true;
+					removed = 0; // transform может быть вызван повторно — считаем заново
+					const lines = content.split("\n");
+					const claimed = new Set<number>();
+					for (const v of victims) {
+						const idx = locateExactTaskLine(lines, path, v, claimed);
+						// -1 — штатно: второе устройство уже удалило эту копию
+						if (idx !== -1) claimed.add(idx);
+					}
+					if (claimed.size === 0) return null;
+					removed = claimed.size;
+					return lines.filter((_, i) => !claimed.has(i)).join("\n");
+				});
+				if (transformRan) report.deduped += removed;
+				else report.errors.push({ templateId: null, message: `dedup delete ${path}: file-not-found` });
+			} catch (err) {
+				report.errors.push({
+					templateId: null,
+					message: `dedup delete ${path}: ${errorMessage(err)}`,
+				});
 			}
 		}
 	}

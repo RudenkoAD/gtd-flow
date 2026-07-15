@@ -207,8 +207,11 @@
 		background: var(--background-secondary);
 	}
 	.gtd-task-card.is-draggable {
-		/* без touch-action: none тач отдаст жест нативному скроллу до long-press */
-		touch-action: none;
+		/* pan-y, не none: вертикальный свайп — нативному скроллу (иначе плотный
+		   список карточек непрокручиваем тачем на планшете); неподвижный палец
+		   доживает до long-press drag, а активный drag от pan защищает
+		   touchmove-guard DndService */
+		touch-action: pan-y;
 		cursor: grab;
 	}
 	.gtd-task-card.is-draggable:active {

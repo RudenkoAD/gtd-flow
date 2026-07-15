@@ -134,6 +134,28 @@ describe("первичное наполнение", () => {
 		expect(indexer.getEpoch()).toBe(epoch);
 	});
 
+	it("сбой скана не отключает индекс: onReady срабатывает на собранной части", async () => {
+		// регрессия: cachedRead падает (файл удалён sync-клиентом посреди скана) —
+		// раньше start() отвергался, onReady не звался, гейт регулярных не открывался
+		async function* failing(): AsyncIterable<FileSnapshot> {
+			yield mkSnap("ok.md", "- [ ] выжил");
+			throw new Error("ENOENT: файл исчез между getMarkdownFiles и чтением");
+		}
+		let ready = 0;
+		let notified = 0;
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+		const { indexer } = makeIndexer({ initialScan: () => failing(), onReady: () => ready++ });
+		indexer.onChange(() => notified++);
+
+		await expect(indexer.start()).resolves.toBeUndefined();
+
+		expect(ready).toBe(1);
+		expect(notified).toBeGreaterThan(0);
+		expect(descriptions(indexer)).toEqual(["выжил"]);
+		expect(errSpy).toHaveBeenCalled();
+		errSpy.mockRestore();
+	});
+
 	it("dispose во время скана прерывает наполнение без onReady", async () => {
 		let ready = 0;
 		const h = makeIndexer({

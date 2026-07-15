@@ -147,7 +147,12 @@ export class BoardService {
 		if (fromColId !== toColId) {
 			const intent: MoveColumn = { type: "move-column", key: taskKey, fromTag: null, toTag: null };
 			if (toSpec.kind === "tag") intent.toTag = "#" + toSpec.tag;
-			else intent.toStatusChar = STATUS_CHAR[toSpec.status];
+			else {
+				intent.toStatusChar = STATUS_CHAR[toSpec.status];
+				// drag в статус-колонку = смена статуса: сопутствующие даты ✅/❌
+				// обязаны вести себя как у set-status (штамп при done, снятие при reopen)
+				intent.date = this.deps.feed.today();
+			}
 			const fromCol = fromColId !== null ? def.columns.find((c) => c.id === fromColId) : undefined;
 			const fromSpec = fromCol !== undefined ? parseMatchSpec(fromCol.match) : null;
 			if (fromSpec !== null && fromSpec.kind === "tag") intent.fromTag = "#" + fromSpec.tag;

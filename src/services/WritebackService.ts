@@ -116,8 +116,69 @@ export function locateTaskLine(lines: readonly string[], filePath: string, targe
 	return best;
 }
 
+/**
+ * Локализация для УДАЛЕНИЯ строки: поверх критериев locateTaskLine кандидат
+ * обязан текстуально совпадать с rawLine задачи (trimEnd: хвостовые пробелы
+ * и '\r' CRLF-файлов не в счёт). Удаляем только строки, чей точный текст
+ * известен (дедуп — доказуемо машинные копии): идентичные пристин-копии
+ * взаимозаменяемы, поэтому «ближайшая к подсказке» безопасна, а изменённую
+ * пользователем строку (кипера дедупа) текстовый фильтр не отдаст даже при
+ * протухшей после сдвига строк подсказке lineStart.
+ * exclude — индексы, уже занятые другими жертвами батч-удаления дедупа.
+ */
+export function locateExactTaskLine(
+	lines: readonly string[],
+	filePath: string,
+	target: LineTarget & { rawLine: string },
+	exclude?: ReadonlySet<number>,
+): number {
+	const want = target.rawLine.trimEnd();
+	let best = -1;
+	let bestDist = Infinity;
+	for (let i = 0; i < lines.length; i++) {
+		if (exclude !== undefined && exclude.has(i)) continue;
+		if (lines[i]!.trimEnd() !== want) continue;
+		const t = parseAt(lines, i, filePath);
+		if (t === null) continue;
+		const hit =
+			target.taskId !== null
+				? t.taskId === target.taskId
+				: t.taskId === null && t.description === target.description;
+		if (!hit) continue;
+		const dist = Math.abs(i - target.lineStart);
+		if (dist < bestDist) {
+			best = i;
+			bestDist = dist;
+		}
+	}
+	return best;
+}
+
+/** Сколько id-less строк с этим описанием в содержимом файла (для сверки
+ *  content-key локализации со знанием индекса — fail-closed при расхождении). */
+function countIdlessMatches(lines: readonly string[], filePath: string, description: string): number {
+	let n = 0;
+	for (let i = 0; i < lines.length; i++) {
+		const t = parseAt(lines, i, filePath);
+		if (t !== null && t.taskId === null && t.description === description) n++;
+	}
+	return n;
+}
+
 export class WritebackService implements IntentDispatcher {
 	private readonly genId: () => string;
+
+	/**
+	 * Короткоживущая память «key → только что вписанный нами 🆔»: между
+	 * структурной правкой (ленивая вставка id) и догоняющим реиндексом
+	 * (дебаунс ~150мс) индекс отдаёт задачу ещё БЕЗ taskId, а строка в файле
+	 * id уже несёт — content-key локализация её принципиально не видит
+	 * (строка с 🆔 принадлежит id-ключу). Запомненный id даёт точную адресацию
+	 * следующих правок вместо fail-closed отказа 'stale-index'. Запись
+	 * чистится, как только индекс догнал (у задачи появился taskId) или ключ
+	 * исчез из индекса (реиндекс переименовал его в "id:<🆔>").
+	 */
+	private readonly injectedIds = new Map<string, string>();
 
 	constructor(private readonly deps: WritebackDeps) {
 		this.genId = deps.genId ?? defaultGenId;
@@ -150,14 +211,39 @@ export class WritebackService implements IntentDispatcher {
 
 	private async dispatchKeyedLine(intent: Intent & { key: string }): Promise<IntentResult> {
 		const task = this.deps.feed.getIndex().get(intent.key);
-		if (task === undefined) return { ok: false, reason: "task-not-found" };
+		if (task === undefined) {
+			this.injectedIds.delete(intent.key); // реиндекс переименовал ключ — память не нужна
+			return { ok: false, reason: "task-not-found" };
+		}
+		if (task.taskId !== null) this.injectedIds.delete(intent.key); // индекс догнал
+
+		// Строка уже несёт 🆔, вписанный нами в окне дебаунса, — адресуемся по нему
+		// вместо content-key (см. injectedIds).
+		const remembered = task.taskId === null ? (this.injectedIds.get(intent.key) ?? null) : null;
 
 		let injectId: string | null = null;
-		if (task.taskId === null && this.deps.autoInjectId && STRUCTURAL_TYPES.has(intent.type)) {
+		if (
+			task.taskId === null &&
+			remembered === null &&
+			this.deps.autoInjectId &&
+			STRUCTURAL_TYPES.has(intent.type)
+		) {
 			injectId = this.freshId();
 			if (injectId === null) return { ok: false, reason: "id-collision" };
 		}
-		return this.applyToLine(task.filePath, task, intent, injectId);
+
+		const target: LineTarget =
+			remembered !== null
+				? { taskId: remembered, description: task.description, lineStart: task.lineStart }
+				: task;
+		const res = await this.applyToLine(task.filePath, target, intent, injectId);
+		if (res.ok) {
+			// запомнить id, который строка теперь несёт, — для правок до реиндекса
+			if (injectId !== null) this.injectedIds.set(intent.key, injectId);
+			else if (intent.type === "set-id" && task.taskId === null)
+				this.injectedIds.set(intent.key, intent.taskId);
+		}
+		return res;
 	}
 
 	private async dispatchCursor(templateId: string, intent: Intent): Promise<IntentResult> {
@@ -179,6 +265,13 @@ export class WritebackService implements IntentDispatcher {
 		intent: Intent,
 		injectId: string | null,
 	): Promise<IntentResult> {
+		// Fail-closed для content-key при протухшем индексе (ленивый 🆔 в окне
+		// дебаунса ~150мс): число id-less строк с этим описанием в файле обязано
+		// совпадать со знанием индекса НА МОМЕНТ dispatch — расхождение значит,
+		// что «ближайший кандидат» может оказаться чужой задачей-двойником.
+		// Тогда не пишем вовсе (ТЗ §3); повтор после реиндекса адресуется по 🆔.
+		const expectedIdless =
+			target.taskId === null ? this.countIdlessInIndex(path, target.description) : -1;
 		let failure: string | null = "file-not-found"; // transform не вызван ⇒ файла нет
 		await this.deps.write.processFile(path, (content) => {
 			failure = null;
@@ -186,6 +279,13 @@ export class WritebackService implements IntentDispatcher {
 			const idx = locateTaskLine(lines, path, target);
 			if (idx === -1) {
 				failure = "line-not-found";
+				return null;
+			}
+			if (
+				target.taskId === null &&
+				countIdlessMatches(lines, path, target.description) !== expectedIdless
+			) {
+				failure = "stale-index";
 				return null;
 			}
 			let line = lines[idx]!;
@@ -220,27 +320,50 @@ export class WritebackService implements IntentDispatcher {
 	 */
 	private async moveLine(intent: { key: string; toFile: string }): Promise<IntentResult> {
 		const task = this.deps.feed.getIndex().get(intent.key);
-		if (task === undefined) return { ok: false, reason: "task-not-found" };
+		if (task === undefined) {
+			this.injectedIds.delete(intent.key);
+			return { ok: false, reason: "task-not-found" };
+		}
+		if (task.taskId !== null) this.injectedIds.delete(intent.key);
 
-		const needInject = task.taskId === null;
+		// 🆔, уже вписанный нами в окне дебаунса, — переносим по нему (см.
+		// injectedIds); это же даёт сходимость повтора после сбоя шагов 2/3.
+		const knownId = task.taskId ?? this.injectedIds.get(intent.key) ?? null;
+		const needInject = knownId === null;
 		let movedId: string;
-		if (needInject) {
+		if (knownId === null) {
 			const fresh = this.freshId();
 			if (fresh === null) return { ok: false, reason: "id-collision" };
 			movedId = fresh;
 		} else {
-			movedId = task.taskId!;
+			movedId = knownId;
 		}
 
 		// Шаг 1: локализация в источнике; при необходимости — запись 🆔.
+		// Content-key сверяется со знанием индекса (см. applyToLine): протухший
+		// индекс не должен утащить в перенос чужую строку-двойника.
+		const locTarget: LineTarget = {
+			taskId: knownId,
+			description: task.description,
+			lineStart: task.lineStart,
+		};
+		const expectedIdless =
+			knownId === null ? this.countIdlessInIndex(task.filePath, task.description) : -1;
 		let captured: string | null = null;
 		let failure: string | null = "file-not-found";
 		await this.deps.write.processFile(task.filePath, (content) => {
 			failure = null;
 			const lines = content.split("\n");
-			const idx = locateTaskLine(lines, task.filePath, task);
+			const idx = locateTaskLine(lines, task.filePath, locTarget);
 			if (idx === -1) {
 				failure = "line-not-found";
+				return null;
+			}
+			if (
+				knownId === null &&
+				countIdlessMatches(lines, task.filePath, task.description) !== expectedIdless
+			) {
+				failure = "stale-index";
 				return null;
 			}
 			let line = lines[idx]!;
@@ -259,6 +382,9 @@ export class WritebackService implements IntentDispatcher {
 			return lines.join("\n");
 		});
 		if (failure !== null) return { ok: false, reason: failure };
+		// 🆔 уже в источнике — запоминаем до реиндекса (повтор move-line после
+		// сбоя шагов 2/3 адресуется по нему и сходится)
+		if (needInject) this.injectedIds.set(intent.key, movedId);
 		const movedLine = captured!;
 
 		// Шаг 2: append в цель; 🆔 уже там → пропуск (идемпотентность повтора).
@@ -297,8 +423,11 @@ export class WritebackService implements IntentDispatcher {
 	// --- удаление строки (ТОЛЬКО дедуп регулярных, ТЗ §3/§6) ---
 
 	/**
-	 * Удалить ровно одну строку (вместе с её '\n'): локализация тем же
-	 * механизмом, что у правок (🆔, иначе content-key + ближайшая lineStart).
+	 * Удалить ровно одну строку (вместе с её '\n'): локализация СТРОЖЕ, чем у
+	 * правок, — поверх 🆔/content-key кандидат обязан текстуально совпадать с
+	 * rawLine задачи (locateExactTaskLine): протухшая после сдвига строк
+	 * подсказка lineStart не может подсунуть под нож изменённую пользователем
+	 * строку (кипера дедупа) — удаление необратимо, правки хотя бы видимы.
 	 * splice по массиву строк съедает и разделитель: удаление последней строки
 	 * без хвостового '\n' забирает разделитель СЛЕВА — файл не копит пустых строк.
 	 * Повторный dispatch после успеха даёт {ok:false,'line-not-found'} —
@@ -308,19 +437,39 @@ export class WritebackService implements IntentDispatcher {
 		const task = this.deps.feed.getIndex().get(intent.key);
 		if (task === undefined) return { ok: false, reason: "task-not-found" };
 
+		const expectedIdless =
+			task.taskId === null ? this.countIdlessInIndex(task.filePath, task.description) : -1;
 		let failure: string | null = "file-not-found";
 		await this.deps.write.processFile(task.filePath, (content) => {
 			failure = null;
 			const lines = content.split("\n");
-			const idx = locateTaskLine(lines, task.filePath, task);
+			const idx = locateExactTaskLine(lines, task.filePath, task);
 			if (idx === -1) {
 				failure = "line-not-found";
+				return null;
+			}
+			// та же fail-closed сверка content-key, что и в applyToLine
+			if (
+				task.taskId === null &&
+				countIdlessMatches(lines, task.filePath, task.description) !== expectedIdless
+			) {
+				failure = "stale-index";
 				return null;
 			}
 			lines.splice(idx, 1);
 			return lines.join("\n");
 		});
 		return failure === null ? { ok: true } : { ok: false, reason: failure };
+	}
+
+	/** Сколько id-less задач с этим описанием знает индекс для файла —
+	 *  «ожидание» для fail-closed сверки content-key локализации. */
+	private countIdlessInIndex(path: string, description: string): number {
+		let n = 0;
+		for (const t of this.deps.feed.getIndex().fileTasks(path)) {
+			if (t.taskId === null && t.description === description) n++;
+		}
+		return n;
 	}
 
 	// --- генерация 🆔 ---

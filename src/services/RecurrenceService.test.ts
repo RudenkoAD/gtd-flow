@@ -297,6 +297,39 @@ describe("RecurrenceService: дедуп двух устройств", () => {
 		expect(port.files.get(INBOX)).toBe("");
 	});
 
+	it("три носителя в одном файле: пристины сняты одной записью, кипер с работой пользователя цел", async () => {
+		const { port, svc, sync, state } = makeHarness();
+		state.today = "2026-08-05";
+		port.files.set(REC, `${TPL_ADVANCED}\n`);
+		const modified = INSTANCE_LINE.replace("- [ ]", "- [x]") + " ✅ 2026-08-04";
+		// схождение синка: ДВЕ пристин-копии НАД кипером — их удаление сдвигает
+		// строки, последовательные delete-line с протухшими подсказками роняли кипера
+		port.files.set(INBOX, `${INSTANCE_LINE}\n${INSTANCE_LINE}\n${modified}\n`);
+		sync();
+
+		const report = await svc.runPass();
+
+		expect(report.deduped).toBe(2);
+		expect(report.conflicts).toEqual([]);
+		expect(port.files.get(INBOX)).toBe(`${modified}\n`); // работа пользователя цела
+		// весь батч группы в файле — ровно одна запись
+		expect(port.writes.filter((w) => w.path === INBOX)).toHaveLength(1);
+	});
+
+	it("все пристины в одном файле: выживает ровно один носитель", async () => {
+		const { port, svc, sync, state } = makeHarness();
+		state.today = "2026-08-05";
+		port.files.set(REC, `${TPL_ADVANCED}\n`);
+		port.files.set(INBOX, `${INSTANCE_LINE}\n${INSTANCE_LINE}\n${INSTANCE_LINE}\n`);
+		sync();
+
+		const report = await svc.runPass();
+
+		expect(report.deduped).toBe(2);
+		expect(report.conflicts).toEqual([]);
+		expect(port.files.get(INBOX)).toBe(`${INSTANCE_LINE}\n`);
+	});
+
 	it("конфликт двух модифицированных: ничего не удаляется, ключи в conflicts", async () => {
 		const { port, svc, sync, state, feed } = makeHarness();
 		state.today = "2026-08-05";

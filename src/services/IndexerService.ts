@@ -75,15 +75,23 @@ export class IndexerService implements IndexFeed {
 		this.started = true;
 		const chunkSize = this.deps.chunkSize ?? DEFAULT_CHUNK_SIZE;
 		let filled = 0;
-		for await (const snap of this.deps.initialScan()) {
-			if (this.disposed) return;
-			this.index.replaceFile(snap.path, this.parseSnapshot(snap));
-			if (++filled % chunkSize === 0) {
-				this.notify();
-				await yieldToMacrotask();
+		try {
+			for await (const snap of this.deps.initialScan()) {
 				if (this.disposed) return;
+				this.index.replaceFile(snap.path, this.parseSnapshot(snap));
+				if (++filled % chunkSize === 0) {
+					this.notify();
+					await yieldToMacrotask();
+					if (this.disposed) return;
+				}
 			}
+		} catch (e) {
+			// изоляция: сбой скана не должен молча оставлять индекс «вечно не
+			// готовым» (onReady — единственный открыватель гейта регулярных);
+			// работаем с тем, что успели собрать, недостающее доедет по 'changed'
+			console.error("GTD Flow: первичный скан прерван, индекс может быть неполным", e);
 		}
+		if (this.disposed) return;
 		this.notify();
 		this.deps.onReady?.();
 	}

@@ -271,7 +271,7 @@ describe("BoardService.moveCard", () => {
 		expect(h.patched).toEqual([]);
 	});
 
-	it("group-by: status — intent несёт toStatusChar, теги не трогаются", async () => {
+	it("group-by: status — intent несёт toStatusChar и дату для ✅ (как set-status), теги не трогаются", async () => {
 		h.feed.replaceFile("b.md", [
 			boardTask({ filePath: "b.md", taskId: "a", key: "id:a", container: "board" }),
 		]);
@@ -282,9 +282,37 @@ describe("BoardService.moveCard", () => {
 			fromTag: null,
 			toTag: null,
 			toStatusChar: "x",
+			date: "2026-07-15",
 			index: 0,
 		});
 		expect(h.frontmatters.get("b.md")!["order"]).toEqual({ done: ["a"] });
+	});
+
+	it("drag из Done в Todo несёт дату — трансформ снимет устаревший ✅ теми же правилами, что set-status", async () => {
+		// регресс: раньше intent шёл без date и move-column менял только статус,
+		// оставляя ✅ на незакрытой строке (или [x] без ✅ при drag в Done)
+		h.feed.replaceFile("b.md", [
+			boardTask({ filePath: "b.md", taskId: "a", key: "id:a", container: "board", statusChar: "x" }),
+		]);
+		await h.service.moveCard("b.md", STATUS_BOARD, "id:a", "todo", 0);
+		expect(h.dispatcher.intents[0]).toEqual({
+			type: "move-column",
+			key: "id:a",
+			fromTag: null,
+			toTag: null,
+			toStatusChar: " ",
+			date: "2026-07-15",
+			index: 0,
+		});
+	});
+
+	it("тег-доска: intent без date — статус и даты ✅/❌ не трогаются", async () => {
+		h.feed.replaceFile("x.md", [
+			boardTask({ filePath: "x.md", taskId: "a", key: "id:a", tags: ["#kanban/dev/todo"] }),
+		]);
+		await h.service.moveCard("Board.md", TAG_BOARD, "id:a", "doing", 0);
+		expect(h.dispatcher.intents[0]).not.toHaveProperty("date");
+		expect(h.dispatcher.intents[0]).not.toHaveProperty("toStatusChar");
 	});
 
 	it("drop в ту же колонку = только перестановка порядка, без intent", async () => {

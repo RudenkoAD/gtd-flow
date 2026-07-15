@@ -111,8 +111,9 @@
 		background: var(--background-modifier-hover);
 	}
 	.gtd-cal-chip.is-draggable {
-		/* без touch-action: none тач отдаст жест нативному скроллу до long-press */
-		touch-action: none;
+		/* pan-y, не none: вертикальный свайп — нативному скроллу списка событий
+		   дня; long-press drag защищён touchmove-guard'ом DndService */
+		touch-action: pan-y;
 	}
 	.gtd-cal-chip.is-done .gtd-cal-chip-text {
 		color: var(--text-muted);

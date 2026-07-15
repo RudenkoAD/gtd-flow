@@ -340,6 +340,21 @@ describe("ProjectService.connect", () => {
 		expect(res).toEqual({ ok: false, reason: "duplicate-id" });
 		expect(h.port.calls).toBe(0);
 	});
+
+	it("гонка в окне реиндексации: цикл ловится по фактическому содержимому файла", async () => {
+		const h = makeHarness();
+		loadProject(h, P, ["- [ ] A 🆔 aa1", "- [ ] B 🆔 bb1"]);
+
+		// Первое ребро записано в файл; индекс НАРОЧНО не обновляем —
+		// имитация дебаунса реиндексации (два быстрых connect подряд с полотна)
+		expect(await h.svc.connect(P, "aa1", "bb1")).toEqual({ ok: true });
+		const res = await h.svc.connect(P, "bb1", "aa1");
+
+		expect(res).toEqual({ ok: false, reason: "cycle", cyclePath: ["aa1", "bb1"] });
+		// файл не тронут вторым connect — цикла A↔B на диске нет
+		expect(h.port.files.get(P)).toBe("- [ ] A 🆔 aa1\n- [ ] B 🆔 bb1 ⛔ aa1\n");
+		expect(h.port.writes).toHaveLength(1);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -524,6 +539,38 @@ describe("ProjectService.deleteNode", () => {
 		expect(res).toEqual({ ok: false, reason: "line-not-found" });
 		expect(h.patchCount()).toBe(0);
 		expect(h.frontmatters.get(P)!["layout"]).toEqual({ aa1: { x: 0, y: 0 } });
+	});
+
+	it("дубль-носители 🆔 (след sync-схождения): удаляется только строка — рёбра ⛔ и layout выжившего целы", async () => {
+		const h = makeHarness();
+		loadProject(
+			h,
+			P,
+			["- [ ] A 🆔 n1", "- [ ] A-копия 🆔 n1", "- [ ] C 🆔 c1 ⛔ n1"],
+			{ layout: { n1: { x: 3, y: 4 }, c1: { x: 5, y: 6 } } },
+		);
+
+		const res = await h.svc.deleteNode(P, "n1");
+
+		// выживший носитель n1 держит ребро C→n1: ⛔ не вычищен, C по-прежнему blocked
+		expect(res).toEqual({ ok: true, unblocked: 0 });
+		expect(h.port.files.get(P)).toBe("- [ ] A-копия 🆔 n1\n- [ ] C 🆔 c1 ⛔ n1\n");
+		// layout выжившего не удалён — patchFrontmatter вовсе не звался
+		expect(h.patchCount()).toBe(0);
+		expect(h.frontmatters.get(P)!["layout"]).toEqual({ n1: { x: 3, y: 4 }, c1: { x: 5, y: 6 } });
+	});
+
+	it("дублей нет — вычистка ⛔ и layout идёт как раньше (негативный контроль)", async () => {
+		const h = makeHarness();
+		loadProject(h, P, ["- [ ] A 🆔 n1", "- [ ] C 🆔 c1 ⛔ n1"], {
+			layout: { n1: { x: 3, y: 4 }, c1: { x: 5, y: 6 } },
+		});
+
+		const res = await h.svc.deleteNode(P, "n1");
+
+		expect(res).toEqual({ ok: true, unblocked: 1 });
+		expect(h.port.files.get(P)).toBe("- [ ] C 🆔 c1\n");
+		expect(h.frontmatters.get(P)!["layout"]).toEqual({ c1: { x: 5, y: 6 } });
 	});
 });
 

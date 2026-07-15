@@ -1,6 +1,7 @@
 import { Plugin, WorkspaceLeaf } from "obsidian";
 import { VIEW_META, VIEW_TYPES, type GtdViewKind } from "./views/registry";
 import { DEFAULT_SETTINGS, type GtdFlowSettings } from "./settings/Settings";
+import { mergeSettings } from "./settings/mergeSettings";
 import { MetadataAdapter } from "./adapters/MetadataAdapter";
 import { VaultAdapter } from "./adapters/VaultAdapter";
 import { ObsidianClock } from "./adapters/ObsidianClock";
@@ -96,8 +97,18 @@ export default class GtdFlowPlugin extends Plugin {
 			findCardFile: (taskId) => metadata.findByFrontmatterValue("gtd-card-of", taskId),
 		});
 		registerCommands(this);
-		// Первичная сборка — вне критического пути старта (ТЗ §2).
-		this.app.workspace.onLayoutReady(() => void this.indexer.start());
+		// Первичная сборка — вне критического пути старта, строго после
+		// onLayoutReady И полного resolve кэша метаданных (ТЗ §2): до resolve
+		// getFileCache пуст, снапшоты вышли бы без задач и с неверным контекстом,
+		// а гейт регулярных (§6) открылся бы на заведомо неполном индексе.
+		// Подписка на 'resolved' — прямо в onload: на тёплом старте resolve может
+		// завершиться раньше layout-ready, и события до следующей правки не будет.
+		const layoutReady = new Promise<void>((res) => this.app.workspace.onLayoutReady(res));
+		const cacheResolved = new Promise<void>((res) => metadata.onResolved(res));
+		void Promise.all([layoutReady, cacheResolved]).then(() =>
+			// .catch: rejection скана не должен пропадать беззвучно
+			this.indexer.start().catch((e: unknown) => console.error("GTD Flow: сбой первичной сборки индекса", e)),
+		);
 
 		for (const meta of Object.values(VIEW_META)) {
 			this.registerView(meta.type, (leaf) => createGtdView(leaf, this, meta));
@@ -155,7 +166,9 @@ export default class GtdFlowPlugin extends Plugin {
 	}
 
 	async loadSettings(): Promise<void> {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		// поключевое слияние вложенных объектов — плоский assign терял бы
+		// вложенные дефолты при частичном data.json (см. mergeSettings)
+		this.settings = mergeSettings(DEFAULT_SETTINGS, (await this.loadData()) as unknown);
 	}
 
 	async saveSettings(): Promise<void> {

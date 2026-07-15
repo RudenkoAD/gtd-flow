@@ -72,6 +72,9 @@ class QuickCaptureModal extends Modal {
 			this.onSubmit(value);
 		};
 		input.addEventListener("keydown", (e) => {
+			// Enter в IME подтверждает композицию, а не отправку; keyCode 229 —
+			// WebKit/iOS, где на коммит-Enter isComposing уже false
+			if (e.isComposing || e.keyCode === 229) return;
 			if (e.key === "Enter") submit();
 		});
 		const ok = wrap.createEl("button", { text: "OK", cls: "mod-cta" });
@@ -95,9 +98,15 @@ async function capture(plugin: GtdFlowPlugin, text: string): Promise<void> {
 		new Notice("GTD Flow: не задан файл входящих (inboxSources)");
 		return;
 	}
-	await plugin.vaultAdapter.ensureFile(target);
-	const ok = await plugin.vaultAdapter.processFile(target, (content) => appendLine(content, line));
-	if (!ok) new Notice(`GTD Flow: не удалось записать в ${target}`);
+	try {
+		await plugin.vaultAdapter.ensureFile(target);
+		const ok = await plugin.vaultAdapter.processFile(target, (content) => appendLine(content, line));
+		if (!ok) new Notice(`GTD Flow: не удалось записать в ${target}`);
+	} catch (e) {
+		// модалка уже закрыта — возвращаем текст в уведомлении, чтобы ввод
+		// не пропал молча (ensureFile кидает на гонке create/кривом пути)
+		new Notice(`GTD Flow: не удалось записать в ${target}: ${String(e)}\nТекст: ${text}`, 0);
+	}
 }
 
 // ---------------------------------------------------------------------------

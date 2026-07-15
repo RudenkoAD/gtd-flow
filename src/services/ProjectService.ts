@@ -220,6 +220,7 @@ export class ProjectService implements ProjectPort {
 		if (cycle !== null) return { ok: false, reason: "cycle", cyclePath: cycle };
 
 		let failure: string | null = "file-not-found";
+		let lateCycle: string[] | null = null;
 		try {
 			await this.deps.write.processFile(path, (content) => {
 				failure = null;
@@ -237,6 +238,25 @@ export class ProjectService implements ProjectPort {
 					return null;
 				}
 				if (cur.dependsOn.includes(fromId)) return null;
+				// индекс может отставать от собственных записей (дебаунс реиндексации):
+				// два быстрых connect подряд иначе замкнули бы цикл — проверяем ещё раз
+				// по фактическому содержимому файла (processFile сериализует записи,
+				// поэтому предыдущее ребро здесь уже видно)
+				const fresh: Task[] = [];
+				for (let i = 0; i < lines.length; i++) {
+					const t = parseAt(lines, i, path);
+					if (t !== null) fresh.push(t);
+				}
+				const freshCycle = edgeWouldCreateCycle(
+					buildGraph(fresh, this.resolveDep(), this.deps.todayIso()).edges,
+					fromId,
+					toId,
+				).cycle;
+				if (freshCycle !== null) {
+					failure = "cycle";
+					lateCycle = freshCycle;
+					return null;
+				}
 				try {
 					lines[idx] = setDependsOn(line, [...cur.dependsOn, fromId]);
 				} catch {
@@ -248,7 +268,10 @@ export class ProjectService implements ProjectPort {
 		} catch {
 			return { ok: false, reason: "write-failed" };
 		}
-		return failure === null ? { ok: true } : { ok: false, reason: failure };
+		if (failure === null) return { ok: true };
+		if (failure === "cycle" && lateCycle !== null)
+			return { ok: false, reason: "cycle", cyclePath: lateCycle };
+		return { ok: false, reason: failure };
 	}
 
 	/** Убрать fromId из ⛔ цели; пустой список ⇒ setDependsOn([]) удаляет поле. */
@@ -351,6 +374,11 @@ export class ProjectService implements ProjectPort {
 		const unblocked = this.countUnblocked(members, victim);
 
 		let failure: string | null = "file-not-found";
+		// Дубли 🆔 (легальный след sync-схождения, ТЗ: «не удалять работу
+		// пользователя»): если после удаления строки в файле остаётся другой
+		// носитель того же 🆔, все ⛔-ссылки на него по-прежнему валидны —
+		// чистить их (и layout выжившего) нельзя, иначе рёбра теряются навсегда.
+		let survivorCarries = false;
 		try {
 			await this.deps.write.processFile(path, (content) => {
 				failure = null;
@@ -363,12 +391,20 @@ export class ProjectService implements ProjectPort {
 				lines.splice(idx, 1);
 				if (victim.taskId !== null) {
 					for (let i = 0; i < lines.length; i++) {
-						const t = parseAt(lines, i, path);
-						if (t === null || !t.dependsOn.includes(victim.taskId)) continue;
-						try {
-							lines[i] = setDependsOn(lines[i]!, t.dependsOn.filter((d) => d !== victim.taskId));
-						} catch {
-							// кривой ⛔-список: строку не трогаем — останется broken-dep бейдж
+						if (parseAt(lines, i, path)?.taskId === victim.taskId) {
+							survivorCarries = true;
+							break;
+						}
+					}
+					if (!survivorCarries) {
+						for (let i = 0; i < lines.length; i++) {
+							const t = parseAt(lines, i, path);
+							if (t === null || !t.dependsOn.includes(victim.taskId)) continue;
+							try {
+								lines[i] = setDependsOn(lines[i]!, t.dependsOn.filter((d) => d !== victim.taskId));
+							} catch {
+								// кривой ⛔-список: строку не трогаем — останется broken-dep бейдж
+							}
 						}
 					}
 				}
@@ -379,14 +415,16 @@ export class ProjectService implements ProjectPort {
 		}
 		if (failure !== null) return { ok: false, reason: failure };
 
-		try {
-			await this.deps.patchFrontmatter(path, (fm) => {
-				const raw = fm["layout"];
-				if (isRecord(raw)) delete raw[id];
-			});
-		} catch {
-			// строки уже переписаны — мусорный layout[id] вычистит normalizeLayout
-			return { ok: false, reason: "layout-write-failed" };
+		if (!survivorCarries) {
+			try {
+				await this.deps.patchFrontmatter(path, (fm) => {
+					const raw = fm["layout"];
+					if (isRecord(raw)) delete raw[id];
+				});
+			} catch {
+				// строки уже переписаны — мусорный layout[id] вычистит normalizeLayout
+				return { ok: false, reason: "layout-write-failed" };
+			}
 		}
 		return { ok: true, unblocked };
 	}
@@ -395,13 +433,20 @@ export class ProjectService implements ProjectPort {
 	private countUnblocked(members: readonly Task[], victim: Task): number {
 		const today = this.deps.todayIso();
 		const victimId = victim.taskId ?? victim.key;
+		// Дубль-носитель 🆔 переживает удаление строки — рёбра ⛔ остаются в силе,
+		// зависимости из копий не вычищаем (зеркалит guard в deleteNode)
+		const survivorCarries =
+			victim.taskId !== null &&
+			this.deps.feed.getIndex().resolveDep(victim.taskId).some((t) => t.key !== victim.key);
 		const before = buildGraph(members, this.resolveDep(), today);
 		const readyBefore = new Set(
 			before.nodes.filter((n) => !n.ghost && n.state === "ready").map((n) => n.id),
 		);
 		const rest = members
 			.filter((m) => m.key !== victim.key)
-			.map((m) => ({ ...m, dependsOn: m.dependsOn.filter((d) => d !== victimId) }));
+			.map((m) =>
+				survivorCarries ? m : { ...m, dependsOn: m.dependsOn.filter((d) => d !== victimId) },
+			);
 		// резолвер без жертвы: её носительство 🆔 исчезает вместе со строкой
 		const rd: ResolveDep = (depId) =>
 			this.deps.feed.getIndex().resolveDep(depId).filter((t) => t.key !== victim.key);

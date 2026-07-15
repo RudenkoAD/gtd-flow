@@ -49,6 +49,9 @@ export interface MoveColumn {
 	toTag: string | null;
 	/** Символ статуса целевой колонки — для досок с group-by: status. */
 	toStatusChar?: string;
+	/** Дата для ✅/❌ при перетаскивании в done/cancelled-колонку — drag по
+	 *  статусной доске обязан писать те же сопутствующие даты, что и set-status. */
+	date?: IsoDate;
 	/** Позиция в ручном порядке целевой колонки (frontmatter доски — вторая запись). */
 	index?: number;
 }

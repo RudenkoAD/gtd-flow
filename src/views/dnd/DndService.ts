@@ -42,6 +42,8 @@ interface ActiveDrag {
 interface WinCtx {
 	win: Window;
 	drag: ActiveDrag | null;
+	/** Снимает doc-листенеры окна: window-close и unload плагина. */
+	dispose: () => void;
 }
 
 /** Окно элемента: el.win (augmentation Obsidian), fallback — через документ. */
@@ -52,14 +54,22 @@ function winOf(el: HTMLElement): Window | null {
 /**
  * Ближайший прокручиваемый предок (включая сам элемент). instanceof по
  * HTMLElement нельзя — в pop-out чужой realm; Element достаточно:
- * scrollBy/scrollHeight есть на Element.
+ * scrollBy/scrollHeight есть на Element. Вместе с элементом отдаём его
+ * способности по осям: автоскролл даёт контейнеру только ту ось, которую
+ * тот реально умеет крутить (иначе dy «съедается» горизонтальной доской).
  */
-function findScrollContainer(from: Element | null, win: Window): Element | null {
+interface ScrollContainer {
+	el: Element;
+	canX: boolean;
+	canY: boolean;
+}
+
+function findScrollContainer(from: Element | null, win: Window): ScrollContainer | null {
 	for (let node: Element | null = from; node !== null; node = node.parentElement) {
 		const cs = win.getComputedStyle(node);
 		const canY = /(auto|scroll)/.test(cs.overflowY) && node.scrollHeight > node.clientHeight;
 		const canX = /(auto|scroll)/.test(cs.overflowX) && node.scrollWidth > node.clientWidth;
-		if (canY || canX) return node;
+		if (canY || canX) return { el: node, canX, canY };
 	}
 	return null;
 }
@@ -79,9 +89,12 @@ export class DndService implements DndPort {
 		plugin.registerEvent(
 			plugin.app.workspace.on("window-close", (_ww, win) => this.unmount(win)),
 		);
-		// Выгрузка плагина посреди жеста: снять ghost/подсветку во всех окнах.
+		// Выгрузка плагина: снять ghost/подсветку и doc-листенеры во всех окнах.
 		plugin.register(() => {
-			for (const ctx of this.contexts.values()) this.finishDrag(ctx);
+			for (const ctx of this.contexts.values()) {
+				this.finishDrag(ctx);
+				ctx.dispose();
+			}
 			this.contexts.clear();
 		});
 	}
@@ -104,8 +117,11 @@ export class DndService implements DndPort {
 	 * Начать перетаскивание из pointerdown источника.
 	 *
 	 * Ответственность источника: на элементе-источнике должен стоять
-	 * `touch-action: none` (CSS) — иначе на таче браузер заберёт жест под
-	 * нативный скролл и pointermove/long-press до слоя не дойдут.
+	 * `touch-action: pan-y` (CSS) — вертикальный свайп остаётся нативному
+	 * скроллу (списки прокручиваются пальцем), а неподвижный палец доживает
+	 * до long-press. После активации drag браузерный pan гасит non-passive
+	 * touchmove-листенер mount(). `touch-action: none` ставить нельзя —
+	 * карточки во всю ширину списка сделали бы его непрокручиваемым тачем.
 	 *
 	 * Мышь/перо: drag начинается после смещения ≥ 5px, клик остаётся кликом.
 	 * Тач: long-press 250мс при смещении < 10px; больше — жест уходит скроллу.
@@ -152,15 +168,35 @@ export class DndService implements DndPort {
 	private mount(win: Window): WinCtx {
 		const existing = this.contexts.get(win);
 		if (existing !== undefined) return existing;
-		const ctx: WinCtx = { win, drag: null };
+		const ctx: WinCtx = { win, drag: null, dispose: () => {} };
 		this.contexts.set(win, ctx);
-		// registerDomEvent: снятие на unload плагина; при закрытии окна
-		// листенеры умирают вместе с его document.
+		// Листенеры вешаем руками, НЕ через plugin.registerDomEvent: тот держит
+		// замыкание снятия (а через него — весь document окна) в unload-списке
+		// плагина до самой выгрузки, и каждый закрытый pop-out утекал бы целиком.
+		// Снятие: ctx.dispose() в unmount (window-close) и в teardown конструктора.
 		const doc = win.document;
-		this.plugin.registerDomEvent(doc, "pointermove", (e) => this.onPointerMove(ctx, e));
-		this.plugin.registerDomEvent(doc, "pointerup", (e) => this.onPointerUp(ctx, e));
-		this.plugin.registerDomEvent(doc, "pointercancel", () => this.onCancel(ctx));
-		this.plugin.registerDomEvent(doc, "keydown", (e) => this.onKeyDown(ctx, e));
+		const onMove = (e: PointerEvent): void => this.onPointerMove(ctx, e);
+		const onUp = (e: PointerEvent): void => this.onPointerUp(ctx, e);
+		const onCancel = (): void => this.onCancel(ctx);
+		const onKey = (e: KeyboardEvent): void => this.onKeyDown(ctx, e);
+		// Карточки-источники стоят на touch-action: pan-y — вертикальный свайп
+		// принадлежит нативному скроллу. Чтобы после long-press браузер не увёл
+		// активный drag под pan, гасим default только в фазе dragging.
+		const onTouchMove = (e: TouchEvent): void => {
+			if (ctx.drag !== null && ctx.drag.machine.phase === "dragging") e.preventDefault();
+		};
+		doc.addEventListener("pointermove", onMove);
+		doc.addEventListener("pointerup", onUp);
+		doc.addEventListener("pointercancel", onCancel);
+		doc.addEventListener("keydown", onKey);
+		doc.addEventListener("touchmove", onTouchMove, { passive: false });
+		ctx.dispose = () => {
+			doc.removeEventListener("pointermove", onMove);
+			doc.removeEventListener("pointerup", onUp);
+			doc.removeEventListener("pointercancel", onCancel);
+			doc.removeEventListener("keydown", onKey);
+			doc.removeEventListener("touchmove", onTouchMove);
+		};
 		return ctx;
 	}
 
@@ -168,6 +204,7 @@ export class DndService implements DndPort {
 		const ctx = this.contexts.get(win);
 		if (ctx === undefined) return;
 		this.finishDrag(ctx);
+		ctx.dispose();
 		this.contexts.delete(win);
 	}
 
@@ -200,6 +237,19 @@ export class DndService implements DndPort {
 			this.finishDrag(ctx); // pending: обычный клик/тап
 			return;
 		}
+		// Завершённый drag: браузер синхронно после pointerup шлёт click (мышь —
+		// без слопа, down/up на общем предке), и он открывал бы меню chip'а или
+		// quick-add ячейки сразу после drop. Глотаем ровно один click этого тика;
+		// setTimeout(0) снимает ловушку, если click так и не пришёл (отпустили
+		// вне окна). Контракт «клик остаётся кликом» для pending не задет —
+		// ветка выше выходит раньше.
+		const doc = ctx.win.document;
+		const swallow = (ce: MouseEvent): void => {
+			ce.preventDefault();
+			ce.stopPropagation();
+		};
+		doc.addEventListener("click", swallow, { capture: true, once: true });
+		ctx.win.setTimeout(() => doc.removeEventListener("click", swallow, true), 0);
 		const target = this.hitTarget(ctx, drag.payload, e.clientX, e.clientY);
 		const payload = drag.payload;
 		const dropCtx: DropContext = { clientX: e.clientX, clientY: e.clientY };
@@ -305,16 +355,31 @@ export class DndService implements DndPort {
 
 	/** Простая версия ТЗ §8: scrollBy у прокручиваемого предка при курсоре в 40px от края. */
 	private autoscroll(ctx: WinCtx, target: GtdDropTarget | null, x: number, y: number): void {
-		const anchor = target?.el ?? ctx.win.document.elementFromPoint(x, y);
-		const scroller = findScrollContainer(anchor, ctx.win);
-		if (scroller === null) return;
-		const r = scroller.getBoundingClientRect();
-		const { dx, dy } = edgeScrollDelta(
-			{ left: r.left, top: r.top, right: r.right, bottom: r.bottom },
-			x,
-			y,
-		);
-		if (dx !== 0 || dy !== 0) scroller.scrollBy(dx, dy);
+		// Якорь — элемент ПОД КУРСОРОМ (ghost с pointer-events:none не заслоняет):
+		// вертикальный скроллер kanban-колонки — ПОТОМОК el цели (section),
+		// подъём от target.el нашёл бы только горизонтальную доску. target.el —
+		// лишь fallback на случай, когда точка вне какого-либо элемента.
+		const anchor = ctx.win.document.elementFromPoint(x, y) ?? target?.el ?? null;
+		// Вверх по цепочке скроллеров: каждому — только его ось(и). Контейнер,
+		// который не умеет нужную ось, пропускаем (col-body не гасит dx доски).
+		for (
+			let s = findScrollContainer(anchor, ctx.win);
+			s !== null;
+			s = findScrollContainer(s.el.parentElement, ctx.win)
+		) {
+			const r = s.el.getBoundingClientRect();
+			const { dx, dy } = edgeScrollDelta(
+				{ left: r.left, top: r.top, right: r.right, bottom: r.bottom },
+				x,
+				y,
+			);
+			const useDx = s.canX ? dx : 0;
+			const useDy = s.canY ? dy : 0;
+			if (useDx !== 0 || useDy !== 0) {
+				s.el.scrollBy(useDx, useDy);
+				return;
+			}
+		}
 	}
 
 	/** Полная уборка жеста: таймер, подсветка, ghost, user-select. Идемпотентно. */

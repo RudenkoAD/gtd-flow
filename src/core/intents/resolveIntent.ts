@@ -12,6 +12,7 @@
  *     проверка циклов ДО записи) — сервис считает новый список и применяет его
  *     через resolveDependsOnTransform.
  */
+import type { IsoDate } from "../model/Task";
 import {
 	addTag,
 	removeTag,
@@ -23,28 +24,37 @@ import {
 } from "../parser/serializeTaskLine";
 import type { Intent } from "./Intent";
 
+/**
+ * Статус + сопутствующие даты одной правкой: ✅/❌ сопровождают статус,
+ * при повторном открытии обе даты снимаются. Общая логика set-status и
+ * move-column по статусной колонке — drag на доске ЕСТЬ смена статуса,
+ * иначе один и тот же переход писал бы разные данные разными путями UI
+ * (снятая с Done карточка тащила бы устаревший ✅ на незакрытой строке).
+ */
+function applyStatusWithDates(currentLine: string, statusChar: string, date?: IsoDate): string {
+	let line = setStatusChar(currentLine, statusChar);
+	const toDone = statusChar === "x" || statusChar === "X";
+	const toCancelled = statusChar === "-";
+	if (toDone) {
+		if (date !== undefined) line = setField(line, "done", date);
+		line = setField(line, "cancelled", null);
+	} else if (toCancelled) {
+		if (date !== undefined) line = setField(line, "cancelled", date);
+		line = setField(line, "done", null);
+	} else {
+		line = setField(line, "done", null);
+		line = setField(line, "cancelled", null);
+	}
+	return line;
+}
+
 export function resolveLineTransform(intent: Intent, currentLine: string): string | null {
 	switch (intent.type) {
 		case "set-date":
 			return setField(currentLine, intent.field, intent.date);
 
-		case "set-status": {
-			let line = setStatusChar(currentLine, intent.statusChar);
-			const toDone = intent.statusChar === "x" || intent.statusChar === "X";
-			const toCancelled = intent.statusChar === "-";
-			// ✅/❌ сопровождают статус; при повторном открытии обе даты снимаются
-			if (toDone) {
-				if (intent.date !== undefined) line = setField(line, "done", intent.date);
-				line = setField(line, "cancelled", null);
-			} else if (toCancelled) {
-				if (intent.date !== undefined) line = setField(line, "cancelled", intent.date);
-				line = setField(line, "done", null);
-			} else {
-				line = setField(line, "done", null);
-				line = setField(line, "cancelled", null);
-			}
-			return line;
-		}
+		case "set-status":
+			return applyStatusWithDates(currentLine, intent.statusChar, intent.date);
 
 		case "set-priority":
 			return setPriority(currentLine, intent.priority);
@@ -54,7 +64,8 @@ export function resolveLineTransform(intent: Intent, currentLine: string): strin
 			let line = currentLine;
 			if (intent.fromTag !== null) line = removeTag(line, intent.fromTag);
 			if (intent.toTag !== null) line = addTag(line, intent.toTag);
-			if (intent.toStatusChar !== undefined) line = setStatusChar(line, intent.toStatusChar);
+			if (intent.toStatusChar !== undefined)
+				line = applyStatusWithDates(line, intent.toStatusChar, intent.date);
 			return line;
 		}
 

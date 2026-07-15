@@ -6,3 +6,6 @@ test-vault/.obsidian/workspace*.json
 *.map
 dist/
 .DS_Store
+test-vault/.obsidian/app.json
+test-vault/.obsidian/appearance.json
+test-vault/.obsidian/core-plugins.json

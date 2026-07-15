@@ -4,6 +4,7 @@ import type { IntentDispatcher } from "../../services/WritebackService";
 import { taskMenuPortsFromPlugin } from "../common/taskMenu";
 import type { DndPort } from "../dnd/types";
 import { GtdView } from "../GtdView";
+import { VIEW_META } from "../registry";
 import Inbox from "./Inbox.svelte";
 
 /**
@@ -11,6 +12,9 @@ import Inbox from "./Inbox.svelte";
  * app) вместо всего plugin — тестируемость и переносимость по ТЗ §0.
  */
 export class InboxView extends GtdView {
+	// getViewType() вызывается конструктором View до присвоения this.meta (см. GtdView).
+	protected static override staticMeta = VIEW_META.inbox;
+
 	protected override component(): Component<any> {
 		return Inbox as unknown as Component<any>;
 	}

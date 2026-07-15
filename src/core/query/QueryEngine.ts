@@ -25,17 +25,22 @@ export interface QueryContext {
 /**
  * §1 дословно:
  * inbox := active && (
- *      inInboxSource
+ *      (inInboxSource && !hasBoardTag)
  *   || (!hasBoardTag && !hasProject && !hasDue)
  *   || (hasProject && projectActive && ready && !hasBoardTag)
  * )
  * где hasProject = container === "project".
+ *
+ * !hasBoardTag в первой ветке — итог живой верификации: force-include
+ * источника захвата слабее «разобранности» (карточка, перетащенная на
+ * доску прямо из Inbox.md, обязана уйти из входящих, иначе разбор
+ * входящих не «опустошает» их — доверие к инбоксу ломается).
  */
 export function isInInbox(t: Task, ctx: QueryContext): boolean {
 	if (!isActive(t, ctx.today)) return false;
 	const bits = ctx.settingsBits;
-	if (matchesInboxSource(t.filePath, bits.inboxSources)) return true;
 	const hasBoardTag = bits.hasBoardTag(t);
+	if (matchesInboxSource(t.filePath, bits.inboxSources)) return !hasBoardTag;
 	const hasProject = t.container === "project";
 	if (!hasBoardTag && !hasProject && !bits.hasDue(t)) return true;
 	return hasProject && t.projectActive && ready(t, ctx.today, ctx.resolveDep) && !hasBoardTag;

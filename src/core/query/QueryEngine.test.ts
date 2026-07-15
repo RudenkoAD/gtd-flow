@@ -90,9 +90,9 @@ describe("inbox — три ветки §1", () => {
 		expect(inboxKeys([t])).toEqual([]);
 	});
 
-	it("ветка 1: файл-источник force-include спасает и container board", () => {
+	it("ветка 1: force-include НЕ спасает container board (разобранное — не во входящих)", () => {
 		const t = makeTask({ filePath: "GTD/Inbox.md", container: "board" });
-		expect(inboxKeys([t])).toEqual([t.key]);
+		expect(inboxKeys([t])).toEqual([]);
 	});
 
 	it("ветка 3: проект отдал готовую задачу", () => {
@@ -117,13 +117,15 @@ describe("inbox — три ветки §1", () => {
 		expect(inboxKeys([t])).toEqual([]);
 	});
 
-	it("ветка 1: файл-источник force-include (несмотря на due и тег доски)", () => {
-		const t = makeTask({
-			filePath: "GTD/Inbox.md",
-			due: "2026-07-20",
-			tags: ["#kanban/work/todo"],
-		});
+	it("ветка 1: файл-источник force-include (несмотря на due)", () => {
+		const t = makeTask({ filePath: "GTD/Inbox.md", due: "2026-07-20" });
 		expect(inboxKeys([t])).toEqual([t.key]);
+	});
+
+	it("ветка 1 (регрессия живого теста): drag на доску из файла-источника убирает из входящих", () => {
+		// Карточка получила #kanban/... прямо в Inbox.md — разобрана, force-include уступает.
+		const t = makeTask({ filePath: "GTD/Inbox.md", tags: ["#kanban/work/doing"] });
+		expect(inboxKeys([t])).toEqual([]);
 	});
 
 	it("ветка 1: папка-источник force-include", () => {

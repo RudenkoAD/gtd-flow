@@ -7,6 +7,7 @@ import type { IntentDispatcher } from "../../services/WritebackService";
 import { taskMenuPortsFromPlugin } from "../common/taskMenu";
 import type { DndPort } from "../dnd/types";
 import { GtdView } from "../GtdView";
+import { VIEW_META } from "../registry";
 import Kanban from "./Kanban.svelte";
 import type { KanbanPersistedState } from "./kanbanLogic";
 
@@ -15,6 +16,9 @@ import type { KanbanPersistedState } from "./kanbanLogic";
  * viewState (выбранная доска, свёрнутые колонки) — JSON-сериализуемое (ТЗ §4).
  */
 export class KanbanView extends GtdView {
+	// getViewType() вызывается конструктором View до присвоения this.meta (см. GtdView).
+	protected static override staticMeta = VIEW_META.kanban;
+
 	/** setState приходит ПОСЛЕ onOpen/mount — состояние доносится через store. */
 	private readonly persisted: Writable<KanbanPersistedState> = writable({});
 	private lastState: KanbanPersistedState = {};

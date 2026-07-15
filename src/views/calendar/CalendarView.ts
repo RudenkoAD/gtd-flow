@@ -6,6 +6,7 @@ import type { IntentDispatcher } from "../../services/WritebackService";
 import { taskMenuPortsFromPlugin } from "../common/taskMenu";
 import type { DndPort } from "../dnd/types";
 import { GtdView } from "../GtdView";
+import { VIEW_META } from "../registry";
 import Calendar from "./Calendar.svelte";
 import { sanitizeCalendarState, type CalendarPersistedState } from "./calendarLogic";
 
@@ -14,6 +15,9 @@ import { sanitizeCalendarState, type CalendarPersistedState } from "./calendarLo
  * viewState (режим, якорная дата) — JSON-сериализуемое (ТЗ §4).
  */
 export class CalendarView extends GtdView {
+	// getViewType() вызывается конструктором View до присвоения this.meta (см. GtdView).
+	protected static override staticMeta = VIEW_META.calendar;
+
 	/** setState приходит ПОСЛЕ onOpen/mount — состояние доносится через store. */
 	private readonly persisted: Writable<CalendarPersistedState> = writable({});
 	private lastState: CalendarPersistedState = {};

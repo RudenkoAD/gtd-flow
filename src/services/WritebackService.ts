@@ -184,6 +184,16 @@ export class WritebackService implements IntentDispatcher {
 		this.genId = deps.genId ?? defaultGenId;
 	}
 
+	/**
+	 * 🆔 задачи с учётом памяти вписанных в окне дебаунса реиндексации:
+	 * индекс может ещё не знать id, который мы только что записали в строку.
+	 * Нужен BoardService (фаза порядка после drag) и подобным потребителям.
+	 */
+	knownTaskId(key: string): string | null {
+		const task = this.deps.feed.getIndex().get(key);
+		return task?.taskId ?? this.injectedIds.get(key) ?? null;
+	}
+
 	async dispatch(intent: Intent): Promise<IntentResult> {
 		try {
 			if (KEYED_LINE_TYPES.has(intent.type)) {

@@ -349,6 +349,29 @@ describe("BoardService.moveCard", () => {
 		expect(h.patched).toEqual([]);
 	});
 
+	it("память вписанных 🆔 (knownTaskId) спасает фазу порядка при протухшем индексе", async () => {
+		// Регрессия живой верификации: drag из входящих — индекс ещё без 🆔,
+		// но WritebackService помнит id, который сам записал в строку.
+		const bare = boardTask({ filePath: "x.md", key: "x.md#L0", tags: ["#kanban/dev/todo"] });
+		h.feed.replaceFile("x.md", [bare]);
+		const service = new BoardService({
+			feed: h.feed,
+			dispatcher: { dispatch: async () => ({ ok: true }) },
+			readFrontmatter: () => null,
+			patchFrontmatter: async (path, fn) => {
+				const fm: Record<string, unknown> = {};
+				fn(fm);
+				h.patched.push({ path, fm });
+			},
+			knownTaskId: (key) => (key === "x.md#L0" ? "sb9khe" : null),
+		});
+
+		const res = await service.moveCard("Board.md", TAG_BOARD, "x.md#L0", "doing", 0);
+		expect(res.ok).toBe(true);
+		expect(h.patched).toHaveLength(1);
+		expect(h.patched[0]?.fm["order"]).toEqual({ doing: ["sb9khe"] });
+	});
+
 	it("неизвестная задача или колонка — отказ без записей", async () => {
 		h.feed.replaceFile("x.md", [
 			boardTask({ filePath: "x.md", taskId: "a", key: "id:a", tags: ["#kanban/dev/todo"] }),

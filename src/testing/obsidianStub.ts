@@ -34,3 +34,21 @@ export class TFile {}
 export class MarkdownView {}
 
 export class Plugin {}
+
+/**
+ * Как реальный Obsidian ≥1.12: конструктор View вызывает getViewType()
+ * ДО присвоения полей подкласса. Регрессия живой верификации — виды,
+ * читающие инстанс-поля в getViewType(), падали при конструировании.
+ */
+export class ItemView {
+	contentEl = { addClass(_c: string): void {}, removeClass(_c: string): void {} };
+
+	constructor(public leaf: unknown) {
+		// намеренно: воспроизводим порядок вызовов реального ItemView
+		(this as unknown as { getViewType(): string }).getViewType();
+	}
+
+	getViewType(): string {
+		return "stub";
+	}
+}

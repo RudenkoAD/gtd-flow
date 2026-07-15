@@ -414,7 +414,7 @@
 			{colorMode}
 			fitView
 			minZoom={0.1}
-			deleteKey={null}
+			deleteKey={[]}
 			{isValidConnection}
 			onconnect={onConnect}
 			onnodedragstop={onNodeDragStop}

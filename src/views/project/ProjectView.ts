@@ -5,6 +5,7 @@ import type GtdFlowPlugin from "../../main";
 import type { IntentDispatcher } from "../../services/WritebackService";
 import { taskMenuPortsFromPlugin } from "../common/taskMenu";
 import { GtdView } from "../GtdView";
+import { VIEW_META } from "../registry";
 import Project from "./Project.svelte";
 import type { ProjectPersistedState } from "./projectGraphLogic";
 import type { ProjectPort } from "../../services/ProjectService";
@@ -15,6 +16,9 @@ import type { ProjectPort } from "../../services/ProjectService";
  * JSON-сериализуемое (ТЗ §4). Паттерн — KanbanView.
  */
 export class ProjectView extends GtdView {
+	// getViewType() вызывается конструктором View до присвоения this.meta (см. GtdView).
+	protected static override staticMeta = VIEW_META.project;
+
 	/** setState приходит ПОСЛЕ onOpen/mount — состояние доносится через store. */
 	private readonly persisted: Writable<ProjectPersistedState> = writable({});
 	private lastState: ProjectPersistedState = {};

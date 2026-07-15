@@ -27,6 +27,8 @@ export interface BoardServiceDeps {
 	readFrontmatter: (path: string) => Record<string, unknown> | null;
 	patchFrontmatter: (path: string, fn: (fm: Record<string, unknown>) => void) => Promise<void>;
 	dispatcher: IntentDispatcher;
+	/** 🆔 с учётом памяти вписанных в окне дебаунса (WritebackService.knownTaskId). */
+	knownTaskId?: (key: string) => string | null;
 }
 
 export interface DiscoveredBoard {
@@ -161,8 +163,13 @@ export class BoardService {
 			if (!res.ok) return res; // фаза 1 не прошла — порядок не трогаем
 		}
 
-		// Фаза 2 — ручной порядок. 🆔 берём из задачи либо перечитываем из feed.
-		const movedId = task.taskId ?? this.deps.feed.getIndex().get(taskKey)?.taskId ?? null;
+		// Фаза 2 — ручной порядок. 🆔: задача → свежий feed → память вписанных
+		// (реиндекс дебаунсится, но WritebackService помнит id, который сам записал).
+		const movedId =
+			task.taskId ??
+			this.deps.feed.getIndex().get(taskKey)?.taskId ??
+			this.deps.knownTaskId?.(taskKey) ??
+			null;
 		if (movedId === null) return { ok: true }; // без 🆔 порядок не записать — задокументировано выше
 
 		const orderedIds = insertIntoColumnOrder(

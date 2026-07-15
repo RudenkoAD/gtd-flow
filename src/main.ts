@@ -60,6 +60,7 @@ export default class GtdFlowPlugin extends Plugin {
 				await this.vaultAdapter.processFrontmatter(path, fn);
 			},
 			dispatcher: this.dispatcher,
+			knownTaskId: (key) => this.dispatcher.knownTaskId(key),
 		});
 		this.dnd = new DndService(this);
 		this.recurrence = new RecurrenceService({

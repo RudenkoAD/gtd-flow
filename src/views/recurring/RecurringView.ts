@@ -3,6 +3,7 @@ import type GtdFlowPlugin from "../../main";
 import type { CardPort } from "../../services/CardService";
 import type { RecurrencePort } from "../../services/RecurrenceService";
 import { GtdView } from "../GtdView";
+import { VIEW_META } from "../registry";
 import Recurring from "./Recurring.svelte";
 
 /**
@@ -11,6 +12,9 @@ import Recurring from "./Recurring.svelte";
  * «пишущий создатель строк» — RecurrenceService (ТЗ §8).
  */
 export class RecurringView extends GtdView {
+	// getViewType() вызывается конструктором View до присвоения this.meta (см. GtdView).
+	protected static override staticMeta = VIEW_META.recurring;
+
 	protected override component(): Component<any> {
 		return Recurring as unknown as Component<any>;
 	}

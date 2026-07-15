@@ -2,6 +2,7 @@ import type { WorkspaceLeaf } from "obsidian";
 import type GtdFlowPlugin from "../main";
 import { GtdView } from "./GtdView";
 import type { ViewMeta } from "./registry";
+import { CalendarView } from "./calendar/CalendarView";
 import { InboxView } from "./inbox/InboxView";
 import { KanbanView } from "./kanban/KanbanView";
 import { TicklerView } from "./tickler/TicklerView";
@@ -13,6 +14,8 @@ export function createGtdView(leaf: WorkspaceLeaf, plugin: GtdFlowPlugin, meta: 
 			return new InboxView(leaf, plugin, meta);
 		case "kanban":
 			return new KanbanView(leaf, plugin, meta);
+		case "calendar":
+			return new CalendarView(leaf, plugin, meta);
 		case "tickler":
 			return new TicklerView(leaf, plugin, meta);
 		default:

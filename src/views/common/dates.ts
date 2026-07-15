@@ -22,3 +22,9 @@ export function endOfWeek(date: IsoDate, firstDayOfWeek: number): IsoDate {
 	const delta = (lastDow - dayOfWeekSun0(date) + 7) % 7;
 	return addDaysIso(date, delta);
 }
+
+/** Первый день недели, содержащей date, при заданном первом дне недели. */
+export function startOfWeek(date: IsoDate, firstDayOfWeek: number): IsoDate {
+	const delta = (dayOfWeekSun0(date) - firstDayOfWeek + 7) % 7;
+	return addDaysIso(date, -delta);
+}

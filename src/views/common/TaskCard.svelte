@@ -1,11 +1,13 @@
 <script lang="ts">
-	import { MarkdownView, Menu, Notice, TFile, type App } from "obsidian";
+	import { Menu, Notice, type App } from "obsidian";
 	import type { Intent } from "../../core/intents/Intent";
 	import type { IsoDate, Task } from "../../core/model/Task";
 	import type { IntentDispatcher } from "../../services/WritebackService";
 	import type { GtdFlowSettings } from "../../settings/Settings";
+	import type { DndPort, DragPayload } from "../dnd/types";
 	import { DatePromptModal } from "./DatePromptModal";
 	import { addDaysIso } from "./dates";
+	import { openTaskInFile } from "./openTask";
 	import {
 		PRIORITY_ICONS,
 		PRIORITY_LABELS,
@@ -21,6 +23,8 @@
 		settings,
 		today,
 		inTickler = false,
+		dnd = null,
+		dragPayload,
 	}: {
 		task: Task;
 		dispatcher: IntentDispatcher;
@@ -29,7 +33,20 @@
 		today: IsoDate;
 		/** Пункт «Вернуть во входящие» (снять 🛫) — только из вида отложенных. */
 		inTickler?: boolean;
+		/** Заданы оба — карточка сама drag-источник (ТЗ §8); иначе как раньше
+		 *  (kanban оборачивает карточку своим drag-контейнером). */
+		dnd?: DndPort | null;
+		dragPayload?: DragPayload;
 	} = $props();
+
+	const draggable = $derived(dnd !== null && dragPayload !== undefined);
+
+	function onCardPointerDown(e: PointerEvent): void {
+		if (dnd === null || dragPayload === undefined || e.button !== 0) return;
+		// клики по контролам карточки (чекбокс, меню) — не начало drag
+		if (e.target instanceof Element && e.target.closest("input, button, a, select, textarea")) return;
+		dnd.startDrag(dragPayload, e, e.currentTarget as HTMLElement);
+	}
 
 	const isDone = $derived(task.statusChar === "x" || task.statusChar === "X");
 	const segments = $derived(segmentDescription(task.description));
@@ -51,20 +68,6 @@
 
 	function deferTo(until: IsoDate): void {
 		void run({ type: "defer", key: task.key, until });
-	}
-
-	async function openInFile(): Promise<void> {
-		const file = app.vault.getAbstractFileByPath(task.filePath);
-		if (!(file instanceof TFile)) {
-			new Notice(`GTD Flow: файл не найден: ${task.filePath}`);
-			return;
-		}
-		const leaf = app.workspace.getLeaf(false);
-		await leaf.openFile(file);
-		// best effort: строка — подсказка на момент парса, а не идентичность
-		if (leaf.view instanceof MarkdownView) {
-			leaf.view.editor.setCursor({ line: task.lineStart, ch: 0 });
-		}
 	}
 
 	function openMenu(e: MouseEvent): void {
@@ -120,13 +123,19 @@
 				.setSection("nav")
 				.setIcon("file-text")
 				.setTitle("Открыть в файле")
-				.onClick(() => void openInFile()),
+				.onClick(() => void openTaskInFile(app, task)),
 		);
 		menu.showAtMouseEvent(e);
 	}
 </script>
 
-<div class="gtd-task-card" class:is-done={isDone}>
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div
+	class="gtd-task-card"
+	class:is-done={isDone}
+	class:is-draggable={draggable}
+	onpointerdown={onCardPointerDown}
+>
 	<input
 		type="checkbox"
 		class="gtd-task-check"
@@ -169,6 +178,14 @@
 	}
 	.gtd-task-card:hover {
 		background: var(--background-secondary);
+	}
+	.gtd-task-card.is-draggable {
+		/* без touch-action: none тач отдаст жест нативному скроллу до long-press */
+		touch-action: none;
+		cursor: grab;
+	}
+	.gtd-task-card.is-draggable:active {
+		cursor: grabbing;
 	}
 	.gtd-task-card.is-done .gtd-task-desc {
 		color: var(--text-muted);

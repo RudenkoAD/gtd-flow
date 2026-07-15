@@ -1,6 +1,7 @@
 import type { Component } from "svelte";
 import type GtdFlowPlugin from "../../main";
 import type { IntentDispatcher } from "../../services/WritebackService";
+import type { DndPort } from "../dnd/types";
 import { GtdView } from "../GtdView";
 import Tickler from "./Tickler.svelte";
 
@@ -14,13 +15,17 @@ export class TicklerView extends GtdView {
 	}
 
 	protected override props(): Record<string, unknown> {
-		// поле dispatcher появляется на плагине при связке этапа 3 в main.ts
-		const plugin = this.plugin as GtdFlowPlugin & { dispatcher: IntentDispatcher };
+		// dispatcher/dnd появляются на плагине при связке этапов 3–4 в main.ts
+		const plugin = this.plugin as GtdFlowPlugin & {
+			dispatcher: IntentDispatcher;
+			dnd?: DndPort;
+		};
 		return {
 			taskStore: plugin.taskStore,
 			dispatcher: plugin.dispatcher,
 			settings: plugin.settings,
 			app: plugin.app,
+			dnd: plugin.dnd ?? null,
 		};
 	}
 }

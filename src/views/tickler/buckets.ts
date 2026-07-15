@@ -25,6 +25,33 @@ export const BUCKET_ORDER: readonly { id: BucketId; title: string }[] = [
 	{ id: "later", title: "Позже" },
 ];
 
+/**
+ * Дата 🛫 для drop карточки на секцию-бакет (ТЗ §4/§8). Выбор границ:
+ *   Завтра     — today+1: минимальный defer (§1 требует start > today);
+ *   Эта неделя — конец текущей недели: последняя дата, при которой задача
+ *                остаётся в этом бакете (двигать внутри недели — вручную);
+ *   Позже      — today+30: верхней границы у бакета нет, месяц — разумное
+ *                «позже» по умолчанию (точнее — пресетами/датой из меню).
+ * Кромка: в последний день недели endOfWeek == today, а defer на today
+ * не отложил бы задачу вовсе (§1: start > today) — поднимаем до today+1.
+ */
+export function bucketDeferDate(
+	bucket: BucketId,
+	today: IsoDate,
+	firstDayOfWeek: number,
+): IsoDate {
+	switch (bucket) {
+		case "tomorrow":
+			return addDaysIso(today, 1);
+		case "thisWeek": {
+			const end = endOfWeek(today, firstDayOfWeek);
+			return end > today ? end : addDaysIso(today, 1);
+		}
+		case "later":
+			return addDaysIso(today, 30);
+	}
+}
+
 export function bucketize(
 	tasks: readonly Task[],
 	today: IsoDate,

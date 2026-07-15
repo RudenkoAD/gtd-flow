@@ -7,6 +7,8 @@
 	import type { TaskStore } from "../../stores/taskStore";
 	import TaskCard from "../common/TaskCard.svelte";
 	import VirtualList from "../common/VirtualList.svelte";
+	import type { DndPort } from "../dnd/types";
+	import { VIEW_TYPES } from "../registry";
 	import { filterTasks } from "./inboxLogic";
 
 	let {
@@ -14,11 +16,14 @@
 		dispatcher,
 		settings,
 		app,
+		dnd = null,
 	}: {
 		taskStore: TaskStore;
 		dispatcher: IntentDispatcher;
 		settings: GtdFlowSettings;
 		app: App;
+		/** null — drag выключен (телефон / сервис недоступен). */
+		dnd?: DndPort | null;
 	} = $props();
 
 	// props фиксированы на время монтирования (вид пересоздаётся с leaf) —
@@ -56,7 +61,15 @@
 	{:else}
 		<VirtualList items={shown}>
 			{#snippet row(task)}
-				<TaskCard {task} {dispatcher} {app} {settings} today={$today} />
+				<TaskCard
+					{task}
+					{dispatcher}
+					{app}
+					{settings}
+					today={$today}
+					{dnd}
+					dragPayload={{ taskKey: task.key, sourceViewType: VIEW_TYPES.inbox }}
+				/>
 			{/snippet}
 		</VirtualList>
 	{/if}

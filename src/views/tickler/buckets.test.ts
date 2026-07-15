@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { IsoDate } from "../../core/model/Task";
 import { makeTask } from "../../stores/testSupport";
-import { bucketize } from "./buckets";
+import { bucketDeferDate, bucketize } from "./buckets";
 
 function deferred(start: IsoDate, line = 0) {
 	return makeTask({ filePath: "GTD/Inbox.md", lineStart: line, start });
@@ -58,5 +58,34 @@ describe("bucketize", () => {
 	it("робастность: start == null уходит в «Позже», не роняя вид", () => {
 		const broken = makeTask({ filePath: "a.md", start: null });
 		expect(bucketize([broken], TODAY, 1).later).toEqual([broken]);
+	});
+});
+
+describe("bucketDeferDate — дата 🛫 при drop на бакет", () => {
+	it("Завтра — today+1", () => {
+		expect(bucketDeferDate("tomorrow", TODAY, 1)).toBe("2026-07-16");
+	});
+
+	it("Эта неделя — конец недели по firstDayOfWeek", () => {
+		expect(bucketDeferDate("thisWeek", TODAY, 1)).toBe("2026-07-19");
+		expect(bucketDeferDate("thisWeek", TODAY, 0)).toBe("2026-07-18");
+	});
+
+	it("Эта неделя в последний день недели — поднимается до завтра", () => {
+		// иначе defer на today не отложил бы задачу вовсе (§1: start > today)
+		expect(bucketDeferDate("thisWeek", "2026-07-19", 1)).toBe("2026-07-20");
+	});
+
+	it("Позже — today+30", () => {
+		expect(bucketDeferDate("later", TODAY, 1)).toBe("2026-08-14");
+	});
+
+	it("drop-дата попадает в свой же бакет (согласованность с bucketize)", () => {
+		for (const id of ["tomorrow", "later"] as const) {
+			const t = makeTask({ filePath: "a.md", start: bucketDeferDate(id, TODAY, 1) });
+			expect(bucketize([t], TODAY, 1)[id]).toEqual([t]);
+		}
+		const w = makeTask({ filePath: "a.md", start: bucketDeferDate("thisWeek", TODAY, 1) });
+		expect(bucketize([w], TODAY, 1).thisWeek).toEqual([w]);
 	});
 });

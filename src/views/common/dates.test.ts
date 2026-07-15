@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addDaysIso, dayOfWeekSun0, endOfWeek } from "./dates";
+import { addDaysIso, dayOfWeekSun0, endOfWeek, startOfWeek } from "./dates";
 
 describe("addDaysIso", () => {
 	it("шагает через границу месяца", () => {
@@ -47,5 +47,21 @@ describe("endOfWeek", () => {
 
 	it("первый день недели — конец через 6 дней", () => {
 		expect(endOfWeek("2026-07-13", 1)).toBe("2026-07-19");
+	});
+});
+
+describe("startOfWeek", () => {
+	it("среда откатывается к понедельнику или воскресенью", () => {
+		expect(startOfWeek("2026-07-15", 1)).toBe("2026-07-13");
+		expect(startOfWeek("2026-07-15", 0)).toBe("2026-07-12");
+	});
+
+	it("первый день недели — сам себе начало", () => {
+		expect(startOfWeek("2026-07-13", 1)).toBe("2026-07-13");
+		expect(startOfWeek("2026-07-12", 0)).toBe("2026-07-12");
+	});
+
+	it("переход через границу года", () => {
+		expect(startOfWeek("2026-01-01", 1)).toBe("2025-12-29");
 	});
 });

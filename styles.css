@@ -14,3 +14,10 @@
 	justify-content: center;
 	color: var(--text-muted);
 }
+
+/* Подсветка drop-цели под курсором: класс ставит DndService (общий для
+   колонок kanban, ячеек календаря, бакетов тикля). */
+.gtd-dnd-over {
+	outline: 2px solid var(--interactive-accent);
+	outline-offset: -2px;
+}

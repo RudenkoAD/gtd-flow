@@ -1,0 +1,28 @@
+name: CI
+
+# Гейты на каждый пуш в основную ветку и на PR: чистота core, тесты, typecheck+сборка.
+on:
+  push:
+    branches: ["master", "main"]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+          cache: "npm"
+
+      - run: npm ci
+
+      # npm test = check:core (чистота ядра) + vitest
+      - name: Tests
+        run: npm test
+
+      # typecheck + production-сборка (esbuild)
+      - name: Build
+        run: npm run build

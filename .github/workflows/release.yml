@@ -1,0 +1,39 @@
+name: Release
+
+# Публикует релиз плагина при пуше тега-версии (например `git push origin 0.1.0`).
+# Ассеты main.js / manifest.json / styles.css цепляются к релизу — их и качает BRAT.
+# Тег должен совпадать с полем "version" в manifest.json.
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+          cache: "npm"
+
+      - name: Install & build
+        run: |
+          npm ci
+          npm run build
+
+      - name: Create GitHub release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          # опубликованный (не draft) релиз — BRAT видит только опубликованные
+          gh release create "$tag" \
+            --title "$tag" \
+            --generate-notes \
+            main.js manifest.json styles.css

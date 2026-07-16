@@ -2,6 +2,7 @@ import type { ViewStateResult } from "obsidian";
 import type { Component } from "svelte";
 import { writable, type Writable } from "svelte/store";
 import type GtdFlowPlugin from "../../main";
+import { normalizeActiveNamespace } from "../../core/namespace/namespace";
 import type { IntentDispatcher } from "../../services/WritebackService";
 import { taskMenuPortsFromPlugin } from "../common/taskMenu";
 import type { DndPort } from "../dnd/types";
@@ -21,6 +22,14 @@ export class CalendarView extends GtdView {
 	/** setState приходит ПОСЛЕ onOpen/mount — состояние доносится через store. */
 	private readonly persisted: Writable<CalendarPersistedState> = writable({});
 	private lastState: CalendarPersistedState = {};
+
+	/**
+	 * Календарь — единственный вид, где локальное пространство может быть ALL_NS
+	 * («Все»): переопределяем нормализацию, разрешая этот sentinel (allowAll).
+	 */
+	protected override normalizeNs(name: string): string {
+		return normalizeActiveNamespace(name, this.plugin.settings.namespaces, true);
+	}
 
 	protected override component(): Component<any> {
 		return Calendar as unknown as Component<any>;
@@ -42,10 +51,12 @@ export class CalendarView extends GtdView {
 			// структурный порт CalendarWritePort — совместим с VaultAdapter
 			vault: plugin.vaultAdapter,
 			dayStatus: plugin.dayStatus,
-			// реактивный источник активного пространства + переключатель (глобально)
-			activeNamespace: plugin.activeNamespace$,
+			// ЛОКАЛЬНОЕ пространство вида (per-tab) + его переключатель; allowAll —
+			// только у календаря (вкладка «Все»). Глобальный дефолт нужен как цель
+			// быстрого ввода в режиме «Все» — читается из settings.activeNamespace.
+			activeNamespace: { subscribe: this.localNamespace$.subscribe },
 			namespaces: plugin.settings.namespaces,
-			setActiveNamespace: (name: string) => plugin.setActiveNamespace(name),
+			setActiveNamespace: (name: string) => this.setLocalNamespace(name),
 			persisted: { subscribe: this.persisted.subscribe },
 			persist: (s: CalendarPersistedState) => {
 				this.lastState = s;
@@ -55,7 +66,8 @@ export class CalendarView extends GtdView {
 	}
 
 	override getState(): Record<string, unknown> {
-		return { ...this.lastState };
+		// nsName (базовый) + режим/якорь календаря в один JSON-объект viewState
+		return { ...this.namespaceState(), ...this.lastState };
 	}
 
 	override async setState(state: unknown, result: ViewStateResult): Promise<void> {
@@ -64,6 +76,7 @@ export class CalendarView extends GtdView {
 			this.lastState = next;
 			this.persisted.set(next);
 		}
+		// базовый setState восстанавливает nsName и зовёт ItemView.setState
 		await super.setState(state, result);
 	}
 }

@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+	ALL_NS,
 	DEFAULT_NS,
+	eventVisibleInNamespace,
 	inNamespace,
 	type NamespaceDef,
 	normalizeActiveNamespace,
 	normalizeNsPath,
 	NS_CONVENTION,
+	nsCommonTarget,
 	nsRoot,
 	nsTargetPath,
 	resolveNamespace,
@@ -160,6 +163,50 @@ describe("inNamespace — предикат фильтра", () => {
 		expect(inNamespace("Work/личное.md", "Жизнь", f)).toBe(true);
 		expect(inNamespace("Work/рабочее.md", null, f)).toBe(false);
 	});
+
+	it("ALL_NS («Все») ⇒ прозрачен: любой файл проходит, независимо от папки", () => {
+		const f = { active: ALL_NS, defs };
+		expect(inNamespace("Work/x.md", null, f)).toBe(true);
+		expect(inNamespace("Личное/x.md", null, f)).toBe(true);
+		expect(inNamespace("Разное/x.md", null, f)).toBe(true); // «Общее» тоже
+	});
+});
+
+describe("eventVisibleInNamespace — события: активное ∪ «Общее», плюс «Все»", () => {
+	const defs = [WORK, LIFE];
+
+	it("пустой defs ⇒ прозрачен (true) при любом active", () => {
+		expect(eventVisibleInNamespace("Work/e.md", null, { active: "Работа", defs: [] })).toBe(true);
+	});
+
+	it("активное именованное пространство: свои события ПЛЮС общие (DEFAULT_NS)", () => {
+		const f = { active: "Работа", defs };
+		expect(eventVisibleInNamespace("Work/e.md", null, f)).toBe(true); // своё
+		expect(eventVisibleInNamespace("Разное/e.md", null, f)).toBe(true); // «Общее» — везде
+		expect(eventVisibleInNamespace("Личное/e.md", null, f)).toBe(false); // чужое ns — мимо
+	});
+
+	it("активное «Общее» (DEFAULT_NS): только события вне корней", () => {
+		const f = { active: DEFAULT_NS, defs };
+		expect(eventVisibleInNamespace("Разное/e.md", null, f)).toBe(true);
+		expect(eventVisibleInNamespace("Work/e.md", null, f)).toBe(false);
+		expect(eventVisibleInNamespace("Личное/e.md", null, f)).toBe(false);
+	});
+
+	it("ALL_NS («Все») ⇒ все события всех пространств", () => {
+		const f = { active: ALL_NS, defs };
+		expect(eventVisibleInNamespace("Work/e.md", null, f)).toBe(true);
+		expect(eventVisibleInNamespace("Личное/e.md", null, f)).toBe(true);
+		expect(eventVisibleInNamespace("Разное/e.md", null, f)).toBe(true);
+	});
+
+	it("override уводит событие в другое пространство (учитывается предикатом)", () => {
+		const f = { active: "Работа", defs };
+		// событие из Личное с override «Работа» видно в «Работа»
+		expect(eventVisibleInNamespace("Личное/e.md", "Работа", f)).toBe(true);
+		// общее событие с override в «Жизнь» в «Работа» уже не общее — мимо
+		expect(eventVisibleInNamespace("Разное/e.md", "Жизнь", f)).toBe(false);
+	});
 });
 
 describe("normalizeActiveNamespace", () => {
@@ -179,6 +226,15 @@ describe("normalizeActiveNamespace", () => {
 		expect(normalizeActiveNamespace("Работа", [LIFE])).toBe(DEFAULT_NS);
 		expect(normalizeActiveNamespace("Работа", [])).toBe(DEFAULT_NS);
 		expect(normalizeActiveNamespace("Неизвестное", defs)).toBe(DEFAULT_NS);
+	});
+
+	it("ALL_NS валиден ТОЛЬКО при allowAll (календарь); иначе → DEFAULT_NS", () => {
+		expect(normalizeActiveNamespace(ALL_NS, defs, true)).toBe(ALL_NS);
+		expect(normalizeActiveNamespace(ALL_NS, defs)).toBe(DEFAULT_NS); // без allowAll
+		expect(normalizeActiveNamespace(ALL_NS, defs, false)).toBe(DEFAULT_NS);
+		// allowAll не ломает обычную нормализацию именованных/удалённых
+		expect(normalizeActiveNamespace("Работа", defs, true)).toBe("Работа");
+		expect(normalizeActiveNamespace("Неизвестное", defs, true)).toBe(DEFAULT_NS);
 	});
 });
 
@@ -222,6 +278,42 @@ describe("nsTargetPath — цели создания по конвенции", (
 	});
 });
 
+describe("nsCommonTarget — «Общее» в один ряд с именованными (корень = commonRoot)", () => {
+	const defs = [WORK, WORK_SUB, LIFE];
+
+	it("именованное пространство ⇒ <root>/<suffix> (commonRoot игнорируется)", () => {
+		expect(nsCommonTarget("Работа", defs, NS_CONVENTION.inbox, "GTD")).toBe("Work/Входящие.md");
+		expect(nsCommonTarget("Жизнь", defs, NS_CONVENTION.events, "GTD")).toBe("Личное/События.md");
+		// вложенный корень берёт свой самый длинный root
+		expect(nsCommonTarget("Проект X", defs, NS_CONVENTION.archive, "GTD")).toBe(
+			"Work/Проекты/X/Архив.md",
+		);
+	});
+
+	it("DEFAULT_NS ⇒ <commonRoot>/<suffix> (в отличие от nsTargetPath — не fallback)", () => {
+		expect(nsCommonTarget(DEFAULT_NS, defs, NS_CONVENTION.inbox, "GTD")).toBe("GTD/Входящие.md");
+		expect(nsCommonTarget(DEFAULT_NS, defs, NS_CONVENTION.inbox, "Жизнь")).toBe("Жизнь/Входящие.md");
+	});
+
+	it("неизвестное имя (нет среди defs) ⇒ тоже <commonRoot>/<suffix>", () => {
+		expect(nsCommonTarget("Нет такого", defs, NS_CONVENTION.inbox, "GTD")).toBe("GTD/Входящие.md");
+	});
+
+	it("commonRoot нормализуется (хвостовой слэш срезается)", () => {
+		expect(nsCommonTarget(DEFAULT_NS, defs, NS_CONVENTION.inbox, "GTD/")).toBe("GTD/Входящие.md");
+	});
+
+	it("пустой/корневой commonRoot ⇒ голый suffix (файл в корне хранилища)", () => {
+		expect(nsCommonTarget(DEFAULT_NS, defs, NS_CONVENTION.inbox, "")).toBe("Входящие.md");
+		expect(nsCommonTarget(DEFAULT_NS, defs, NS_CONVENTION.inbox, "/")).toBe("Входящие.md");
+	});
+
+	it("именованное с пустым/корневым root ⇒ падает на commonRoot", () => {
+		const rooted = [{ name: "Корневое", root: "/" }];
+		expect(nsCommonTarget("Корневое", rooted, NS_CONVENTION.inbox, "GTD")).toBe("GTD/Входящие.md");
+	});
+});
+
 describe("DEFAULT_NS — sentinel", () => {
 	it("не совпадает с обычными пользовательскими именами", () => {
 		expect(DEFAULT_NS).not.toBe("default");
@@ -229,5 +321,14 @@ describe("DEFAULT_NS — sentinel", () => {
 		expect(DEFAULT_NS.endsWith("default")).toBe(true);
 		// содержит непечатный префикс (NUL) — недостижим вводом с клавиатуры
 		expect(DEFAULT_NS.charCodeAt(0)).toBe(0);
+	});
+});
+
+describe("ALL_NS — sentinel", () => {
+	it("не совпадает ни с DEFAULT_NS, ни с вводимыми именами; недостижим с клавиатуры", () => {
+		expect(ALL_NS).not.toBe(DEFAULT_NS);
+		expect(ALL_NS).not.toBe("all");
+		expect(ALL_NS).not.toBe("Все");
+		expect(ALL_NS.charCodeAt(0)).toBe(0); // ведущий NUL
 	});
 });

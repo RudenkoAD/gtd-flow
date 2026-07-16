@@ -56,16 +56,16 @@
 		cards?: CardPort | null;
 		/** Структурный порт файла шаблонов (создание шаблона с нуля); ~ VaultAdapter. */
 		vault: TemplateVaultPort;
-		/** Реактивное активное пространство (plugin.activeNamespace$). */
+		/** Реактивное ЛОКАЛЬНОЕ активное пространство вида (per-tab, см. GtdView). */
 		activeNamespace: Readable<string>;
 		/** Снимок списка пространств (settings.namespaces). */
 		namespaces: readonly NamespaceDef[];
-		/** Глобальная смена активного пространства (plugin.setActiveNamespace). */
+		/** Смена ЛОКАЛЬНОГО пространства этого вида (persist в viewState). */
 		setActiveNamespace: (name: string) => void;
 	} = $props();
 
-	// Фильтр пространства для templatesStore: смена активного пере-рендерит вид
-	// подпиской стора (эпоху индекса не бампает, см. память проекта).
+	// Фильтр пространства для templatesStore: смена ЛОКАЛЬНОГО пространства вида
+	// пере-рендерит вид подпиской стора (эпоху индекса не бампает).
 	// svelte-ignore state_referenced_locally
 	const namespace$: Readable<NamespaceFilter> = derived(activeNamespace, (a) => ({
 		active: a,

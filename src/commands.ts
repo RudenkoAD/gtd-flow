@@ -13,7 +13,12 @@ import type GtdFlowPlugin from "./main";
 import type { CardPort } from "./services/CardService";
 import type { Task } from "./core/model/Task";
 import { appendLine } from "./views/calendar/calendarLogic";
-import { NS_CONVENTION, nsTargetPath } from "./core/namespace/namespace";
+import {
+	NS_CONVENTION,
+	nsCommonTarget,
+	resolveNamespace,
+	type NamespaceFilter,
+} from "./core/namespace/namespace";
 import { pickBoardColumn, pickDate, pickNamespace } from "./views/common/pickers";
 import {
 	captureTargetInNamespace,
@@ -69,7 +74,11 @@ export function registerCommands(plugin: GtdFlowPlugin): void {
 	});
 }
 
-/** Пикер пространства → глобальное переключение (нормализация/персист — в setActiveNamespace). */
+/**
+ * Пикер пространства → переключение ВЕЗДЕ: глобальный дефолт + локальные пространства
+ * всех открытых вкладок GTD (setNamespaceEverywhere). Это осознанное «переключить всё
+ * разом»; отдельные виды по-прежнему меняются своими селекторами шапок пофайлово.
+ */
 async function switchNamespace(plugin: GtdFlowPlugin): Promise<void> {
 	const name = await pickNamespace(
 		plugin.app,
@@ -77,12 +86,12 @@ async function switchNamespace(plugin: GtdFlowPlugin): Promise<void> {
 		plugin.settings.activeNamespace,
 	);
 	if (name === null) return;
-	plugin.setActiveNamespace(name);
+	plugin.setNamespaceEverywhere(name);
 }
 
 // ---------------------------------------------------------------------------
 // Быстрый ввод (паттерн quick-add календаря: append в первый gtd-inbox файл,
-// фолбэк inboxSources[0])
+// фолбэк <commonRoot>/Входящие.md для «Общего», <root>/Входящие.md для именованного)
 // ---------------------------------------------------------------------------
 
 class QuickCaptureModal extends Modal {
@@ -125,13 +134,14 @@ async function capture(plugin: GtdFlowPlugin, text: string): Promise<void> {
 	const line = quickCaptureLine(text);
 	if (line === null) return; // пустой ввод — молча ничего
 	// цель захвата — в АКТИВНОМ пространстве, В МОМЕНТ ввода: первый gtd-inbox файл
-	// этого пространства, иначе <root>/Входящие.md (именованное) / inboxSources[0]
+	// этого пространства, иначе конвенционные Входящие.md: <root>/ (именованное) или
+	// <commonRoot>/ («Общее» — nsCommonTarget подставляет корень «Общего»)
 	const active = plugin.settings.activeNamespace;
 	const defs = plugin.settings.namespaces;
-	const fallback = nsTargetPath(active, defs, NS_CONVENTION.inbox, plugin.settings.inboxSources[0] ?? "");
+	const fallback = nsCommonTarget(active, defs, NS_CONVENTION.inbox, plugin.settings.commonRoot);
 	const target = captureTargetInNamespace(plugin.taskStore.index().all(), active, defs, fallback);
 	if (target === "") {
-		new Notice("GTD Flow: не задан файл входящих (inboxSources)");
+		new Notice("GTD Flow: не задан файл входящих (пустая «Корневая папка Общего»)");
 		return;
 	}
 	try {
@@ -227,7 +237,13 @@ async function columnAtCursor(
 		noticeNoTask();
 		return;
 	}
-	const found = plugin.boards.discoverBoards().boards;
+	// доски ПРОСТРАНСТВА ЗАДАЧИ (не активного вида): перенос идёт внутри пространства
+	// задачи под курсором — она едет на доску своего же пространства
+	const taskFilter: NamespaceFilter = {
+		active: resolveNamespace(task.filePath, task.nsOverride ?? null, plugin.settings.namespaces),
+		defs: plugin.settings.namespaces,
+	};
+	const found = plugin.boards.discoverBoards(taskFilter).boards;
 	if (found.length === 0) {
 		new Notice("GTD Flow: досок не найдено");
 		return;

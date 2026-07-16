@@ -95,9 +95,14 @@ export class BoardService {
 
 	// --- discovery ---
 
-	/** Публичный discovery: доски АКТИВНОГО пространства (пикеры/список вида). */
-	discoverBoards(): BoardDiscovery {
-		return this.enumerateBoards(this.deps.namespaceFilter?.());
+	/**
+	 * Публичный discovery досок пространства. `filter` — явное пространство
+	 * вызывателя (пофайловый вид Kanban передаёт своё ЛОКАЛЬНОЕ; меню/пикеры —
+	 * пространство ЗАДАЧИ). Без него — фолбэк на инжектированный namespaceFilter()
+	 * (обратная совместимость старых вызовов). Прозрачен при пустом defs / ALL_NS.
+	 */
+	discoverBoards(filter?: NamespaceFilter): BoardDiscovery {
+		return this.enumerateBoards(filter ?? this.deps.namespaceFilter?.());
 	}
 
 	/**

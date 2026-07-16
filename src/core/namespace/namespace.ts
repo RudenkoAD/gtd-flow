@@ -29,9 +29,20 @@ export interface NamespaceDef {
 export const DEFAULT_NS = String.fromCharCode(0) + "default";
 
 /**
+ * Sentinel «Все пространства» — прозрачный агрегат, показывающий задачи и события
+ * ВСЕХ пространств сразу. Отдельная вкладка ТОЛЬКО календаря (проп allowAll у
+ * переключателя): по дизайну «Все» имеет смысл лишь там, где сведение всех
+ * пространств в один вид полезно (общий календарь). Как DEFAULT_NS — стабильная
+ * константа с ведущим NUL, недостижимая вводом с клавиатуры. Фильтр с active ===
+ * ALL_NS прозрачен (inNamespace/eventVisibleInNamespace возвращают true всегда).
+ */
+export const ALL_NS = String.fromCharCode(0) + "all";
+
+/**
  * Активное пространство + список определений — параметр фильтрации запросов.
  * Пустой defs ⇒ пространств не настроено ⇒ всё в DEFAULT_NS ⇒ фильтр прозрачен
- * (обратная совместимость: поведение до появления пространств).
+ * (обратная совместимость: поведение до появления пространств). active === ALL_NS
+ * ⇒ фильтр тоже прозрачен (вкладка «Все» календаря).
  */
 export interface NamespaceFilter {
 	active: string;
@@ -101,8 +112,8 @@ export function nsRoot(name: string, defs: readonly NamespaceDef[]): string | nu
 
 /**
  * Предикат членства файла в активном пространстве фильтра. Прозрачен (всегда
- * true), когда пространств не настроено (defs пуст) — обратная совместимость,
- * независимо от значения active.
+ * true), когда пространств не настроено (defs пуст) ИЛИ active === ALL_NS
+ * (вкладка «Все» календаря) — обратная совместимость и агрегат «все пространства».
  */
 export function inNamespace(
 	filePath: string,
@@ -110,7 +121,27 @@ export function inNamespace(
 	filter: NamespaceFilter,
 ): boolean {
 	if (filter.defs.length === 0) return true;
+	if (filter.active === ALL_NS) return true;
 	return resolveNamespace(filePath, nsOverride, filter.defs) === filter.active;
+}
+
+/**
+ * Предикат видимости СОБЫТИЯ (container "events") в календаре фильтра. В отличие
+ * от inNamespace, «общие» события (пространство DEFAULT_NS — вне корней) видны в
+ * календаре ЛЮБОГО пространства: серия активного ns ∪ серии «Общего». Это касается
+ * ТОЛЬКО событий — задачи режутся обычным inNamespace (общие задачи в чужой
+ * календарь не протекают). ALL_NS / пустой defs — прозрачен (все события).
+ * Дедуп не нужен: множества {активное ns} и {DEFAULT_NS} не пересекаются.
+ */
+export function eventVisibleInNamespace(
+	filePath: string,
+	nsOverride: string | null | undefined,
+	filter: NamespaceFilter,
+): boolean {
+	if (filter.defs.length === 0) return true;
+	if (filter.active === ALL_NS) return true;
+	const ns = resolveNamespace(filePath, nsOverride, filter.defs);
+	return ns === filter.active || ns === DEFAULT_NS;
 }
 
 /**
@@ -123,7 +154,11 @@ export function inNamespace(
 export function normalizeActiveNamespace(
 	active: string,
 	defs: readonly NamespaceDef[],
+	allowAll = false,
 ): string {
+	// ALL_NS («Все») валиден только там, где вызыватель разрешил (календарь):
+	// глобальный дефолт и не-календарные виды его не принимают (откат к «Общему»).
+	if (allowAll && active === ALL_NS) return ALL_NS;
 	if (active === DEFAULT_NS) return DEFAULT_NS;
 	return defs.some((d) => d.name === active) ? active : DEFAULT_NS;
 }
@@ -133,11 +168,13 @@ export function normalizeActiveNamespace(
 // ---------------------------------------------------------------------------
 
 /**
- * Конвенция имён файлов/папок ВНУТРИ корня именованного пространства (дизайн).
- * Для «Общего» (DEFAULT_NS) целями остаются существующие глобальные настройки
- * (inboxSources[0], eventsFile, archiveFile, spawnTarget и т.п.) — их подставляет
- * вызыватель как fallback в nsTargetPath. Это доменная константа, НЕ настройка:
- * ядру можно (кириллица в путях безопасна — сравнение по code unit'ам).
+ * Конвенция имён файлов/папок ВНУТРИ корня пространства (дизайн). Именованное
+ * пространство кладёт эти файлы под свой root; «Общее» (DEFAULT_NS) — под
+ * `commonRoot` (см. nsCommonTarget): захват → <commonRoot>/Входящие.md и т.д.
+ * Часть целей «Общего» всё ещё берётся из выделенных настроек (eventsFile,
+ * archiveFile, spawnTarget) — их вызыватель подставляет как fallback в nsTargetPath.
+ * Это доменная константа, НЕ настройка: ядру можно (кириллица в путях безопасна —
+ * сравнение по code unit'ам).
  */
 export const NS_CONVENTION = {
 	/** Фолбэк-цель захвата и spawn-target именованного пространства. */
@@ -159,7 +196,9 @@ export const NS_CONVENTION = {
  * найден и непуст) — `<root>/<suffix>`; для «Общего»/неизвестного имени (root
  * === null или "") — fallback (существующая глобальная настройка). suffix — имя
  * файла или папки из NS_CONVENTION. Настроек ядро не знает: fallback приходит
- * снаружи (образец inboxIncludePlain → InboxConfig).
+ * снаружи (образец inboxIncludePlain → InboxConfig). Применяется там, где у
+ * «Общего» есть ВЫДЕЛЕННАЯ настройка-цель (eventsFile, archiveFile, spawnTarget);
+ * где её нет (захват — после выпила inboxSources) — nsCommonTarget.
  */
 export function nsTargetPath(
 	name: string,
@@ -170,4 +209,27 @@ export function nsTargetPath(
 	const root = nsRoot(name, defs);
 	if (root === null || root === "") return fallback;
 	return `${root}/${suffix}`;
+}
+
+/**
+ * Целевой путь, где «Общее» СТОИТ В ОДИН РЯД с именованными: у именованного
+ * пространства (root найден и непуст) — `<root>/<suffix>`; у «Общего»/неизвестного
+ * имени — `<commonRoot>/<suffix>` (commonRoot — «дом» создаваемых файлов «Общего»,
+ * настройка commonRoot). Пустой commonRoot ⇒ голый suffix (файл в корне хранилища).
+ *
+ * Отличие от nsTargetPath: 4-й параметр — не готовый fallback-ПУТЬ, а КОРНЕВАЯ ПАПКА
+ * «Общего», к которой сам дописывается suffix. Применять там, где у «Общего» нет
+ * выделенной настройки-цели: захват (быстрый ввод / фолбэк spawn) после выпила
+ * inboxSources → <commonRoot>/Входящие.md. Настроек ядро не знает — commonRoot
+ * приходит снаружи (settings.commonRoot).
+ */
+export function nsCommonTarget(
+	name: string,
+	defs: readonly NamespaceDef[],
+	suffix: string,
+	commonRoot: string,
+): string {
+	const named = nsRoot(name, defs);
+	const root = named === null || named === "" ? normalizeNsPath(commonRoot) : named;
+	return root === "" ? suffix : `${root}/${suffix}`;
 }

@@ -39,13 +39,13 @@ export class ProjectView extends GtdView {
 			app: plugin.app,
 			projects: plugin.projects ?? null,
 			settings: plugin.settings,
-			// Пространства (namespaces): реактивный источник активного, список
-			// определений и сеттер — для NamespaceSwitcher в шапке и ns-цели нового
-			// проекта. Смена активного не бампает эпоху индекса — вид пере-рендерится
-			// подпиской на activeNamespace$ (см. память проекта), как на epoch.
-			activeNamespace$: plugin.activeNamespace$,
+			// ЛОКАЛЬНОЕ пространство вида (per-tab): реактивный источник, список
+			// определений и локальный сеттер — для NamespaceSwitcher в шапке, фильтра
+			// discovery проектов и ns-цели нового проекта. Смена активного эпоху
+			// индекса не бампает — вид пере-рендерится подпиской на localNamespace$.
+			activeNamespace$: { subscribe: this.localNamespace$.subscribe },
 			namespaces: plugin.settings.namespaces,
-			setActiveNamespace: (name: string) => plugin.setActiveNamespace(name),
+			setActiveNamespace: (name: string) => this.setLocalNamespace(name),
 			menuPorts: taskMenuPortsFromPlugin(plugin),
 			// Выход из графа проекта в обзор «Проекты» (симметрично openProject там).
 			openOverview: () => void plugin.activateView("projects"),
@@ -58,7 +58,8 @@ export class ProjectView extends GtdView {
 	}
 
 	override getState(): Record<string, unknown> {
-		return { ...this.lastState };
+		// nsName (базовый) + выбранный проект в один JSON-объект viewState
+		return { ...this.namespaceState(), ...this.lastState };
 	}
 
 	override async setState(state: unknown, result: ViewStateResult): Promise<void> {
@@ -67,6 +68,7 @@ export class ProjectView extends GtdView {
 			this.lastState = next;
 			this.persisted.set(next);
 		}
+		// базовый setState восстанавливает nsName и зовёт ItemView.setState
 		await super.setState(state, result);
 	}
 }

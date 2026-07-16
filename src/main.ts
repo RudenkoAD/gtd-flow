@@ -1,11 +1,12 @@
 import { Notice, Plugin, WorkspaceLeaf } from "obsidian";
 import { writable, type Writable } from "svelte/store";
 import { VIEW_META, VIEW_TYPES, type GtdViewKind } from "./views/registry";
-import { DEFAULT_SETTINGS, type GtdFlowSettings } from "./settings/Settings";
+import { DEFAULT_SETTINGS, defaultUnderCommonRoot, type GtdFlowSettings } from "./settings/Settings";
 import {
 	NS_CONVENTION,
 	type NamespaceFilter,
 	normalizeActiveNamespace,
+	nsCommonTarget,
 	nsTargetPath,
 	resolveNamespace,
 } from "./core/namespace/namespace";
@@ -18,16 +19,23 @@ import { IndexerService } from "./services/IndexerService";
 import { WritebackService } from "./services/WritebackService";
 import { BoardService } from "./services/BoardService";
 import { RecurrenceService } from "./services/RecurrenceService";
+import { PromoteService } from "./services/PromoteService";
 import { ProjectService } from "./services/ProjectService";
 import { CardService } from "./services/CardService";
 import { DayStatusService } from "./services/DayStatusService";
 import { registerCommands } from "./commands";
+import type { IsoDate } from "./core/model/Task";
 import { createTaskStore, type TaskStore } from "./stores/taskStore";
 import { createGtdView } from "./views/createView";
+import { GtdView } from "./views/GtdView";
 import { DndService } from "./views/dnd/DndService";
 import { createDemoVault, demoVaultNotice } from "./onboarding/demoVault";
 import { WelcomeModal } from "./onboarding/WelcomeModal";
-import { ensureCaptureFile } from "./views/common/taskActions";
+import {
+	captureTargetInNamespace,
+	ensureCaptureFile,
+	ensureCaptureFileNs,
+} from "./views/common/taskActions";
 
 export default class GtdFlowPlugin extends Plugin {
 	settings: GtdFlowSettings = DEFAULT_SETTINGS;
@@ -38,14 +46,15 @@ export default class GtdFlowPlugin extends Plugin {
 	boards!: BoardService;
 	dnd!: DndService;
 	recurrence!: RecurrenceService;
+	promote!: PromoteService;
 	projects!: ProjectService;
 	cards!: CardService;
 	dayStatus!: DayStatusService;
 	/**
-	 * Реактивный источник активного пространства для видов (per-namespace виды
-	 * подписываются на него). Отдельный store, а НЕ epoch индекса: смена активного
-	 * пространства настроек эпоху не бампает (см. память проекта), поэтому виды
-	 * пере-рендерятся именно этой подпиской. Инициализируется в onload из настроек.
+	 * ГЛОБАЛЬНЫЙ дефолт активного пространства (store). С итерации 2 фидбека виды
+	 * переключаются ПОФАЙЛОВО и на него НЕ подписаны — он лишь задаёт стартовое
+	 * пространство новой вкладки и цель палитры-захвата (плюс синхронен с
+	 * settings.activeNamespace). Инициализируется в onload из настроек.
 	 */
 	activeNamespace$!: Writable<string>;
 	private indexReadyFlag = false;
@@ -72,6 +81,9 @@ export default class GtdFlowPlugin extends Plugin {
 			onReady: () => {
 				this.indexReadyFlag = true;
 				void this.recurrence.runPass();
+				// «Всплытие во входящие» пропущенных откатов дня (приложение было
+				// закрыто в момент наступления 🛫): при promoteTo="inbox" — не no-op.
+				void this.promote.runPass();
 			},
 		});
 		this.taskStore = createTaskStore(this.indexer);
@@ -124,6 +136,58 @@ export default class GtdFlowPlugin extends Plugin {
 			},
 		});
 		clock.onDayRollover(() => void this.recurrence.runPass());
+		// Возврат отложенной задачи (фидбек): при promoteTo="inbox" задача, чья 🛫
+		// наступила на откате дня, приходит во «Входящие» своего пространства
+		// (снятие тегов досок + перенос строки в inbox-файл). "origin" — no-op.
+		this.promote = new PromoteService({
+			feed: this.indexer,
+			dispatcher: this.dispatcher,
+			todayIso: () => clock.todayIso(),
+			indexReady: () => this.indexReadyFlag,
+			settings: () => ({
+				promoteTo: this.settings.promoteTo,
+				includePlain: this.settings.inboxIncludePlain,
+			}),
+			// цель — inbox-файл ПРОСТРАНСТВА задачи (как quick-add во «Входящих»):
+			// первый существующий gtd-inbox файл пространства, иначе конвенционный путь.
+			inboxTargetFor: (task) => {
+				const ns = resolveNamespace(
+					task.filePath,
+					task.nsOverride ?? null,
+					this.settings.namespaces,
+				);
+				const fallback = nsCommonTarget(
+					ns,
+					this.settings.namespaces,
+					NS_CONVENTION.inbox,
+					this.settings.commonRoot,
+				);
+				return captureTargetInNamespace(
+					this.indexer.getIndex().all(),
+					ns,
+					this.settings.namespaces,
+					fallback,
+				);
+			},
+			// файл входящих создаётся и помечается gtd-inbox (+ gtd-namespace для
+			// файла-исключения) СТРОГО до переноса строки — иначе перенесённая задача
+			// осела бы в plain-файле и снова не попала во входящие.
+			ensureInboxFile: (path, task) => {
+				const ns = resolveNamespace(
+					task.filePath,
+					task.nsOverride ?? null,
+					this.settings.namespaces,
+				);
+				return ensureCaptureFileNs(this.vaultAdapter, path, ns, this.settings.namespaces);
+			},
+			// окно прохода (lastRun, today]: первый проход усыновляет дату без обработки
+			lastRun: () => (this.settings.promoteLastRun as IsoDate | null) ?? null,
+			setLastRun: async (day) => {
+				this.settings.promoteLastRun = day;
+				await this.saveSettings();
+			},
+		});
+		clock.onDayRollover(() => void this.promote.runPass());
 		this.projects = new ProjectService({
 			feed: this.indexer,
 			write: this.vaultAdapter,
@@ -162,7 +226,14 @@ export default class GtdFlowPlugin extends Plugin {
 			processFrontmatter: async (path, fn) => {
 				await this.vaultAdapter.processFrontmatter(path, fn);
 			},
-			defaultFilePath: () => this.settings.dayStatusFile,
+			// дефолтный путь статусов «следует за commonRoot»: нетронутое поле
+			// создаётся в «Корневой папке Общего», кастомное значение — как задано
+			defaultFilePath: () =>
+				defaultUnderCommonRoot(
+					this.settings.dayStatusFile,
+					DEFAULT_SETTINGS.dayStatusFile,
+					this.settings.commonRoot,
+				),
 			onVaultChange: (cb) => {
 				// после полного резолва кэша (в т.ч. первого после старта/перезагрузки)
 				// — файл статусов уже обнаружим по frontmatter-флагу
@@ -334,9 +405,12 @@ export default class GtdFlowPlugin extends Plugin {
 	}
 
 	/**
-	 * Переключить активное пространство: персист в настройках + толчок реактивного
-	 * store (виды пере-рендерятся своей подпиской, не через epoch). Неизвестное имя
-	 * нормализуется к «Общему». Команда палитры и селекторы шапок зовут это.
+	 * Сменить ГЛОБАЛЬНЫЙ дефолт активного пространства: персист в настройках + толчок
+	 * store (дефолт новых вкладок + цель палитры-захвата). Неизвестное имя нормализуется
+	 * к «Общему» (ALL_NS глобальному не даём — он только у вкладки «Все» календаря).
+	 * ВАЖНО: с итерации 2 фидбека виды переключаются ПОФАЙЛОВО и на этот store НЕ
+	 * подписаны — глобальный дефолт лишь задаёт стартовое пространство новой вкладки.
+	 * SettingsTab зовёт это при правке списка; палитра — через setNamespaceEverywhere.
 	 */
 	setActiveNamespace(name: string): void {
 		const next = normalizeActiveNamespace(name, this.settings.namespaces);
@@ -346,15 +420,34 @@ export default class GtdFlowPlugin extends Plugin {
 		void this.saveSettings();
 	}
 
+	/** Все открытые вкладки видов GTD (для команды палитры «переключить всё» и poke). */
+	private gtdViews(): GtdView[] {
+		const out: GtdView[] = [];
+		for (const kind of Object.keys(VIEW_TYPES) as GtdViewKind[]) {
+			for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPES[kind])) {
+				if (leaf.view instanceof GtdView) out.push(leaf.view);
+			}
+		}
+		return out;
+	}
+
 	/**
-	 * Форс-пере-рендер подписчиков activeNamespace$ после правки СПИСКА пространств
-	 * при неизменном активном имени: writable не публикует равные строки
-	 * (safe_not_equal), поэтому синхронный проход «сентинел → назад». DOM Svelte
-	 * обновляет после microtask — пользователь видит только финальное состояние.
+	 * Команда палитры «Переключить пространство GTD»: меняет ГЛОБАЛЬНЫЙ дефолт И
+	 * локальные пространства ВСЕХ открытых вкладок GTD (старое «переключить всё
+	 * разом»). Отдельные виды по-прежнему переключаются своими селекторами шапок.
+	 */
+	setNamespaceEverywhere(name: string): void {
+		this.setActiveNamespace(name);
+		for (const v of this.gtdViews()) v.setLocalNamespace(name);
+	}
+
+	/**
+	 * После правки СПИСКА пространств (SettingsTab): каждый открытый вид
+	 * пере-нормализует своё локальное пространство (удалённое имя → «Общее») и
+	 * толкает свой store — пере-рендер с обновлённым списком корней. Смена настроек
+	 * эпоху индекса не бампает, поэтому именно этот толчок обновляет виды.
 	 */
 	pokeNamespaceViews(): void {
-		const cur = this.settings.activeNamespace;
-		this.activeNamespace$.set(" __ns_poke__");
-		this.activeNamespace$.set(cur);
+		for (const v of this.gtdViews()) v.pokeNamespace();
 	}
 }

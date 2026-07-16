@@ -3,7 +3,7 @@
 	import { derived, get, type Readable } from "svelte/store";
 	import {
 		NS_CONVENTION,
-		nsTargetPath,
+		nsCommonTarget,
 		type NamespaceDef,
 		type NamespaceFilter,
 	} from "../../core/namespace/namespace";
@@ -44,16 +44,16 @@
 		menuPorts?: TaskMenuPorts | null;
 		/** Структурный порт записи для быстрого ввода; совместим с VaultAdapter. */
 		vault: InboxWritePort;
-		/** Реактивное активное пространство (plugin.activeNamespace$). */
+		/** Реактивное ЛОКАЛЬНОЕ активное пространство вида (per-tab, см. GtdView). */
 		activeNamespace: Readable<string>;
 		/** Снимок списка пространств (settings.namespaces). */
 		namespaces: readonly NamespaceDef[];
-		/** Глобальная смена активного пространства (plugin.setActiveNamespace). */
+		/** Смена ЛОКАЛЬНОГО пространства этого вида (persist в viewState). */
 		setActiveNamespace: (name: string) => void;
 	} = $props();
 
-	// Фильтр пространства для inboxStore: derive из активного пространства + список
-	// корней. Смена активного инвалидирует мемо-ключ стора (ось nsKey) и пере-рендерит
+	// Фильтр пространства для inboxStore: derive из ЛОКАЛЬНОГО пространства вида +
+	// список корней. Смена инвалидирует мемо-ключ стора (ось nsKey) и пере-рендерит
 	// подпиской — эпоху индекса это не бампает (см. память проекта).
 	// svelte-ignore state_referenced_locally
 	const namespace$: Readable<NamespaceFilter> = derived(activeNamespace, (a) => ({
@@ -66,7 +66,7 @@
 	// svelte-ignore state_referenced_locally
 	const tasks = inboxStore(
 		taskStore,
-		defaultInboxConfig(settings.inboxSources, settings.inboxIncludePlain),
+		defaultInboxConfig([], settings.inboxIncludePlain),
 		settings.debounceMs.queryRecompute,
 		namespace$,
 	);
@@ -79,20 +79,20 @@
 	/** Метка активного пространства для пустого состояния — только когда настроено. */
 	const nsLabel = $derived(namespaces.length === 0 ? null : namespaceLabel($activeNamespace));
 
-	// --- быстрый ввод новой задачи (append в первый gtd-inbox файл, фолбэк inboxSources[0]) ---
+	// --- быстрый ввод новой задачи (append в первый gtd-inbox файл, фолбэк <commonRoot>/Входящие.md) ---
 	let newTask = $state("");
 
 	async function addTask(): Promise<void> {
 		const transform = inboxCaptureTransform(newTask);
 		if (transform === null) return; // пусто после санитации — молча ничего
-		// цель захвата — В ПРОСТРАНСТВЕ активного namespace, В МОМЕНТ ввода: первый
-		// файл gtd-inbox этого пространства из живого индекса, иначе конвенционный
-		// <root>/Входящие.md (именованное) или inboxSources[0] («Общее»).
+		// цель захвата — В ЛОКАЛЬНОМ пространстве вида, В МОМЕНТ ввода: первый файл
+		// gtd-inbox этого пространства из живого индекса, иначе конвенционные
+		// Входящие.md: <root>/ (именованное) или <commonRoot>/ («Общее»).
 		const active = get(activeNamespace);
-		const fallback = nsTargetPath(active, namespaces, NS_CONVENTION.inbox, settings.inboxSources[0] ?? "");
+		const fallback = nsCommonTarget(active, namespaces, NS_CONVENTION.inbox, settings.commonRoot);
 		const target = captureTargetInNamespace(taskStore.index().all(), active, namespaces, fallback);
 		if (target === "") {
-			new Notice("GTD Flow: не задан файл входящих (inboxSources)");
+			new Notice("GTD Flow: не задан файл входящих (пустая «Корневая папка Общего»)");
 			return;
 		}
 		const entered = newTask;

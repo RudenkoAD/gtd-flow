@@ -5,7 +5,7 @@
  * объединения корзин даёт тот же результат.
  */
 import type { IsoDate, Task } from "../model/Task";
-import { deriveGtdState, type ResolveDep } from "../model/gtdState";
+import { deriveGtdState, isCancelled, isDone, type ResolveDep } from "../model/gtdState";
 
 export interface TicklerPartition {
 	/** Живые задачи (ACTIVE/DOING/WAITING/BLOCKED — всё, что не закрыто и не отложено). */
@@ -37,4 +37,85 @@ export function partition(
 		else active.push(t);
 	}
 	return { active, deferred, done };
+}
+
+// ---------------------------------------------------------------------------
+// «Всплытие во входящие» (promoteTo="inbox") — фидбек: когда 🛫 наступает сама,
+// задача должна прийти именно во «Входящие» своего пространства, а не просто
+// остаться на месте (это старое поведение promoteTo="origin").
+// ---------------------------------------------------------------------------
+
+const BOARD_TAG_PREFIX = "#kanban/";
+
+/** Скоуп входящих (settings.inboxIncludePlain) — от него зависит, нужен ли
+ *  перенос plain-задачи в inbox-файл (см. isInInbox в QueryEngine). */
+export interface PromotionConfig {
+	/** Активные plain-задачи видны во «Входящих» без переноса. */
+	includePlain: boolean;
+	/**
+	 * Нижняя граница (исключительно): кандидаты — только start ∈ (since, today].
+	 * null — границы нет (исторический режим; сервис так НЕ зовёт: первый проход
+	 * усыновляет сегодняшний день без обработки, иначе включение promoteTo="inbox"
+	 * ретроспективно смело бы ВЕСЬ бэклог давно наступивших 🛫 массовой перезаписью).
+	 */
+	since: IsoDate | null;
+}
+
+/** План промоушена одной задачи, чья 🛫 НАСТУПИЛА (см. planPromotions). Сервис
+ *  исполняет его существующими интентами: снятие тегов, «Вернуть во входящие»
+ *  (set-date start=null) и, при needsMove, перенос строки в inbox-файл. */
+export interface PlannedPromotion {
+	task: Task;
+	/** Теги колонок досок ('#kanban/…') к снятию; [] — снимать нечего. Иначе
+	 *  hasBoardTag прячет задачу из входящих даже после переноса. */
+	stripTags: string[];
+	/** Переносить ли строку в inbox-файл пространства задачи, чтобы формула
+	 *  входящих (isInInbox) её показала: контейнер board (скрыт всегда) либо
+	 *  plain при includePlain=false. Контейнеры inbox/project видны на месте. */
+	needsMove: boolean;
+}
+
+/** Теги колонок досок на задаче, нормализованные к ведущему '#'. */
+function boardTagsOf(t: Task): string[] {
+	return t.tags
+		.map((tag) => (tag.startsWith("#") ? tag : "#" + tag))
+		.filter((tag) => tag.startsWith(BOARD_TAG_PREFIX));
+}
+
+/**
+ * План «всплытия во входящие» для задач, чья 🛫 наступила: start задан и уже
+ * НЕ в будущем (start <= today — строго `>` держит задачу в тикле, см. isDeferred),
+ * задача жива (не done/cancelled) и её контейнер вообще виден в тикле
+ * (plain/inbox/board/project; шаблоны/карточки/события/архив не всплывают).
+ *
+ * Идемпотентность (образец RecurrenceService — детерминированное условие, ложное
+ * после действия): исполнение плана снимает 🛫 (start становится null), поэтому
+ * на следующем проходе задача уже НЕ кандидат. Двойной вызов до реиндекса
+ * безвреден — интенты по перенесённой строке дают line-not-found без записи.
+ *
+ * Чистая функция: ноль записей, только решение. Скоуп входящих (includePlain)
+ * определяет, достаточно ли снять теги на месте или нужен перенос в inbox-файл.
+ */
+export function planPromotions(
+	tasks: Iterable<Task>,
+	today: IsoDate,
+	cfg: PromotionConfig,
+): PlannedPromotion[] {
+	const out: PlannedPromotion[] = [];
+	for (const t of tasks) {
+		if (isDone(t) || isCancelled(t)) continue;
+		// контейнеры вне тикля (§1: TEMPLATE/DETAIL/EVENT/ARCHIVED) не всплывают
+		if (
+			t.container === "recurring" ||
+			t.container === "card" ||
+			t.container === "events" ||
+			t.container === "archive"
+		)
+			continue;
+		if (t.start === null || t.start > today) continue; // не отложена / ещё не наступила
+		if (cfg.since !== null && t.start <= cfg.since) continue; // наступила ДО окна прохода
+		const needsMove = t.container === "board" || (t.container === "plain" && !cfg.includePlain);
+		out.push({ task: t, stripTags: boardTagsOf(t), needsMove });
+	}
+	return out;
 }

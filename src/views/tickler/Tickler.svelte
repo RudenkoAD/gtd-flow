@@ -35,16 +35,16 @@
 		dnd?: DndPort | null;
 		/** Порты паритета без drag (меню/пикеры/карточка), ТЗ §8 слой 3. */
 		menuPorts?: TaskMenuPorts | null;
-		/** Реактивное активное пространство (plugin.activeNamespace$). */
+		/** Реактивное ЛОКАЛЬНОЕ активное пространство вида (per-tab, см. GtdView). */
 		activeNamespace: Readable<string>;
 		/** Снимок списка пространств (settings.namespaces). */
 		namespaces: readonly NamespaceDef[];
-		/** Глобальная смена активного пространства (plugin.setActiveNamespace). */
+		/** Смена ЛОКАЛЬНОГО пространства этого вида (persist в viewState). */
 		setActiveNamespace: (name: string) => void;
 	} = $props();
 
-	// Фильтр пространства для ticklerStore: смена активного инвалидирует мемо стора
-	// и пере-рендерит подпиской (эпоху индекса не бампает, см. память проекта).
+	// Фильтр пространства для ticklerStore: смена ЛОКАЛЬНОГО пространства вида
+	// инвалидирует мемо стора и пере-рендерит подпиской (эпоху индекса не бампает).
 	// svelte-ignore state_referenced_locally
 	const namespace$: Readable<NamespaceFilter> = derived(activeNamespace, (a) => ({
 		active: a,

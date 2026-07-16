@@ -120,7 +120,7 @@ describe("recurringFilePaths / recurringTemplateTarget", () => {
 });
 
 describe("captureTargets / captureTarget: цели записи быстрого ввода", () => {
-	it("нет gtd-inbox файлов → пустой список, цель = фолбэк inboxSources[0]", () => {
+	it("нет gtd-inbox файлов → пустой список, цель = первый фолбэк", () => {
 		const tasks = [
 			makeTask({ filePath: "a.md", container: "plain" }),
 			makeTask({ filePath: "b.md", container: "board" }),

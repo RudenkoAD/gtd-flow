@@ -230,6 +230,15 @@ describe("ProjectService.discoverProjects: фильтр по пространс�
 		expect(h.svc.discoverProjects()).toHaveLength(2);
 	});
 
+	it("явный filter (пофайловый вид) ПЕРЕБИВАЕТ инжектированный namespaceFilter", () => {
+		// инжектированный — «Работа», но вид передаёт локальный «Жизнь»
+		const h = makeHarness({ nsFilter: () => ({ active: "Работа", defs: DEFS }) });
+		seedTwoProjects(h);
+		expect(h.svc.discoverProjects({ active: "Жизнь", defs: DEFS }).map((s) => s.path)).toEqual([
+			"Личное/Проекты/Отпуск.md",
+		]);
+	});
+
 	it("gtd-namespace override уводит проект в другое пространство", () => {
 		const h = makeHarness({ nsFilter: () => ({ active: "Жизнь", defs: DEFS }) });
 		h.containers.add("Work/Проекты/Личный.md");

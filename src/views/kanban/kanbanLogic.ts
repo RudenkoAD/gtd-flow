@@ -4,9 +4,11 @@
  * что можно проверить в node, — здесь; Kanban.svelte остаётся тонкой обвязкой.
  */
 import type { BoardColumnModel, DiscoveredBoard } from "../../services/BoardService";
+import type { SetDate } from "../../core/intents/Intent";
 import type { Task } from "../../core/model/Task";
 import { appendLine } from "../calendar/calendarLogic";
 import { quickCaptureLine } from "../common/taskActions";
+import { VIEW_TYPES } from "../registry";
 
 /**
  * Какую доску показывать:
@@ -91,17 +93,6 @@ export function columnCaptureTransform(
 // ---------------------------------------------------------------------------
 
 /**
- * Папка «дома» GTD из настроек: каталог первого источника входящих
- * (inboxSources[0], по умолчанию "GTD/Inbox.md" → "GTD"). Пустая строка —
- * корень хранилища. Туда же, где Events.md/Archive.md, кладём и доски.
- */
-export function boardDirFromInbox(inboxSources: readonly string[]): string {
-	const src = inboxSources[0] ?? "GTD/Inbox.md";
-	const i = src.lastIndexOf("/");
-	return i === -1 ? "" : src.slice(0, i);
-}
-
-/**
  * Имя файла доски из названия: символы, недопустимые в имени файла Obsidian
  * (`\ / : * ? " < > | # ^ [ ]`), → пробел; пробелы схлопнуть, крайние обрезать.
  * Пустой результат (эмодзи/спецсимволы целиком) → "Доска".
@@ -141,4 +132,27 @@ export interface KanbanPersistedState {
  */
 export function moveRefusalNotice(reason: string | undefined): string {
 	return `GTD Flow: ${reason ?? "не удалось перенести карточку"}`;
+}
+
+// ---------------------------------------------------------------------------
+// Drop карточки, ПРИШЕДШЕЙ ИЗ ОТЛОЖЕННЫХ, на колонку доски (фидбек Б)
+// ---------------------------------------------------------------------------
+
+/**
+ * Пришла ли перетаскиваемая карточка из вида «Отложенные» (drop-источник =
+ * тикль). Такую карточку мало положить на доску тегом: пока на ней стоит 🛫,
+ * задача остаётся отложенной (isDeferred) и на доске СКРЫТА — визуально
+ * «исчезает». Поэтому drop из тикля дополнительно снимает 🛫 (см. интент ниже).
+ */
+export function isFromTickler(sourceViewType: string): boolean {
+	return sourceViewType === VIEW_TYPES.tickler;
+}
+
+/**
+ * Интент «Вернуть из отложенных» (снять 🛫) для карточки, перетащенной из тикля
+ * на колонку доски. Ровно тот же set-date field:"start" date:null, что у пункта
+ * меню тикля «Вернуть во входящие» — единый механизм возврата из отложенных.
+ */
+export function returnFromTicklerIntent(taskKey: string): SetDate {
+	return { type: "set-date", key: taskKey, field: "start", date: null };
 }

@@ -39,13 +39,13 @@ export class KanbanView extends GtdView {
 			dispatcher: plugin.dispatcher,
 			settings: plugin.settings,
 			app: plugin.app,
-			// Пространства (namespaces): реактивный источник активного, список
-			// определений и сеттер — для NamespaceSwitcher в шапке и ns-цели новой
-			// доски. Смена активного не бампает эпоху индекса — вид пере-рендерится
-			// подпиской на activeNamespace$ (см. память проекта), как на epoch.
-			activeNamespace$: plugin.activeNamespace$,
+			// ЛОКАЛЬНОЕ пространство вида (per-tab): реактивный источник, список
+			// определений и локальный сеттер — для NamespaceSwitcher в шапке, фильтра
+			// discovery досок и ns-цели новой доски. Смена активного эпоху индекса не
+			// бампает — вид пере-рендерится подпиской на localNamespace$, как на epoch.
+			activeNamespace$: { subscribe: this.localNamespace$.subscribe },
 			namespaces: plugin.settings.namespaces,
-			setActiveNamespace: (name: string) => plugin.setActiveNamespace(name),
+			setActiveNamespace: (name: string) => this.setLocalNamespace(name),
 			boards: plugin.boards ?? null,
 			dnd: plugin.dnd ?? null,
 			menuPorts: taskMenuPortsFromPlugin(plugin),
@@ -60,7 +60,8 @@ export class KanbanView extends GtdView {
 	}
 
 	override getState(): Record<string, unknown> {
-		return { ...this.lastState };
+		// nsName (базовый) + выбранная доска в один JSON-объект viewState
+		return { ...this.namespaceState(), ...this.lastState };
 	}
 
 	override async setState(state: unknown, result: ViewStateResult): Promise<void> {
@@ -69,6 +70,7 @@ export class KanbanView extends GtdView {
 			this.lastState = next;
 			this.persisted.set(next);
 		}
+		// базовый setState восстанавливает nsName и зовёт ItemView.setState
 		await super.setState(state, result);
 	}
 }

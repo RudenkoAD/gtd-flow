@@ -105,10 +105,10 @@ function makePlugin(over?: {
 	const processFrontmatter = vi.fn(over?.processFrontmatter ?? (() => Promise.resolve(true)));
 	const plugin = {
 		app: {},
-		// capture() пространств: активное «Общее» + пустой список ⇒ прежний фолбэк
-		settings: { inboxSources: ["GTD/Inbox.md"], activeNamespace: DEFAULT_NS, namespaces: [] },
+		// capture() пространств: активное «Общее» + пустой список ⇒ фолбэк <commonRoot>/Входящие.md
+		settings: { commonRoot: "GTD", activeNamespace: DEFAULT_NS, namespaces: [] },
 		vaultAdapter: { ensureFile, processFile, processFrontmatter },
-		// цель захвата теперь ищет gtd-inbox файлы в индексе; пустой индекс ⇒ фолбэк inboxSources[0]
+		// цель захвата теперь ищет gtd-inbox файлы в индексе; пустой индекс ⇒ <commonRoot>/Входящие.md
 		taskStore: { index: () => ({ all: () => [] as never[] }) },
 		addCommand: (cmd: Cmd) => commands.set(cmd.id, cmd),
 	};
@@ -168,7 +168,7 @@ describe("quick-capture: IME", () => {
 		expect(modal.closed).toBe(true);
 		expect(processFile).toHaveBeenCalledTimes(1);
 		const [target, transform] = processFile.mock.calls[0]!;
-		expect(target).toBe("GTD/Inbox.md");
+		expect(target).toBe("GTD/Входящие.md");
 		expect(transform("")).toContain("- [ ] купить хлеб");
 	});
 });
@@ -196,7 +196,7 @@ describe("quick-capture: ошибки записи", () => {
 			expect(modal.closed).toBe(true); // модал уже закрыт — поэтому текст в Notice
 			expect(processFile).not.toHaveBeenCalled();
 			expect(H.notices).toHaveLength(1);
-			expect(H.notices[0]).toContain("GTD/Inbox.md");
+			expect(H.notices[0]).toContain("GTD/Входящие.md");
 			expect(H.notices[0]).toContain("купить хлеб"); // ввод не потерян
 			expect(unhandled).toEqual([]);
 		} finally {

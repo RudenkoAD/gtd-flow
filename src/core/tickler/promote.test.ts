@@ -2,7 +2,7 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import type { ContainerKind, Task } from "../model/Task";
 import type { ResolveDep } from "../model/gtdState";
-import { partition } from "./promote";
+import { partition, planPromotions } from "./promote";
 
 const TODAY = "2026-07-15";
 const noDeps: ResolveDep = () => [];
@@ -131,5 +131,102 @@ describe("partition — идемпотентность", () => {
 				expect(p2).toEqual(p1);
 			}),
 		);
+	});
+});
+
+describe("planPromotions — отбор кандидатов на всплытие во входящие", () => {
+	const PAST = "2026-07-10"; // < TODAY
+	const FUTURE = "2026-08-01"; // > TODAY
+
+	it("будущая 🛫 (ещё отложена) — не кандидат", () => {
+		const t = makeTask({ start: FUTURE });
+		expect(planPromotions([t], TODAY, { includePlain: true, since: null })).toEqual([]);
+	});
+
+	it("нет 🛫 — не кандидат", () => {
+		const t = makeTask({ start: null });
+		expect(planPromotions([t], TODAY, { includePlain: false, since: null })).toEqual([]);
+	});
+
+	it("start == today — наступила, кандидат (строгое > держит в тикле)", () => {
+		const t = makeTask({ start: TODAY });
+		const plan = planPromotions([t], TODAY, { includePlain: true, since: null });
+		expect(plan.map((p) => p.task.key)).toEqual([t.key]);
+	});
+
+	it("done/cancelled с прошедшей 🛫 — не кандидаты", () => {
+		const done = makeTask({ start: PAST, statusChar: "x" });
+		const cancelled = makeTask({ start: PAST, statusChar: "-" });
+		expect(planPromotions([done, cancelled], TODAY, { includePlain: false, since: null })).toEqual([]);
+	});
+
+	it("контейнеры вне тикля (recurring/card/events/archive) не всплывают", () => {
+		const tasks = (["recurring", "card", "events", "archive"] as ContainerKind[]).map((c) =>
+			makeTask({ start: PAST, container: c }),
+		);
+		expect(planPromotions(tasks, TODAY, { includePlain: false, since: null })).toEqual([]);
+	});
+
+	it("board с прошедшей 🛫 — needsMove + снятие тегов колонок", () => {
+		const t = makeTask({
+			start: PAST,
+			container: "board",
+			tags: ["#kanban/work/todo", "#project/x"],
+		});
+		const plan = planPromotions([t], TODAY, { includePlain: true, since: null });
+		expect(plan).toHaveLength(1);
+		expect(plan[0]!.needsMove).toBe(true);
+		expect(plan[0]!.stripTags).toEqual(["#kanban/work/todo"]); // только теги досок
+	});
+
+	it("plain при includePlain=false — needsMove (иначе не попадёт во входящие)", () => {
+		const t = makeTask({ start: PAST, container: "plain" });
+		const plan = planPromotions([t], TODAY, { includePlain: false, since: null });
+		expect(plan[0]!.needsMove).toBe(true);
+		expect(plan[0]!.stripTags).toEqual([]);
+	});
+
+	it("plain при includePlain=true — виден на месте, перенос не нужен", () => {
+		const t = makeTask({ start: PAST, container: "plain" });
+		const plan = planPromotions([t], TODAY, { includePlain: true, since: null });
+		expect(plan[0]!.needsMove).toBe(false);
+	});
+
+	it("inbox с 🛫 и тегом доски — снять тег на месте, без переноса", () => {
+		const t = makeTask({ start: PAST, container: "inbox", tags: ["#kanban/b/c"] });
+		const plan = planPromotions([t], TODAY, { includePlain: false, since: null });
+		expect(plan[0]!.needsMove).toBe(false);
+		expect(plan[0]!.stripTags).toEqual(["#kanban/b/c"]);
+	});
+
+	it("project (готовые задачи проекта видны во входящих) — без переноса", () => {
+		const t = makeTask({ start: PAST, container: "project" });
+		const plan = planPromotions([t], TODAY, { includePlain: false, since: null });
+		expect(plan[0]!.needsMove).toBe(false);
+	});
+
+	it("нормализация тегов без ведущего '#' (индекс хранит kanban/…)", () => {
+		const t = makeTask({ start: PAST, container: "plain", tags: ["kanban/b/c"] });
+		const plan = planPromotions([t], TODAY, { includePlain: true, since: null });
+		expect(plan[0]!.stripTags).toEqual(["#kanban/b/c"]);
+	});
+
+	it("окно (since, today]: исторический бэклог до since не сметается", () => {
+		const old = makeTask({ start: PAST }); // наступила давно, до окна
+		const fresh = makeTask({ start: TODAY }); // наступила в окне
+		const plan = planPromotions([old, fresh], TODAY, { includePlain: true, since: "2026-07-14" });
+		expect(plan.map((p) => p.task.key)).toEqual([fresh.key]);
+	});
+
+	it("окно: since == start — исключительно (день уже обработан)", () => {
+		const t = makeTask({ start: "2026-07-14" });
+		expect(planPromotions([t], TODAY, { includePlain: true, since: "2026-07-14" })).toEqual([]);
+	});
+
+	it("идемпотентность: снятая 🛫 (start=null) больше не кандидат", () => {
+		// исполнение плана снимает 🛫 — эмулируем результат и убеждаемся, что
+		// следующий проход задачу уже не выберет
+		const promoted = makeTask({ start: null, container: "plain" });
+		expect(planPromotions([promoted], TODAY, { includePlain: false, since: null })).toEqual([]);
 	});
 });

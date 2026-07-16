@@ -245,6 +245,15 @@ describe("BoardService.discoverBoards: фильтр по пространств�
 		expect(h.service.discoverBoards().boards).toHaveLength(2);
 	});
 
+	it("явный filter (пофайловый вид) ПЕРЕБИВАЕТ инжектированный namespaceFilter", () => {
+		// инжектированный фильтр — «Работа», но вид передаёт локальный «Жизнь»
+		const h = makeHarness(() => ({ active: "Работа", defs: DEFS }));
+		seedTwoBoards(h);
+		expect(h.service.discoverBoards({ active: "Жизнь", defs: DEFS }).boards.map((b) => b.path)).toEqual([
+			"Личное/Доски/Дом.md",
+		]);
+	});
+
 	it("gtd-namespace override уводит доску в другое пространство", () => {
 		const h = makeHarness(() => ({ active: "Жизнь", defs: DEFS }));
 		h.containers.add("Work/Доски/Личная.md");

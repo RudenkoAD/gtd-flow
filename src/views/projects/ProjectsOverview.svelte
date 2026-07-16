@@ -12,6 +12,7 @@
 		NS_CONVENTION,
 		nsTargetPath,
 		type NamespaceDef,
+		type NamespaceFilter,
 	} from "../../core/namespace/namespace";
 	import { NamePromptModal } from "./NamePromptModal";
 	import {
@@ -34,11 +35,11 @@
 		/** null до интеграции сервиса проектов в main.ts (plugin.projects). */
 		projects?: ProjectPort | null;
 		app: App;
-		/** Реактивный источник активного пространства (plugin.activeNamespace$). */
+		/** Реактивное ЛОКАЛЬНОЕ активное пространство вида (per-tab, см. GtdView). */
 		activeNamespace$: Readable<string>;
 		/** Определения пространств (settings.namespaces); пусто ⇒ switcher скрыт. */
 		namespaces: readonly NamespaceDef[];
-		/** Переключатель активного пространства (plugin.setActiveNamespace). */
+		/** Смена ЛОКАЛЬНОГО пространства этого вида (persist в viewState). */
 		setActiveNamespace: (name: string) => void;
 		/** Открыть граф проекта по пути (навигация живёт в ProjectsOverviewView). */
 		openProject: (path: string) => void;
@@ -47,8 +48,8 @@
 	// props фиксированы на время монтирования (вид пересоздаётся с leaf)
 	// svelte-ignore state_referenced_locally
 	const epoch = taskStore.epoch;
-	// Активное пространство — как epoch: снимок стора; подписка ($activeNs) пере-запускает
-	// discovery на переключение (смена активного эпоху НЕ бампает).
+	// Локальное пространство вида — как epoch: снимок стора; подписка ($activeNs)
+	// пере-запускает discovery на переключение (смена эпоху НЕ бампает).
 	// svelte-ignore state_referenced_locally
 	const activeNs = activeNamespace$;
 	// switcher виден только при настроенных пространствах; метка активного для
@@ -64,12 +65,13 @@
 	};
 	const STATUS_ORDER: ProjectStatus[] = ["active", "on-hold", "done", "archived"];
 
+	// фильтр discovery — ЛОКАЛЬНОЕ пространство вида (не активное глобальное)
+	const nsFilter = $derived<NamespaceFilter>({ active: $activeNs, defs: namespaces });
 	// проекты живут в индексе — пересканируем на каждую его смену
 	const rows = $derived.by<ProjectRow[]>(() => {
 		void $epoch;
-		void $activeNs; // и на смену активного: discoverProjects фильтрует по пространству
 		if (projects === null) return [];
-		return buildProjectRows(projects.discoverProjects(), (path) =>
+		return buildProjectRows(projects.discoverProjects(nsFilter), (path) =>
 			taskStore.index().fileTasks(path),
 		);
 	});

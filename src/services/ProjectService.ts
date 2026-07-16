@@ -41,7 +41,7 @@ import { locateTaskLine } from "./WritebackService";
 export interface ProjectSummary { path: string; name: string; status: ProjectStatus; complete: boolean; stalled: boolean }
 export interface ProjectModel { nodes: NodeInfo[]; edges: { from: string; to: string }[]; issues: GraphIssue[]; layout: LayoutMap }
 export interface ProjectPort {
-	discoverProjects(): ProjectSummary[];
+	discoverProjects(filter?: NamespaceFilter): ProjectSummary[];
 	createProject(path: string, name: string): Promise<{ ok: boolean; path?: string; reason?: string }>;
 	model(path: string): ProjectModel | null;
 	connect(path: string, fromId: string, toId: string): Promise<{ ok: boolean; reason?: string; cyclePath?: string[] }>;
@@ -157,7 +157,13 @@ export class ProjectService implements ProjectPort {
 
 	// --- discovery ---
 
-	discoverProjects(): ProjectSummary[] {
+	/**
+	 * discovery проектов пространства. `filter` — явное пространство вызывателя
+	 * (пофайловые виды Projects/Project передают своё ЛОКАЛЬНОЕ; меню-пикер — пространство
+	 * ЗАДАЧИ). Без него — фолбэк на инжектированный namespaceFilter() (обратная
+	 * совместимость). Прозрачен при пустом defs / ALL_NS.
+	 */
+	discoverProjects(filter?: NamespaceFilter): ProjectSummary[] {
 		// Файл-проект без единой задачи индексом задач не виден (byFile хранит
 		// только задачи) — добавляем его по frontmatter-флагу (NUX, dedupe через Set).
 		const paths = new Set<string>();
@@ -165,8 +171,8 @@ export class ProjectService implements ProjectPort {
 			if (t.container === "project") paths.add(t.filePath);
 		}
 		for (const p of this.deps.containerPaths()) paths.add(p);
-		// фильтр по активному пространству (пикеры/овервью); прозрачен при пустом defs
-		const nsFilter = this.deps.namespaceFilter?.();
+		// фильтр по пространству (пикеры/овервью); прозрачен при пустом defs / ALL_NS
+		const nsFilter = filter ?? this.deps.namespaceFilter?.();
 		const filtering = nsFilter !== undefined && nsFilter.defs.length > 0;
 		return [...paths]
 			.sort()

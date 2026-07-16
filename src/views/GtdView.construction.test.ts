@@ -5,6 +5,7 @@
  * Стаб ItemView (src/testing/obsidianStub.ts) воспроизводит этот порядок.
  */
 import { describe, expect, it } from "vitest";
+import { DEFAULT_NS } from "../core/namespace/namespace";
 import { InboxView } from "./inbox/InboxView";
 import { KanbanView } from "./kanban/KanbanView";
 import { TicklerView } from "./tickler/TicklerView";
@@ -14,7 +15,11 @@ import { VIEW_META } from "./registry";
 import type GtdFlowPlugin from "../main";
 
 const leaf = {} as never;
-const plugin = {} as GtdFlowPlugin;
+// Базовый GtdView в конструкторе читает settings.activeNamespace/namespaces для
+// локального пространства вида — минимальный стаб настроек.
+const plugin = {
+	settings: { activeNamespace: DEFAULT_NS, namespaces: [] },
+} as unknown as GtdFlowPlugin;
 
 describe("конструирование видов: getViewType до присвоения this.meta", () => {
 	it("InboxView конструируется и отвечает правильным типом", () => {

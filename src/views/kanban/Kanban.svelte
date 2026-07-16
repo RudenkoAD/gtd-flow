@@ -14,11 +14,11 @@
 	import { namespaceLabel } from "../common/namespaceSwitcher";
 	import {
 		NS_CONVENTION,
-		nsTargetPath,
+		nsCommonTarget,
 		type NamespaceDef,
+		type NamespaceFilter,
 	} from "../../core/namespace/namespace";
 	import {
-		boardDirFromInbox,
 		buildColumnVMs,
 		pickBoardPath,
 		uniqueBoardPath,
@@ -45,11 +45,11 @@
 		dispatcher: IntentDispatcher;
 		settings: GtdFlowSettings;
 		app: App;
-		/** Реактивный источник активного пространства (plugin.activeNamespace$). */
+		/** Реактивное ЛОКАЛЬНОЕ активное пространство вида (per-tab, см. GtdView). */
 		activeNamespace$: Readable<string>;
 		/** Определения пространств (settings.namespaces); пусто ⇒ switcher скрыт. */
 		namespaces: readonly NamespaceDef[];
-		/** Переключатель активного пространства (plugin.setActiveNamespace). */
+		/** Смена ЛОКАЛЬНОГО пространства этого вида (persist в viewState). */
 		setActiveNamespace: (name: string) => void;
 		/** null до интеграции этапа 4 в main.ts (plugin.boards). */
 		boards: BoardService | null;
@@ -70,8 +70,8 @@
 	const epoch = taskStore.epoch;
 	// svelte-ignore state_referenced_locally
 	const today = taskStore.today;
-	// Активное пространство — как epoch: одноразовый снимок стора; подписка ($activeNs)
-	// пере-запускает discovery на переключение (смена активного эпоху НЕ бампает).
+	// Локальное пространство вида — как epoch: одноразовый снимок стора; подписка
+	// ($activeNs) пере-запускает discovery на переключение (смена эпоху НЕ бампает).
 	// svelte-ignore state_referenced_locally
 	const activeNs = activeNamespace$;
 	// switcher виден только при настроенных пространствах (ТЗ, обратная совместимость);
@@ -93,10 +93,12 @@
 		}),
 	);
 
+	// фильтр discovery — ЛОКАЛЬНОЕ пространство вида (не активное глобальное):
+	// список досок и модель режутся пространством этой вкладки
+	const nsFilter = $derived<NamespaceFilter>({ active: $activeNs, defs: namespaces });
 	const discovery = $derived.by(() => {
 		void $epoch; // доски живут в индексе — пересканируем на каждую его смену
-		void $activeNs; // и на смену активного: discoverBoards фильтрует по пространству
-		return boards === null ? { boards: [], errors: [] } : boards.discoverBoards();
+		return boards === null ? { boards: [], errors: [] } : boards.discoverBoards(nsFilter);
 	});
 	const shownPath = $derived(pickBoardPath(discovery.boards, defaultBoardPath, selectedPath));
 	const model = $derived.by(() => {
@@ -201,13 +203,14 @@
 		if (boards === null) return;
 		const svc = boards;
 		new TextPromptModal(app, "Новая доска", "", "Название доски", (name) => {
-			// Каталог новой доски — активного пространства: <root>/Доски для именованного,
-			// иначе (Общее / без пространств) прежний каталог из настроек входящих.
-			const dir = nsTargetPath(
+			// Каталог новой доски — ЛОКАЛЬНОГО пространства вида: <root>/Доски для
+			// именованного, <commonRoot>/Доски для «Общего» (nsCommonTarget ставит
+			// «Общее» в один ряд с именованными под корнем «Общего»).
+			const dir = nsCommonTarget(
 				$activeNs,
 				namespaces,
 				NS_CONVENTION.boardsDir,
-				boardDirFromInbox(settings.inboxSources),
+				settings.commonRoot,
 			);
 			// уникализуем путь по реальным файлам хранилища: createBoard не должен
 			// дописать флаг доски в чужую заметку с тем же именем

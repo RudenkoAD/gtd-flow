@@ -11,7 +11,14 @@
 	import { insertIndexByY, type FlatRect } from "../dnd/dndCore";
 	import type { DndPort } from "../dnd/types";
 	import { VIEW_TYPES } from "../registry";
-	import { columnCaptureTransform, moveRefusalNotice, type BoardWritePort, type ColumnVM } from "./kanbanLogic";
+	import {
+		columnCaptureTransform,
+		isFromTickler,
+		moveRefusalNotice,
+		returnFromTicklerIntent,
+		type BoardWritePort,
+		type ColumnVM,
+	} from "./kanbanLogic";
 
 	let {
 		column,
@@ -66,6 +73,20 @@
 			el: colEl,
 			accepts: (p) => p.taskKey !== "",
 			drop: async (p, ctx) => {
+				// Карточка ПРИШЛА ИЗ ОТЛОЖЕННЫХ: положить на доску мало — пока стоит 🛫,
+				// задача остаётся отложенной (isDeferred) и на доске скрыта = «исчезла».
+				// Снимаем 🛫 тем же интентом, что «Вернуть во входящие» из меню тикля.
+				// ПОРЯДОК ВАЖЕН: 🛫 снимаем ДО moveCard — снятие поля не меняет
+				// content-key (описание нетронуто), а тег колонки меняет; при
+				// выключенном autoInjectId обратный порядок терял бы адресацию (ревью).
+				if (isFromTickler(p.sourceViewType)) {
+					const clr = await dispatcher.dispatch(returnFromTicklerIntent(p.taskKey));
+					if (clr.ok) new Notice("Возвращена из отложенных");
+					else {
+						new Notice(`GTD Flow: ${clr.reason}`);
+						return; // карточка остаётся в тикле — не раскладываем наполовину
+					}
+				}
 				const res = await boards.moveCard(boardPath, def, p.taskKey, column.id, dropIndex(ctx.clientY));
 				if (!res.ok) new Notice(moveRefusalNotice(res.reason));
 			},

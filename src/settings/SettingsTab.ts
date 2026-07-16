@@ -10,11 +10,9 @@ import {
 	CALENDAR_FIELDS,
 	formatDeferPresets,
 	formatNamespaces,
-	formatPathList,
 	parseDeferPresets,
 	parseIntInRange,
 	parseNamespaces,
-	parsePathList,
 	reorderCalendarPlacement,
 } from "./settingsFormat";
 
@@ -67,23 +65,6 @@ export class GtdSettingsTab extends PluginSettingTab {
 		new Setting(el).setName("Входящие").setHeading();
 
 		new Setting(el)
-			.setName("Источники входящих")
-			.setDesc(
-				"Один путь на строку (файл или папка), задачи оттуда всегда попадают во «Входящие». " +
-					"Первый путь — цель быстрого ввода. Файл, куда создаются копии регулярных задач, " +
-					"задаётся отдельно в разделе «Регулярные».",
-			)
-			.addTextArea((text) => {
-				text.inputEl.rows = 4;
-				text.setPlaceholder("GTD/Inbox.md");
-				text.setValue(formatPathList(this.plugin.settings.inboxSources));
-				text.onChange(async (raw) => {
-					this.plugin.settings.inboxSources = parsePathList(raw);
-					await this.save();
-				});
-			});
-
-		new Setting(el)
 			.setName("Входящие: включать задачи из обычных заметок")
 			.setDesc(
 				"По умолчанию выключено: во «Входящие» попадают только файлы GTD Flow — " +
@@ -104,6 +85,24 @@ export class GtdSettingsTab extends PluginSettingTab {
 
 	private sectionNamespaces(el: HTMLElement): void {
 		new Setting(el).setName("Пространства GTD").setHeading();
+
+		new Setting(el)
+			.setName("Корневая папка «Общего»")
+			.setDesc(
+				"Дом для файлов, СОЗДАВАЕМЫХ в пространстве «Общее» (быстрый ввод, доски, проекты и " +
+					"пр. — по конвенции от этой папки, ровно как именованное пространство создаёт от " +
+					"своего корня): например захват «Общего» уходит в «<папка>/Входящие.md». Это папка " +
+					"ДЛЯ СОЗДАНИЯ, а не признак принадлежности — любой файл ВНЕ корней пространств " +
+					"относится к «Общему» независимо от того, где лежит. По умолчанию «GTD».",
+			)
+			.addText((text) => {
+				text.setPlaceholder("GTD");
+				text.setValue(this.plugin.settings.commonRoot);
+				text.onChange(async (value) => {
+					this.plugin.settings.commonRoot = value.trim();
+					await this.save();
+				});
+			});
 
 		const setting = new Setting(el)
 			.setName("Список пространств")
@@ -234,7 +233,12 @@ export class GtdSettingsTab extends PluginSettingTab {
 
 		new Setting(el)
 			.setName("Файл статусов дней")
-			.setDesc("Файл для покраски дней календаря (frontmatter gtd-day-status: true). Создаётся при первой покраске.")
+			.setDesc(
+				"Файл для покраски дней календаря (frontmatter gtd-day-status: true). Создаётся при " +
+					"первой покраске. Статусы дней ОБЩИЕ для всех пространств. Если оставить путь " +
+					"по умолчанию, файл создаётся в «Корневой папке Общего» и следует за её сменой; " +
+					"свой путь задаётся осознанно и за папкой не следует.",
+			)
 			.addText((text) => {
 				text.setPlaceholder("GTD/DayStatus.md");
 				text.setValue(this.plugin.settings.dayStatusFile);
@@ -278,7 +282,11 @@ export class GtdSettingsTab extends PluginSettingTab {
 
 		new Setting(el)
 			.setName("Файл для новых копий")
-			.setDesc("Куда добавляются вхождения регулярных задач при наступлении срока.")
+			.setDesc(
+				"Куда добавляются вхождения регулярных задач при наступлении срока — это цель для " +
+					"«Общего»; шаблон именованного пространства спавнит в его «<корень>/Входящие.md». " +
+					"За «Корневой папкой Общего» этот путь НЕ следует — при её смене поправьте здесь вручную.",
+			)
 			.addText((text) => {
 				text.setPlaceholder("GTD/Inbox.md");
 				text.setValue(this.plugin.settings.recurring.spawnTarget);
@@ -415,7 +423,8 @@ export class GtdSettingsTab extends PluginSettingTab {
 			.setDesc(
 				"Куда «всплывает» задача, когда наступает её дата старта. " +
 					"«В исходное место» — остаётся в своём файле и снова проходит запрос входящих. " +
-					"«Во входящие» — дополнительно снимаются теги доски, чтобы задача ушла из Kanban.",
+					"«Во входящие» (по умолчанию) — снимается 🛫, снимаются теги доски, а строка " +
+					"переносится в файл входящих своего пространства, чтобы задача точно попала во «Входящие».",
 			)
 			.addDropdown((dd) => {
 				dd.addOption("origin", "В исходное место");

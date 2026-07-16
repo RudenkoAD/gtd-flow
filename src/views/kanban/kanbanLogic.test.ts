@@ -2,14 +2,16 @@ import { describe, expect, it } from "vitest";
 import type { BoardDef } from "../../core/board/boardFile";
 import type { DiscoveredBoard } from "../../services/BoardService";
 import { makeTask } from "../../stores/testSupport";
+import { VIEW_TYPES } from "../registry";
 import {
-	boardDirFromInbox,
 	boardFileName,
 	buildColumnVMs,
 	columnCaptureTransform,
 	columnTaskLine,
+	isFromTickler,
 	moveRefusalNotice,
 	pickBoardPath,
+	returnFromTicklerIntent,
 	uniqueBoardPath,
 } from "./kanbanLogic";
 
@@ -109,18 +111,6 @@ describe("columnCaptureTransform", () => {
 	});
 });
 
-describe("boardDirFromInbox", () => {
-	it("каталог первого источника входящих", () => {
-		expect(boardDirFromInbox(["GTD/Inbox.md"])).toBe("GTD");
-		expect(boardDirFromInbox(["a/b/c/In.md"])).toBe("a/b/c");
-	});
-
-	it("файл в корне → пустая строка; пустой список → дефолт GTD", () => {
-		expect(boardDirFromInbox(["Inbox.md"])).toBe("");
-		expect(boardDirFromInbox([])).toBe("GTD");
-	});
-});
-
 describe("boardFileName", () => {
 	it("недопустимые в имени файла символы → пробел, схлоп/обрезка", () => {
 		expect(boardFileName("Работа/Дом: план?")).toBe("Работа Дом план");
@@ -145,5 +135,23 @@ describe("uniqueBoardPath", () => {
 	it("занятый путь → суффикс с номером до первого свободного", () => {
 		const taken = new Set(["GTD/Работа.md", "GTD/Работа 2.md"]);
 		expect(uniqueBoardPath("GTD", "Работа", (p) => taken.has(p))).toBe("GTD/Работа 3.md");
+	});
+});
+
+describe("drop карточки из отложенных на колонку (фидбек Б)", () => {
+	it("isFromTickler: только тип тикля даёт true", () => {
+		expect(isFromTickler(VIEW_TYPES.tickler)).toBe(true);
+		expect(isFromTickler(VIEW_TYPES.inbox)).toBe(false);
+		expect(isFromTickler(VIEW_TYPES.kanban)).toBe(false);
+		expect(isFromTickler("")).toBe(false);
+	});
+
+	it("returnFromTicklerIntent: снятие 🛫 = set-date start null (как «Вернуть во входящие»)", () => {
+		expect(returnFromTicklerIntent("k1")).toEqual({
+			type: "set-date",
+			key: "k1",
+			field: "start",
+			date: null,
+		});
 	});
 });

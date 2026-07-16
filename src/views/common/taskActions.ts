@@ -127,15 +127,16 @@ export function captureTargets(tasks: Iterable<Task>): string[] {
 
 /**
  * Целевой файл записи быстрого ввода: первый помеченный gtd-inbox файл, иначе
- * фолбэк settings.inboxSources[0] (когда ни один файл не помечен). undefined —
- * ни помеченных файлов, ни фолбэка: вызывающий показывает Notice и не пишет.
- * Вычислять В МОМЕНТ ввода (индекс мог измениться с момента монтирования вида).
+ * первый из `fallbacks` (когда ни один файл не помечен). undefined — ни помеченных
+ * файлов, ни фолбэка: вызывающий показывает Notice и не пишет. Вычислять В МОМЕНТ
+ * ввода (индекс мог измениться с момента монтирования вида). Per-namespace-версия
+ * (captureTargetInNamespace) считает фолбэк через nsCommonTarget(<commonRoot>).
  */
 export function captureTarget(
 	tasks: Iterable<Task>,
-	inboxSources: readonly string[],
+	fallbacks: readonly string[],
 ): string | undefined {
-	return captureTargets(tasks)[0] ?? inboxSources[0];
+	return captureTargets(tasks)[0] ?? fallbacks[0];
 }
 
 /**
@@ -162,8 +163,9 @@ export function captureTargetsInNamespace(
 
 /**
  * Целевой файл записи быстрого ввода В ПРОСТРАНСТВЕ: первый gtd-inbox файл этого
- * пространства, иначе `fallback` (для DEFAULT_NS — settings.inboxSources[0]; для
- * именованного — nsTargetPath(name, defs, NS_CONVENTION.inbox, …), считает вызыватель).
+ * пространства, иначе `fallback` — конвенционный Входящие.md, который считает
+ * вызыватель через nsCommonTarget(name, defs, NS_CONVENTION.inbox, commonRoot):
+ * для DEFAULT_NS — `<commonRoot>/Входящие.md`, для именованного — `<root>/Входящие.md`.
  * Вычислять В МОМЕНТ ввода (индекс мог измениться с монтирования вида).
  */
 export function captureTargetInNamespace(
@@ -272,9 +274,9 @@ export async function ensureArchiveFile(
 /**
  * Гарантировать файл входящих с флагом `gtd-inbox: true` (образец ensureArchiveFile):
  * ensureFile + идемпотентная простановка флага. Флаг ставится ВСЕГДА — поэтому
- * фолбэк-файл захвата (inboxSources[0]), созданный при отсутствии помеченных файлов,
- * становится настоящим контейнером входящих: следующий быстрый ввод найдёт его через
- * captureTargets и не уйдёт снова в фолбэк. Идемпотентность сводит новый файл,
+ * фолбэк-файл захвата (<commonRoot>/Входящие.md), созданный при отсутствии помеченных
+ * файлов, становится настоящим контейнером входящих: следующий быстрый ввод найдёт его
+ * через captureTargets и не уйдёт снова в фолбэк. Идемпотентность сводит новый файл,
  * существующий без флага и существующий с флагом к одному состоянию.
  *
  * Вызывать СТРОГО до записи строки-задачи: иначе строка успела бы прожить в файле,

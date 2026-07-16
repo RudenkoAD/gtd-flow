@@ -44,12 +44,24 @@ describe("mergeSettings", () => {
 	it("скаляры и массивы верхнего уровня заменяются целиком", () => {
 		const merged = mergeSettings(DEFAULT_SETTINGS, {
 			autoInjectId: false,
-			inboxSources: ["A.md"],
+			commonRoot: "Life",
 			statusMap: { "/": "next" },
 		});
 		expect(merged.autoInjectId).toBe(false);
-		expect(merged.inboxSources).toEqual(["A.md"]);
+		expect(merged.commonRoot).toBe("Life");
 		expect(merged.statusMap).toEqual({ "/": "next" });
+	});
+
+	it("выпиленный inboxSources из старого data.json игнорируется молча (миграция)", () => {
+		// старый data.json итерации 1 нёс inboxSources; после выпила поля merge не должен
+		// падать, а commonRoot берёт дефолт (неизвестный ключ просто оседает как есть)
+		const merged = mergeSettings(DEFAULT_SETTINGS, {
+			inboxSources: ["GTD/Inbox.md"],
+			commonRoot: "GTD",
+		});
+		expect(merged.commonRoot).toBe("GTD");
+		// старое поле не мешает и остаётся в объекте безвредным довеском
+		expect((merged as unknown as Record<string, unknown>)["inboxSources"]).toEqual(["GTD/Inbox.md"]);
 	});
 
 	it("мусор вместо вложенного объекта не ломает слияние", () => {

@@ -21,7 +21,12 @@ import { localTodayIso } from "../../services/snapshotHelpers";
 import { confirm } from "./ConfirmModal";
 import { openTaskInFile } from "./openTask";
 import { pickBoardColumn, pickDate, pickProject } from "./pickers";
-import { NS_CONVENTION, nsTargetPath, resolveNamespace } from "../../core/namespace/namespace";
+import {
+	NS_CONVENTION,
+	nsTargetPath,
+	resolveNamespace,
+	type NamespaceFilter,
+} from "../../core/namespace/namespace";
 import {
 	ensureArchiveFile,
 	moveTaskToTemplates,
@@ -43,9 +48,10 @@ export type { CardPort } from "../../services/CardService";
 // Порты (структурные срезы сервисов — виды не тянут классы целиком)
 // ---------------------------------------------------------------------------
 
-/** Срез BoardService: обнаружение досок + перенос карточки. */
+/** Срез BoardService: обнаружение досок + перенос карточки. filter — пространство
+ *  ЗАДАЧИ (перенос внутри её пространства, не активного вида). */
 export interface BoardMenuPort {
-	discoverBoards(): { boards: DiscoveredBoard[] };
+	discoverBoards(filter?: NamespaceFilter): { boards: DiscoveredBoard[] };
 	moveCard(
 		boardPath: string,
 		def: BoardDef,
@@ -55,9 +61,10 @@ export interface BoardMenuPort {
 	): Promise<IntentResult>;
 }
 
-/** Срез ProjectService: только список проектов (перенос — move-line). */
+/** Срез ProjectService: только список проектов (перенос — move-line). filter —
+ *  пространство ЗАДАЧИ (перенос внутри её пространства, не активного вида). */
 export interface ProjectMenuPort {
-	discoverProjects(): ProjectSummary[];
+	discoverProjects(filter?: NamespaceFilter): ProjectSummary[];
 }
 
 /** Порты «Сделать шаблоном…»: где лежат шаблоны и чем создать файл.
@@ -299,6 +306,18 @@ async function archiveTask(ctx: TaskMenuCtx): Promise<void> {
 	else new Notice("GTD Flow: заархивировано");
 }
 
+/**
+ * Пространство ЗАДАЧИ как фильтр discovery: пикеры «В колонку…»/«В проект…» показывают
+ * доски/проекты пространства самой задачи, а не активного вида. По UX это правильнее —
+ * перенос идёт внутри пространства задачи (решение фидбека итерации 2).
+ */
+function taskNamespaceFilter(ctx: TaskMenuCtx): NamespaceFilter {
+	return {
+		active: resolveNamespace(ctx.task.filePath, ctx.task.nsOverride ?? null, ctx.settings.namespaces),
+		defs: ctx.settings.namespaces,
+	};
+}
+
 async function runMenuAction(ctx: TaskMenuCtx, action: MenuAction): Promise<void> {
 	const ports = ctx.ports ?? null;
 	switch (action.kind) {
@@ -372,7 +391,7 @@ async function runMenuAction(ctx: TaskMenuCtx, action: MenuAction): Promise<void
 		case "pick-column": {
 			const boards = ports?.boards;
 			if (boards == null) return; // недостижимо: пункт скрыт моделью
-			const found = boards.discoverBoards().boards;
+			const found = boards.discoverBoards(taskNamespaceFilter(ctx)).boards;
 			if (found.length === 0) {
 				new Notice("GTD Flow: досок не найдено");
 				return;
@@ -394,7 +413,7 @@ async function runMenuAction(ctx: TaskMenuCtx, action: MenuAction): Promise<void
 		case "pick-project": {
 			const projects = ports?.projects;
 			if (projects == null) return;
-			const found = projects.discoverProjects();
+			const found = projects.discoverProjects(taskNamespaceFilter(ctx));
 			if (found.length === 0) {
 				new Notice("GTD Flow: проектов не найдено");
 				return;

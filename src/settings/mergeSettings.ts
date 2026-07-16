@@ -5,9 +5,10 @@
  * `{"recurring":{"spawnTarget":…}}` обнулил бы catchUp/catchUpCap (политика
  * undefined читается как «none» — регулярные молча теряют вхождения), а
  * недостающий debounceMs.fileReindex дал бы setTimeout(cb, undefined) = 0 мс.
- * Поэтому debounceMs и recurring сливаются поключево. Массивы (inboxSources,
+ * Поэтому debounceMs и recurring сливаются поключево. Массивы (namespaces,
  * calendarPlacement, deferPresets) и statusMap заменяются целиком — осознанная
- * семантика. Неизвестные ключи (в т.ч. из будущих версий) сохраняются как есть.
+ * семантика. Неизвестные ключи (в т.ч. из будущих версий И выпиленный inboxSources
+ * из старого data.json) сохраняются как есть — миграция бесшумна, поля не роняют.
  */
 import type { GtdFlowSettings } from "./Settings";
 

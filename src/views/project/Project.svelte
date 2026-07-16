@@ -19,6 +19,7 @@
 		NS_CONVENTION,
 		nsTargetPath,
 		type NamespaceDef,
+		type NamespaceFilter,
 	} from "../../core/namespace/namespace";
 	import { NamePromptModal } from "../projects/NamePromptModal";
 	import { newProjectPath, projectDir } from "../projects/projectsOverviewLogic";
@@ -50,11 +51,11 @@
 		/** null до интеграции сервиса проектов в main.ts (plugin.projects). */
 		projects: ProjectPort | null;
 		settings: GtdFlowSettings;
-		/** Реактивный источник активного пространства (plugin.activeNamespace$). */
+		/** Реактивное ЛОКАЛЬНОЕ активное пространство вида (per-tab, см. GtdView). */
 		activeNamespace$: Readable<string>;
 		/** Определения пространств (settings.namespaces); пусто ⇒ switcher скрыт. */
 		namespaces: readonly NamespaceDef[];
-		/** Переключатель активного пространства (plugin.setActiveNamespace). */
+		/** Смена ЛОКАЛЬНОГО пространства этого вида (persist в viewState). */
 		setActiveNamespace: (name: string) => void;
 		/** Порты паритета без drag (меню/пикеры/карточка), ТЗ §8 слой 3. */
 		menuPorts?: TaskMenuPorts | null;
@@ -70,8 +71,8 @@
 	const epoch = taskStore.epoch;
 	// svelte-ignore state_referenced_locally
 	const today = taskStore.today;
-	// Активное пространство — как epoch: снимок стора; подписка ($activeNs) пере-запускает
-	// discovery на переключение (смена активного эпоху НЕ бампает).
+	// Локальное пространство вида — как epoch: снимок стора; подписка ($activeNs)
+	// пере-запускает discovery на переключение (смена эпоху НЕ бампает).
 	// svelte-ignore state_referenced_locally
 	const activeNs = activeNamespace$;
 	// switcher виден только при настроенных пространствах; метка активного для
@@ -91,10 +92,11 @@
 		}),
 	);
 
+	// фильтр discovery — ЛОКАЛЬНОЕ пространство вида (не активное глобальное)
+	const nsFilter = $derived<NamespaceFilter>({ active: $activeNs, defs: namespaces });
 	const summaries = $derived.by(() => {
 		void $epoch; // проекты живут в индексе — пересканируем на каждую его смену
-		void $activeNs; // и на смену активного: discoverProjects фильтрует по пространству
-		return projects === null ? [] : sortProjectSummaries(projects.discoverProjects());
+		return projects === null ? [] : sortProjectSummaries(projects.discoverProjects(nsFilter));
 	});
 	const shownPath = $derived(pickProjectPath(summaries, selectedPath));
 	const shown = $derived(summaries.find((s) => s.path === shownPath) ?? null);

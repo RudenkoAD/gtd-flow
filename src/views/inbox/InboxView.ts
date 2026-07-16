@@ -34,10 +34,11 @@ export class InboxView extends GtdView {
 			menuPorts: taskMenuPortsFromPlugin(plugin),
 			// структурный порт InboxWritePort — совместим с VaultAdapter
 			vault: plugin.vaultAdapter,
-			// реактивный источник активного пространства + переключатель (глобально)
-			activeNamespace: plugin.activeNamespace$,
+			// ЛОКАЛЬНОЕ пространство вида (per-tab) + его переключатель: селектор шапки
+			// меняет только этот вид, данные фильтруются его пространством (см. GtdView).
+			activeNamespace: { subscribe: this.localNamespace$.subscribe },
 			namespaces: plugin.settings.namespaces,
-			setActiveNamespace: (name: string) => plugin.setActiveNamespace(name),
+			setActiveNamespace: (name: string) => this.setLocalNamespace(name),
 		};
 	}
 }

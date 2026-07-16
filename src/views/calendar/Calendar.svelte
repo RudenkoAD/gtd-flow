@@ -3,8 +3,10 @@
 	import { derived, get, type Readable } from "svelte/store";
 	import type { IsoDate, Task } from "../../core/model/Task";
 	import {
-		inNamespace,
+		ALL_NS,
+		eventVisibleInNamespace,
 		NS_CONVENTION,
+		nsCommonTarget,
 		nsTargetPath,
 		type NamespaceDef,
 		type NamespaceFilter,
@@ -85,11 +87,12 @@
 		vault: CalendarWritePort;
 		/** Порт статусов дней (покраска календаря) или null. */
 		dayStatus?: DayStatusPort | null;
-		/** Реактивное активное пространство (plugin.activeNamespace$). */
+		/** Реактивное ЛОКАЛЬНОЕ активное пространство вида (per-tab). У календаря может
+		 *  быть ALL_NS («Все») — агрегат всех пространств (см. GtdView/CalendarView). */
 		activeNamespace: Readable<string>;
 		/** Снимок списка пространств (settings.namespaces). */
 		namespaces: readonly NamespaceDef[];
-		/** Глобальная смена активного пространства (plugin.setActiveNamespace). */
+		/** Смена ЛОКАЛЬНОГО пространства этого вида (persist в viewState). */
 		setActiveNamespace: (name: string) => void;
 		/** Состояние из workspace-раскладки; приходит ПОСЛЕ монтирования. */
 		persisted: Readable<CalendarPersistedState>;
@@ -170,16 +173,20 @@
 	});
 
 	// Серии-события (container events) — из индекса, реактивно по epoch И по смене
-	// активного пространства. В calendar-range QueryEngine их не отдаёт: рендерим
-	// ОТДЕЛЬНО как виртуальные вхождения (expandEventOccurrences). Серия событий —
-	// per-namespace: EVENT-задачи режем через inNamespace ДО разворачивания вхождений
-	// (шов сервисной фазы: событийная серия принадлежит своему пространству).
+	// локального пространства. В calendar-range QueryEngine их не отдаёт: рендерим
+	// ОТДЕЛЬНО как виртуальные вхождения (expandEventOccurrences). Видимость события —
+	// eventVisibleInNamespace: серии активного ns ∪ «общие» события (DEFAULT_NS видны
+	// в ЛЮБОМ календаре); ALL_NS («Все») — все. Задач это НЕ касается (обычный
+	// inNamespace режет их по пространству) — общие задачи в чужой календарь не текут.
 	let eventSeries = $state<Task[]>([]);
 	$effect(() => {
 		const recompute = (filter: NamespaceFilter): void => {
 			const out: Task[] = [];
 			for (const t of taskStore.index().all())
-				if (t.container === "events" && inNamespace(t.filePath, t.nsOverride ?? null, filter))
+				if (
+					t.container === "events" &&
+					eventVisibleInNamespace(t.filePath, t.nsOverride ?? null, filter)
+				)
 					out.push(t);
 			eventSeries = out;
 		};
@@ -334,7 +341,7 @@
 	}
 
 	/** Быстрый ввод: `- [ ] <текст> 📅 <дата>[ HH:mm[-HH:mm]]` в первый файл захвата
-	 *  (gtd-inbox, фолбэк inboxSources[0]); цель вычисляется В МОМЕНТ ввода.
+	 *  (gtd-inbox, фолбэк <commonRoot>/Входящие.md для «Общего»); цель — В МОМЕНТ ввода.
 	 *  timeEnd — из click-drag по слоту сетки (задаёт длительность события сразу). */
 	async function quickAdd(
 		date: IsoDate,
@@ -344,13 +351,18 @@
 	): Promise<void> {
 		const line = quickAddLine(text, date, time, timeEnd);
 		if (line === null) return;
-		// цель захвата — В АКТИВНОМ пространстве, В МОМЕНТ ввода: его первый gtd-inbox
-		// файл, иначе <root>/Входящие.md (именованное) / inboxSources[0] («Общее»).
-		const active = get(activeNamespace);
-		const fallback = nsTargetPath(active, namespaces, NS_CONVENTION.inbox, settings.inboxSources[0] ?? "");
+		// цель захвата — В ЛОКАЛЬНОМ пространстве вида, В МОМЕНТ ввода: его первый
+		// gtd-inbox файл, иначе конвенционные Входящие.md: <root>/ (именованное) или
+		// <commonRoot>/ («Общее» — nsCommonTarget подставляет корень «Общего»).
+		// В режиме «Все» (ALL_NS) конкретного пространства нет — пишем в ГЛОБАЛЬНЫЙ
+		// дефолт (settings.activeNamespace) и уведомляем, в какое пространство ушло.
+		const local = get(activeNamespace);
+		const allMode = local === ALL_NS;
+		const active = allMode ? settings.activeNamespace : local;
+		const fallback = nsCommonTarget(active, namespaces, NS_CONVENTION.inbox, settings.commonRoot);
 		const target = captureTargetInNamespace(taskStore.index().all(), active, namespaces, fallback);
 		if (target === "") {
-			new Notice("GTD Flow: не задан файл входящих (inboxSources)");
+			new Notice("GTD Flow: не задан файл входящих (пустая «Корневая папка Общего»)");
 			return;
 		}
 		// файл входящих создаётся и помечается gtd-inbox: true (+ gtd-namespace для
@@ -361,6 +373,7 @@
 		}
 		const ok = await vault.processFile(target, (content) => appendLine(content, line));
 		if (!ok) new Notice(`GTD Flow: не удалось записать в ${target}`);
+		else if (allMode) new Notice(`Добавлено в пространство «${namespaceLabel(active)}»`);
 	}
 
 	/** Drop блока-вхождения события на слот тайм-сетки: перенос на дату колонки +
@@ -396,14 +409,12 @@
 	/** ПКМ по пустому месту → «Повторяющееся событие…»: модал → createEventSeries.
 	 *  time — из слота тайм-сетки (prefill), null для DayCell (месяц/неделя/агенда). */
 	function createEvent(date: IsoDate, time: string | null): void {
-		// цель серии — файл событий АКТИВНОГО пространства: <root>/События.md
-		// (именованное) или settings.eventsFile («Общее»); значение берём в момент ПКМ.
-		const eventsFile = nsTargetPath(
-			get(activeNamespace),
-			namespaces,
-			NS_CONVENTION.events,
-			settings.eventsFile,
-		);
+		// цель серии — файл событий ЛОКАЛЬНОГО пространства вида: <root>/События.md
+		// (именованное) или settings.eventsFile («Общее»); в режиме «Все» (ALL_NS)
+		// конкретного пространства нет — создаём в ГЛОБАЛЬНОМ дефолте. Берём в момент ПКМ.
+		const local = get(activeNamespace);
+		const active = local === ALL_NS ? settings.activeNamespace : local;
+		const eventsFile = nsTargetPath(active, namespaces, NS_CONVENTION.events, settings.eventsFile);
 		new EventSeriesModal(
 			app,
 			{ name: "", rule: "", time: time ?? "" },
@@ -445,7 +456,8 @@
 				<button class:is-active={mode === m.id} onclick={() => setMode(m.id)}>{m.label}</button>
 			{/each}
 		</div>
-		<NamespaceSwitcher active={activeNamespace} {namespaces} onSelect={setActiveNamespace} />
+		<!-- allowAll — вкладка «Все» (агрегат всех пространств), только у календаря -->
+		<NamespaceSwitcher active={activeNamespace} {namespaces} onSelect={setActiveNamespace} allowAll={true} />
 	</div>
 
 	{#if mode === "agenda"}

@@ -175,3 +175,12 @@ export function setRangeBody(body: string, from: IsoDate, to: IsoDate, status: s
 	const [a, b] = compare(from, to) > 0 ? [to, from] : [from, to];
 	return appendBodyLine(body, `${a}..${b}: ${status}`);
 }
+
+/**
+ * Тело после добавления повторяющегося правила (`<ruleText>: <status>` дописывается
+ * новой строкой). Правило здесь НЕ валидируется — это делает UI перед вызовом;
+ * frontmatter не трогается — вызыватель оборачивает в withEditedBody.
+ */
+export function setRecurringBody(body: string, ruleText: string, status: string): string {
+	return appendBodyLine(body, `${ruleText}: ${status}`);
+}

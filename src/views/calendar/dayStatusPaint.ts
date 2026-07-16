@@ -13,6 +13,7 @@ import { Menu, type App } from "obsidian";
 import type { IsoDate } from "../../core/model/Task";
 import type { DayStatusPort } from "../../services/DayStatusService";
 import { DayStatusPaletteModal } from "./DayStatusPaletteModal";
+import { DayStatusRuleModal } from "./DayStatusRuleModal";
 
 export interface PaintPreview {
 	from: IsoDate;
@@ -71,6 +72,13 @@ export function openDayStatusMenu(
 		);
 	}
 	menu.addSeparator();
+	// Правило не зависит от кликнутой даты — пункт одинаков для дня и диапазона.
+	menu.addItem((mi) =>
+		mi
+			.setTitle("Повторяющееся правило…")
+			.setIcon("repeat")
+			.onClick(() => new DayStatusRuleModal(app, port).open()),
+	);
 	menu.addItem((mi) =>
 		mi
 			.setTitle("Палитра…")

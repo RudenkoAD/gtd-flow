@@ -162,3 +162,46 @@ describe("DayStatusService.removeStatusDef", () => {
 		expect(h.statusesAt(path)).toEqual({ работа: "#4c8bf5" });
 	});
 });
+
+describe("DayStatusService.addRecurring", () => {
+	it("дописывает строку правила в тело существующего файла", async () => {
+		const path = "s.md";
+		const h = makeHarness({
+			seed: { [path]: { "gtd-day-status": true, statuses: { работаю: "#4c8bf5" } } },
+		});
+		await h.service.addRecurring("every monday", "работаю");
+		expect(h.contents.get(path)).toBe("every monday: работаю\n");
+		// понедельник покрашен согласно правилу
+		expect(h.service.statusOf("2026-07-20")).toEqual({ name: "работаю", color: "#4c8bf5" });
+	});
+
+	it("на чистом хранилище создаёт файл (со стартовым правилом) и дописывает своё", async () => {
+		const h = makeHarness();
+		await h.service.addRecurring("every month on the 1st", "работаю");
+		const path = "GTD/Статусы дней.md";
+		expect(h.contents.get(path)).toBe(
+			"every week on saturday,sunday: выходной\nevery month on the 1st: работаю\n",
+		);
+	});
+});
+
+describe("DayStatusService: стартовое правило при создании файла", () => {
+	it("новый файл засеивается правилом выходных", async () => {
+		const h = makeHarness();
+		await h.service.ensureConfig();
+		const path = "GTD/Статусы дней.md";
+		expect(h.contents.get(path)).toBe("every week on saturday,sunday: выходной\n");
+		// суббота покрашена статусом «выходной» из стартовой палитры
+		expect(h.service.statusOf("2026-07-18")).toEqual({ name: "выходной", color: "#4caf50" });
+	});
+
+	it("существующий файл не засеивается стартовым правилом", async () => {
+		const path = "s.md";
+		const h = makeHarness({
+			seed: { [path]: { "gtd-day-status": true, statuses: { работаю: "#4c8bf5" } } },
+		});
+		// тело пустое; ensureConfig не должен добавить стартовое правило в существующий файл
+		await h.service.ensureConfig();
+		expect(h.contents.get(path)).toBe("");
+	});
+});

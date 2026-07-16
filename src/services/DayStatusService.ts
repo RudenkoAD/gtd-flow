@@ -13,6 +13,7 @@ import {
 	buildDayStatusModel,
 	clearSingleDayBody,
 	setRangeBody,
+	setRecurringBody,
 	setSingleDayBody,
 	statusForDate,
 	withEditedBody,
@@ -41,6 +42,10 @@ const STARTER_STATUSES: Record<string, string> = {
 	выходной: "#4caf50",
 };
 
+/** Стартовое правило в теле нового файла статусов: выходные красятся сразу. */
+const STARTER_RULE = "every week on saturday,sunday";
+const STARTER_RULE_STATUS = "выходной";
+
 /** Порт для видов календаря: модель, палитра статусов и правки. */
 export interface DayStatusPort {
 	model: Readable<DayStatusModel>;
@@ -55,6 +60,8 @@ export interface DayStatusPort {
 	setDay: (date: IsoDate, status: string) => Promise<void>;
 	clearDay: (date: IsoDate) => Promise<void>;
 	setRange: (from: IsoDate, to: IsoDate, status: string) => Promise<void>;
+	/** Добавить повторяющееся правило `<ruleText>: <status>` в тело файла. */
+	addRecurring: (ruleText: string, status: string) => Promise<void>;
 	/** Upsert определения статуса (имя→цвет) во frontmatter-карте statuses. */
 	setStatusDef: (name: string, color: string) => Promise<void>;
 	/** Удалить определение статуса из frontmatter-карты statuses. */
@@ -144,6 +151,14 @@ export class DayStatusService implements DayStatusPort {
 		await this.refresh();
 	}
 
+	async addRecurring(ruleText: string, status: string): Promise<void> {
+		const path = await this.ensureTargetFile();
+		await this.deps.processFile(path, (c) =>
+			withEditedBody(c, (b) => setRecurringBody(b, ruleText, status)),
+		);
+		await this.refresh();
+	}
+
 	async setStatusDef(name: string, color: string): Promise<void> {
 		const key = name.trim();
 		if (key === "") return;
@@ -183,6 +198,13 @@ export class DayStatusService implements DayStatusPort {
 			fm["gtd-day-status"] = true;
 			if (fm["statuses"] === undefined) fm["statuses"] = { ...STARTER_STATUSES };
 		});
+		// Засеять стартовое правило (выходные) ТОЛЬКО в новый файл и только если
+		// тело пусто — существующий файл сюда не попадает (existing === null выше).
+		await this.deps.processFile(path, (c) =>
+			withEditedBody(c, (b) =>
+				b.trim() === "" ? setRecurringBody(b, STARTER_RULE, STARTER_RULE_STATUS) : b,
+			),
+		);
 		this.path = path;
 		return path;
 	}

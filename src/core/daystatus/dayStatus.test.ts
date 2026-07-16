@@ -7,6 +7,7 @@ import {
 	parseAssignments,
 	removeSingleForDate,
 	setRangeBody,
+	setRecurringBody,
 	setSingleDayBody,
 	statusForDate,
 	withEditedBody,
@@ -118,6 +119,22 @@ describe("writeback тела", () => {
 		expect(removeSingleForDate(body, "2026-07-20")).toBe(
 			"2026-07-20..2026-07-22: x\nevery monday: y",
 		);
+	});
+	it("setRecurringBody дописывает правило в пустое тело", () => {
+		expect(setRecurringBody("", "every week on saturday,sunday", "выходной")).toBe(
+			"every week on saturday,sunday: выходной\n",
+		);
+	});
+	it("setRecurringBody дописывает правило в непустое тело", () => {
+		expect(setRecurringBody("2026-07-20: работаю\n", "every monday", "работаю")).toBe(
+			"2026-07-20: работаю\nevery monday: работаю\n",
+		);
+	});
+	it("setRecurringBody конкатенирует с существующими назначениями", () => {
+		let body = "every week on saturday,sunday: выходной\n";
+		body = setRecurringBody(body, "every month on the 1st", "зарплата");
+		const recurring = parseAssignments(body).filter((a) => a.kind === "recurring");
+		expect(recurring.map((a) => a.status)).toEqual(["выходной", "зарплата"]);
 	});
 });
 

@@ -1,7 +1,7 @@
 {
 	"id": "gtd-flow",
 	"name": "GTD Flow",
-	"version": "0.2.0",
+	"version": "0.2.1",
 	"minAppVersion": "1.7.2",
 	"description": "GTD workflow over plain Markdown tasks: inbox, kanban boards, calendar, tickler box, recurring tasks, and project dependency graphs.",
 	"author": "Anton Roudenko",

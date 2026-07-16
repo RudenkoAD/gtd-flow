@@ -12,6 +12,7 @@ import {
 	isValidIsoDate,
 	toEpochDays,
 	toParts,
+	weeksBetween,
 } from "./dateMath";
 
 describe("isLeap", () => {
@@ -168,6 +169,41 @@ describe("dayOfWeek (0=Mon .. 6=Sun)", () => {
 		fc.assert(
 			fc.property(arbDate, (date) => {
 				expect(dayOfWeek(addDays(date, 1))).toBe((dayOfWeek(date) + 1) % 7);
+			}),
+		);
+	});
+});
+
+describe("weeksBetween (недели от понедельника)", () => {
+	it("считает целые недели между понедельниками недель", () => {
+		// 07-13 пн, 07-14 вт, 07-21 вт, 07-28 вт
+		expect(weeksBetween("2026-07-14", "2026-07-14")).toBe(0);
+		expect(weeksBetween("2026-07-13", "2026-07-14")).toBe(0); // одна ISO-неделя
+		expect(weeksBetween("2026-07-21", "2026-07-14")).toBe(1);
+		expect(weeksBetween("2026-07-28", "2026-07-14")).toBe(2);
+		expect(weeksBetween("2026-07-14", "2026-07-28")).toBe(-2); // знак как у a−b
+	});
+	it("любые два дня одной ISO-недели дают 0", () => {
+		expect(weeksBetween("2026-07-13", "2026-07-19")).toBe(0); // пн..вс одной недели
+		expect(weeksBetween("2026-07-19", "2026-07-13")).toBe(0);
+	});
+	it("устойчиво через границу года", () => {
+		expect(weeksBetween("2027-01-14", "2026-12-31")).toBe(2); // чт → чт, 2 недели
+	});
+	it("всегда целое; сдвиг даты на неделю меняет разность на 1 (property)", () => {
+		const arbDate = fc
+			.tuple(
+				fc.integer({ min: 1900, max: 2200 }),
+				fc.integer({ min: 1, max: 12 }),
+				fc.integer({ min: 1, max: 31 }),
+			)
+			.map(([y, m, d]) => fromParts({ y, m, d: clampDay(y, m, d) }));
+		fc.assert(
+			fc.property(arbDate, arbDate, (a, b) => {
+				const w = weeksBetween(a, b);
+				expect(Number.isInteger(w)).toBe(true);
+				expect(weeksBetween(addDays(a, 7), b)).toBe(w + 1);
+				expect(weeksBetween(a, addDays(b, 7))).toBe(w - 1);
 			}),
 		);
 	});

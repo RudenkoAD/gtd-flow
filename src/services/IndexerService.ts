@@ -190,7 +190,9 @@ export class IndexerService implements IndexFeed {
 
 /** Дизамбигуация одинаковых строк без 🆔: n-е вхождение content-ключа
  *  в порядке файла получает occurrenceIndex = n. Порядок обхода = порядок
- *  listItems в снапшоте = порядок строк файла, поэтому ключи стабильны. */
+ *  listItems в снапшоте = порядок строк файла, поэтому ключи стабильны.
+ *  occurrenceIndex кладётся и в key (хвост #n), и в одноимённое поле Task —
+ *  локатор write-back адресует n-ное совпадение детерминированно (см. Task). */
 function assignOccurrenceIndexes(tasks: Task[]): Task[] {
 	const seen = new Map<string, number>();
 	return tasks.map((t) => {
@@ -198,7 +200,7 @@ function assignOccurrenceIndexes(tasks: Task[]): Task[] {
 		const base = t.key; // parseTaskLine всегда выдаёт computeKey(t, 0)
 		const n = seen.get(base) ?? 0;
 		seen.set(base, n + 1);
-		return n === 0 ? t : { ...t, key: computeKey(t, n) };
+		return { ...t, key: n === 0 ? t.key : computeKey(t, n), occurrenceIndex: n };
 	});
 }
 

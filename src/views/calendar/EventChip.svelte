@@ -14,7 +14,7 @@
 	import { buildTaskMenu, type TaskMenuPorts } from "../common/taskMenu";
 	import type { DndPort } from "../dnd/types";
 	import { VIEW_TYPES } from "../registry";
-	import { deferredUntil, placedTime, type PlacedEvent } from "./calendarLogic";
+	import { agendaTimeLabel, deferredUntil, placedTime, placedTimeEnd, type PlacedEvent } from "./calendarLogic";
 
 	let {
 		ev,
@@ -51,8 +51,11 @@
 	const titleText = $derived(displayText(ev.task));
 	// ТЗ §8: на телефоне кросс-видовой drag выключен — меню/пикеры вместо него
 	const draggable = $derived(dnd !== null && !Platform.isPhone);
-	/** Время поля-размещения — бейдж "14:30" перед текстом. */
-	const time = $derived(placedTime(ev.task, ev.field));
+	/** Бейдж времени поля-размещения перед текстом: «14:30–16:00» при заданном
+	 *  конце интервала (dueTimeEnd/scheduledTimeEnd/startTimeEnd), иначе «14:30». */
+	const timeLabel = $derived(
+		agendaTimeLabel(placedTime(ev.task, ev.field), placedTimeEnd(ev.task, ev.field)),
+	);
 	/** TICKLER (start > today): приглушённый чип, маркер ⏰, дата пробуждения в title. */
 	const deferred = $derived(deferredUntil(ev.task, today));
 
@@ -205,8 +208,8 @@
 				>{PRIORITY_ICONS[ev.task.priority]}</span
 			>
 		{/if}
-		{#if time !== null}
-			<span class="gtd-cal-chip-time">{time}</span>
+		{#if timeLabel !== null}
+			<span class="gtd-cal-chip-time">{timeLabel}</span>
 		{/if}
 		<span class="gtd-cal-chip-text"
 			>{#each segments as seg}{#if seg.tag}<span class="gtd-cal-chip-tag">{seg.text}</span

@@ -446,6 +446,26 @@ async function runMenuAction(ctx: TaskMenuCtx, action: MenuAction): Promise<void
 		case "archive":
 			return archiveTask(ctx);
 
+		case "delete": {
+			// «Удалить» (задача создана по ошибке): подтверждение → delete-line.
+			// withChildren: строка уходит вместе со своим вложенным блоком.
+			const ok = await confirm(
+				ctx.app,
+				"Удалить задачу?",
+				`Задача «${ctx.task.description}» будет удалена из файла безвозвратно ` +
+					`(вместе с её вложенными строками, если есть).`,
+				"Удалить",
+			);
+			if (!ok) return;
+			const res = await dispatchNoticing(ctx.dispatcher, {
+				type: "delete-line",
+				key: ctx.task.key,
+				withChildren: true,
+			});
+			if (res.ok) new Notice("GTD Flow: задача удалена");
+			return;
+		}
+
 		case "open-card": {
 			const cards = ports?.cards;
 			if (cards == null) return;

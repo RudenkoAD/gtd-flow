@@ -6,6 +6,7 @@
 	import type { TaskMenuPorts } from "../common/taskMenu";
 	import type { DndPort, OccurrenceDrag } from "../dnd/types";
 	import EventOccurrenceChip from "./EventOccurrenceChip.svelte";
+	import QuickAddKindSwitch, { type QuickAddKind } from "./QuickAddKindSwitch.svelte";
 	import TimeGridBlock from "./TimeGridBlock.svelte";
 	import type { CalendarWritePort, EventOccurrence, PlacedEvent } from "./calendarLogic";
 	import {
@@ -31,6 +32,7 @@
 		menuPorts = null,
 		onDropTask,
 		onQuickAdd,
+		onQuickAddEvent = null,
 		onCreateEvent = null,
 		onMoveOccurrence = null,
 	}: {
@@ -59,6 +61,12 @@
 			time: string | null,
 			timeEnd?: string | null,
 		) => Promise<void>;
+		/** Инлайн-создание СОБЫТИЯ (сегмент «Событие» переключателя): дата колонки +
+		 *  время начала слота и, при click-drag, конец интервала. null — переключатель
+		 *  скрыт, ввод создаёт только задачи. */
+		onQuickAddEvent?:
+			| ((date: IsoDate, text: string, time: string | null, timeEnd?: string | null) => Promise<void>)
+			| null;
 		/** ПКМ по пустому слоту — создать событие с временем слота. */
 		onCreateEvent?: ((date: IsoDate, time: string | null) => void) | null;
 		/** Drop блока-вхождения события: перенос на дату колонки + время слота. */
@@ -73,6 +81,10 @@
 	/** Минуты конца интервала quick-add (из click-drag); null — без длительности. */
 	let addingEndMin = $state<number | null>(null);
 	let draft = $state("");
+	/** Тип создаваемой записи (переключатель «Задача | Событие»); сбрасывается на «Задача». */
+	let addKind = $state<QuickAddKind>("task");
+	/** Обёртка ввода+переключателя — для blur-guard по relatedTarget. */
+	let addWrap = $state<HTMLElement | null>(null);
 
 	// --- click-drag создание: тянем по вертикали → начало+конец за один жест ---
 	// Отдельный pointer-жест на колонке (по образцу ресайза блока), а не DnD-сервис:
@@ -89,7 +101,11 @@
 	function isBlockOrControl(target: EventTarget | null): boolean {
 		return (
 			target instanceof Element &&
-			target.closest(".gtd-tg-block, .gtd-cal-chip, button, input, a, select, textarea") !== null
+			// .gtd-tg-quickadd — обёртка ввода+переключателя: клик по её пустоте (зазор
+			// между полем и сегментами) не должен начинать НОВЫЙ жест выделения
+			target.closest(
+				".gtd-tg-block, .gtd-cal-chip, .gtd-tg-quickadd, button, input, a, select, textarea",
+			) !== null
 		);
 	}
 
@@ -178,7 +194,9 @@
 		if (onCreateEvent === null || colEl === null) return;
 		if (
 			e.target instanceof Element &&
-			e.target.closest(".gtd-tg-block, .gtd-cal-chip, button, input, a, select, textarea")
+			e.target.closest(
+				".gtd-tg-block, .gtd-cal-chip, .gtd-tg-quickadd, button, input, a, select, textarea",
+			)
 		)
 			return;
 		e.preventDefault();
@@ -199,19 +217,42 @@
 		el.focus();
 	}
 
+	/** Диапазон слота для плейсхолдера/aria: «HH:mm–HH:mm» при click-drag, иначе «HH:mm». */
+	const slotRange = $derived(
+		addingMin === null
+			? ""
+			: addingEndMin !== null
+				? `${minutesToTime(addingMin)}–${minutesToTime(addingEndMin)}`
+				: minutesToTime(addingMin),
+	);
+
 	function cancelDraft(): void {
 		addingMin = null;
 		addingEndMin = null;
 		draft = "";
+		addKind = "task"; // дефолт восстанавливается к следующему вводу
+	}
+
+	/** blur ввода: отмена, КРОМЕ ухода фокуса в переключатель той же обёртки —
+	 *  клик/Tab по сегменту «Задача|Событие» не схлопывает ввод. */
+	function onDraftBlur(e: FocusEvent): void {
+		const to = e.relatedTarget;
+		if (to instanceof Node && addWrap?.contains(to)) return;
+		cancelDraft();
 	}
 
 	function submitDraft(): void {
 		const min = addingMin;
 		const endMin = addingEndMin;
+		const kind = addKind;
 		const text = draft;
 		cancelDraft();
 		if (min === null || text.trim() === "") return;
-		void onQuickAdd(date, text, minutesToTime(min), endMin !== null ? minutesToTime(endMin) : null);
+		const time = minutesToTime(min);
+		const timeEnd = endMin !== null ? minutesToTime(endMin) : null;
+		// «Событие» → инлайн-создание события с временем слота; иначе — задача (как прежде)
+		if (kind === "event" && onQuickAddEvent !== null) void onQuickAddEvent(date, text, time, timeEnd);
+		else void onQuickAdd(date, text, time, timeEnd);
 	}
 </script>
 
@@ -261,24 +302,28 @@
 		</div>
 	{/if}
 	{#if addingMin !== null}
-		<input
+		<div
 			class="gtd-tg-quickadd"
 			style="top:{(addingMin / MINUTES_PER_DAY) * 100}%"
-			type="text"
-			placeholder={addingEndMin !== null
-				? `Новое событие ${minutesToTime(addingMin)}–${minutesToTime(addingEndMin)}…`
-				: "Новая задача…"}
-			aria-label="Новая задача на {date} {minutesToTime(addingMin)}{addingEndMin !== null
-				? `–${minutesToTime(addingEndMin)}`
-				: ''}"
-			bind:value={draft}
-			use:focusInput
-			onkeydown={(e) => {
-				if (e.key === "Enter") submitDraft();
-				else if (e.key === "Escape") cancelDraft();
-			}}
-			onblur={cancelDraft}
-		/>
+			bind:this={addWrap}
+		>
+			<input
+				class="gtd-tg-quickadd-input"
+				type="text"
+				placeholder="{addKind === 'event' ? 'Новое событие' : 'Новая задача'} {slotRange}…"
+				aria-label="{addKind === 'event' ? 'Новое событие' : 'Новая задача'} на {date} {slotRange}"
+				bind:value={draft}
+				use:focusInput
+				onkeydown={(e) => {
+					if (e.key === "Enter") submitDraft();
+					else if (e.key === "Escape") cancelDraft();
+				}}
+				onblur={onDraftBlur}
+			/>
+			{#if onQuickAddEvent !== null}
+				<QuickAddKindSwitch bind:kind={addKind} />
+			{/if}
+		</div>
 	{/if}
 </div>
 
@@ -312,6 +357,13 @@
 		left: 0;
 		width: calc(100% - 4px);
 		z-index: 3; /* над блоками — редактируем именно его */
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 2px;
+	}
+	.gtd-tg-quickadd-input {
+		width: 100%;
 		font-size: var(--font-ui-smaller, 0.85em);
 	}
 	.gtd-tg-createsel {

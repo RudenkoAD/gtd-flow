@@ -26,6 +26,7 @@ export type MenuAction =
 	| { kind: "pick-project" } // «В проект…»: пикер проектов → move-line
 	| { kind: "make-template" } // «Сделать шаблоном…»: move-line в gtd-recurring файл
 	| { kind: "archive" } // «Архивировать»: снять теги досок → move-line в archiveFile
+	| { kind: "delete" } // «Удалить»: ConfirmModal → delete-line (задача создана по ошибке)
 	| { kind: "open-card" } // CardPort.openOrCreate
 	| { kind: "open-file" }; // openTaskInFile
 
@@ -101,11 +102,14 @@ export function buildMenuModel(input: MenuModelInput): MenuNode[] {
 	const isDone = task.statusChar === "x" || task.statusChar === "X";
 	const isCancelled = task.statusChar === "-";
 
-	// --- статус: только «Выполнено» (пока задача не выполнена) и отмена.
+	// --- статус: «Выполнено» (пока задача не выполнена) + «Удалить».
 	// Новая модель доски — «статус = чекбокс»: перевод в работу '/' и возврат в
 	// очередь задаются галочкой карточки, а «Открыть заново» дублировало её
-	// снятие — поэтому эти пункты убраны. Отмена '-' чекбоксом недостижима,
-	// значит её пара-переключатель «Отменить»/«Вернуть из отменённых» остаётся. ---
+	// снятие — поэтому эти пункты убраны. Пункт «Отменить» (перевод в '-') убран
+	// НАСОВСЕМ: пользователи гасили им ошибочно созданные задачи, но строка при
+	// этом оставалась в файле — на его место встал честный «Удалить» (delete-line).
+	// «Вернуть из отменённых» для уже отменённых '-' ОСТАВЛЕН: это восстановление
+	// статуса (парсер '-' не трогаем), а не отмена. ---
 	if (!isDone) {
 		items.push(
 			intentItem("status-done", "status", "Выполнено", "check", {
@@ -116,20 +120,24 @@ export function buildMenuModel(input: MenuModelInput): MenuNode[] {
 			}),
 		);
 	}
-	items.push(
-		isCancelled
-			? intentItem("status-uncancel", "status", "Вернуть из отменённых", "rotate-ccw", {
-					type: "set-status",
-					key: task.key,
-					statusChar: " ",
-				})
-			: intentItem("status-cancel", "status", "Отменить", "x", {
-					type: "set-status",
-					key: task.key,
-					statusChar: "-",
-					date: today,
-				}),
-	);
+	if (isCancelled) {
+		items.push(
+			intentItem("status-uncancel", "status", "Вернуть из отменённых", "rotate-ccw", {
+				type: "set-status",
+				key: task.key,
+				statusChar: " ",
+			}),
+		);
+	}
+	// «Удалить» — на месте прежней «Отменить»: доступна для ЛЮБОЙ задачи, убирает
+	// строку из файла (с подтверждением ConfirmModal — исполняет taskMenu.ts).
+	items.push({
+		id: "delete",
+		section: "status",
+		title: "Удалить",
+		icon: "trash",
+		action: { kind: "delete" },
+	});
 
 	// --- приоритет: подменю «Приоритет…» (5 уровней + сброс), checked на текущем;
 	// статусные пункты выше намеренно НЕ группируются — они на расстоянии одного клика ---

@@ -104,21 +104,35 @@ export function planSpawns(input: SpawnPlanInput): SpawnPlanResult {
 		}
 		const rule = tpl.rule;
 
+		// Якорь чётности недель для weekly с n>1: rule.from (иных базовых дат у
+		// шаблона нет). Без from чётность держит сама цепочка курсоров — от члена
+		// к члену шаг 7*n сохраняет фазу, отдельный якорь не нужен (anchor = undefined).
+		const anchor = rule.from;
+
 		let cursor: IsoDate;
 		if (t.nextSpawn === null) {
 			// bootstrap: 🔜 = nextOccurrence(rule, today−1) — без ретроспективы,
 			// но сегодняшнее вхождение (если есть) спавнится этим же проходом
-			const boot = nextOccurrence(rule, addDays(input.today, -1));
+			const boot = nextOccurrence(rule, addDays(input.today, -1), anchor);
 			if (boot === null) continue; // until уже в прошлом — правило исчерпано
 			cursor = boot;
 		} else if (!isOccurrence(rule, t.nextSpawn)) {
-			// курсор не принадлежит правилу (правило правили руками) —
-			// снап вперёд от today, пропущенное не спавним (ТЗ §6, жизненный цикл)
-			const snapped = nextOccurrence(rule, input.today);
+			// курсор структурно чужой правилу (правило правили руками) — снап вперёд
+			// от today, пропущенное не спавним (ТЗ §6, жизненный цикл)
+			const snapped = nextOccurrence(rule, input.today, anchor);
 			if (snapped !== null && snapped !== t.nextSpawn) {
 				cursorAdvances.push({ templateId, newCursor: snapped });
 			}
 			continue;
+		} else if (!isOccurrence(rule, t.nextSpawn, anchor)) {
+			// курсор структурно верен, но встал на «не ту» неделю по чётности (якорь
+			// from появился/сместился у существующего шаблона). Пере-снап на БЛИЖАЙШЕЕ
+			// легитимное вхождение ≥ курсора и дальше обычный due-сбор: без дублей
+			// (childId+existingIds гасят уже созданные копии обеих фаз старого бага)
+			// и без пропуска ближайшего due (вхождения ≤ today подхватятся ниже).
+			const resnapped = nextOccurrence(rule, addDays(t.nextSpawn, -1), anchor);
+			if (resnapped === null) continue; // until исчерпан
+			cursor = resnapped;
 		} else {
 			cursor = t.nextSpawn;
 		}

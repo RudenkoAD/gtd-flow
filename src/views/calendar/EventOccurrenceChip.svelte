@@ -5,7 +5,7 @@
 	import { DatePromptModal } from "../common/DatePromptModal";
 	import type { DndPort } from "../dnd/types";
 	import { VIEW_TYPES } from "../registry";
-	import type { EventOccurrence } from "./calendarLogic";
+	import { agendaTimeLabel, type EventOccurrence } from "./calendarLogic";
 	import {
 		editEventSeries,
 		excludeEventOccurrence,
@@ -44,6 +44,9 @@
 	const rangeLabel = $derived(
 		block !== null && block.hasEnd && occ.timeEnd !== null ? `${occ.time}–${occ.timeEnd}` : null,
 	);
+	/** Бейдж времени вне блока (агенда/месяц/«Весь день»): «19:00–20:30» при
+	 *  заданном конце, иначе «19:00»; null — «Весь день» (без времени). */
+	const timeLabel = $derived(agendaTimeLabel(occ.time, occ.timeEnd));
 	/** Короткий блок (≤30 мин): шапка времени прячется — место названию
 	 *  (та же логика, что у блоков задач; время остаётся в title-подсказке). */
 	const compact = $derived(block !== null && block.endMin - block.startMin <= 30);
@@ -210,12 +213,9 @@
 			<span class="gtd-cal-chip-text is-wrapping">{occ.title}</span>
 		</div>
 	{:else}
-		{#if rangeLabel !== null}
-			<span class="gtd-cal-chip-time">{rangeLabel}</span>
-		{/if}
 		<span class="gtd-cal-event-mark" aria-label={markLabel}>{mark}</span>
-		{#if rangeLabel === null && occ.time !== null}
-			<span class="gtd-cal-chip-time">{occ.time}</span>
+		{#if timeLabel !== null}
+			<span class="gtd-cal-chip-time">{timeLabel}</span>
 		{/if}
 		<span class="gtd-cal-chip-text">{occ.title}</span>
 	{/if}

@@ -155,7 +155,7 @@ describe("buildMenuModel: статусные переключатели", () => 
 		const items = buildMenuModel(input());
 		const topIds = items.filter((n) => !isSubmenuNode(n)).map((n) => (n as MenuItemModel).id);
 		expect(topIds).toContain("status-done");
-		expect(topIds).toContain("status-cancel");
+		expect(topIds).toContain("delete");
 	});
 
 	it("«В работу»/«Вернуть в очередь» убраны из меню (статус — чекбоксом)", () => {
@@ -168,40 +168,41 @@ describe("buildMenuModel: статусные переключатели", () => 
 		}
 	});
 
-	it("открытая задача: выполнено (с датой) и отменить (с датой), без «в работу»", () => {
+	it("открытая задача: «Выполнено» (с датой) и «Удалить», без «Отменить»/«в работу»", () => {
 		const task = makeTask({ filePath: "a.md", statusChar: " " });
 		const items = buildMenuModel(input({ task }));
 		expect(byId(items, "status-done").action).toEqual({
 			kind: "intent",
 			intent: { type: "set-status", key: task.key, statusChar: "x", date: TODAY },
 		});
-		expect(byId(items, "status-cancel").action).toEqual({
-			kind: "intent",
-			intent: { type: "set-status", key: task.key, statusChar: "-", date: TODAY },
-		});
+		// «Отменить» (перевод в '-') убран насовсем — на его месте «Удалить»
+		expect(ids(items)).not.toContain("status-cancel");
+		expect(byId(items, "delete").action).toEqual({ kind: "delete" });
 		expect(ids(items)).not.toContain("status-reopen");
 		expect(ids(items)).not.toContain("status-doing");
 	});
 
-	it("выполненная: «Выполнено» и «Открыть заново» отсутствуют (снятие — чекбоксом)", () => {
+	it("выполненная: «Выполнено» и «Открыть заново» отсутствуют (снятие — чекбоксом), «Удалить» есть", () => {
 		const task = makeTask({ filePath: "a.md", statusChar: "x" });
 		const got = ids(buildMenuModel(input({ task })));
 		expect(got).not.toContain("status-done");
 		expect(got).not.toContain("status-reopen");
-		// «Отменить» доступна и для выполненной — статус-секция не пустеет
-		expect(got).toContain("status-cancel");
+		// статус-секция не пустеет: «Удалить» доступна и для выполненной
+		expect(got).not.toContain("status-cancel");
+		expect(got).toContain("delete");
 	});
 
-	it("в работе '/': трактуется как обычная невыполненная — «Выполнено» + «Отменить»", () => {
+	it("в работе '/': трактуется как обычная невыполненная — «Выполнено» + «Удалить»", () => {
 		const task = makeTask({ filePath: "a.md", statusChar: "/" });
 		const got = ids(buildMenuModel(input({ task })));
 		expect(got).toContain("status-done");
-		expect(got).toContain("status-cancel");
+		expect(got).toContain("delete");
+		expect(got).not.toContain("status-cancel");
 		expect(got).not.toContain("status-doing");
 		expect(got).not.toContain("status-pause");
 	});
 
-	it("отменённая '-': «Вернуть из отменённых» вместо «Отменить»", () => {
+	it("отменённая '-': «Вернуть из отменённых» оставлена (восстановление), «Отменить» убрана, «Удалить» есть", () => {
 		const task = makeTask({ filePath: "a.md", statusChar: "-" });
 		const items = buildMenuModel(input({ task }));
 		expect(byId(items, "status-uncancel").action).toEqual({
@@ -211,6 +212,26 @@ describe("buildMenuModel: статусные переключатели", () => 
 		expect(ids(items)).not.toContain("status-cancel");
 		// отменённая не выполнена — «Выполнено» доступно
 		expect(ids(items)).toContain("status-done");
+		// «Удалить» доступна для любой задачи, в т.ч. уже отменённой
+		expect(ids(items)).toContain("delete");
+	});
+});
+
+describe("buildMenuModel: пункт «Удалить»", () => {
+	it("доступен для любого статуса, в секции status, иконка trash, action delete", () => {
+		for (const statusChar of [" ", "/", "x", "-"]) {
+			const task = makeTask({ filePath: "a.md", statusChar });
+			const del = byId(buildMenuModel(input({ task })), "delete");
+			expect(del.section).toBe("status");
+			expect(del.icon).toBe("trash");
+			expect(del.title).toBe("Удалить");
+			expect(del.action).toEqual({ kind: "delete" });
+		}
+	});
+
+	it("«Удалить» — верхнеуровневый пункт (не внутри подменю)", () => {
+		const items = buildMenuModel(input());
+		expect(items.some((n) => !isSubmenuNode(n) && n.id === "delete")).toBe(true);
 	});
 });
 

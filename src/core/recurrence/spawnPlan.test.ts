@@ -474,6 +474,79 @@ describe("planSpawns — from (нижняя граница шаблона)", () 
 	});
 });
 
+describe("planSpawns — weekly n>1 с from: чётность недель курсора", () => {
+	// Ориентиры: вторники 2026 — 07-14, 07-21, 07-28, 08-11 (from = 07-14, чётные недели).
+	it("курсор на «не той» неделе (07-21) пере-снапится на ближайшее фазовое вхождение", () => {
+		// апгрейд существующего пользователя: старый баг увёл 🔜 на нечётную неделю
+		const t = makeTemplate({
+			taskId: "bw",
+			key: "id:bw",
+			recurrence: "every 2 weeks on tue from 2026-07-14",
+			nextSpawn: "2026-07-21", // вторник, но неделя не в фазе
+			rawLine: "- [ ] Biweekly 🔁 every 2 weeks on tue from 2026-07-14 🆔 bw 🔜 2026-07-21",
+		});
+		// today до 07-28: пере-снап курсора без спавна (ближайшее фазовое ещё впереди)
+		const res = plan([tpl(t)], { today: "2026-07-22" });
+		expect(res.spawns).toEqual([]);
+		expect(res.cursorAdvances).toEqual([{ templateId: "bw", newCursor: "2026-07-28" }]);
+	});
+
+	it("пере-снап НЕ пропускает ближайшее легитимное вхождение (спавнит его при due)", () => {
+		const t = makeTemplate({
+			taskId: "bw",
+			key: "id:bw",
+			recurrence: "every 2 weeks on tue from 2026-07-14",
+			nextSpawn: "2026-07-21", // не в фазе
+			rawLine: "- [ ] Biweekly 🔁 every 2 weeks on tue from 2026-07-14 🆔 bw 🔜 2026-07-21",
+		});
+		// today = 07-28: ближайшее фазовое (07-28) — сегодня, оно спавнится
+		const res = plan([tpl(t)], { today: "2026-07-28" });
+		expect(res.spawns.map((s) => s.occurrence)).toEqual(["2026-07-28"]);
+		expect(res.cursorAdvances).toEqual([{ templateId: "bw", newCursor: "2026-08-11" }]);
+	});
+
+	it("уже созданные копии обеих фаз (старый баг) не дублируются при пере-снапе", () => {
+		const t = makeTemplate({
+			taskId: "bw",
+			key: "id:bw",
+			recurrence: "every 2 weeks on tue from 2026-07-14",
+			nextSpawn: "2026-07-21",
+			rawLine: "- [ ] Biweekly 🔁 every 2 weeks on tue from 2026-07-14 🆔 bw 🔜 2026-07-21",
+		});
+		// копия за 07-28 уже существует (была наспавнена еженедельным багом) → не дубль
+		const res = plan([tpl(t)], { today: "2026-07-28", existingIds: new Set(["bw-20260728"]) });
+		expect(res.spawns).toEqual([]);
+		expect(res.cursorAdvances).toEqual([{ templateId: "bw", newCursor: "2026-08-11" }]);
+	});
+
+	it("курсор в фазе принимается как есть", () => {
+		const t = makeTemplate({
+			taskId: "bw",
+			key: "id:bw",
+			recurrence: "every 2 weeks on tue from 2026-07-14",
+			nextSpawn: "2026-07-14", // в фазе
+			rawLine: "- [ ] Biweekly 🔁 every 2 weeks on tue from 2026-07-14 🆔 bw 🔜 2026-07-14",
+		});
+		const res = plan([tpl(t)], { today: "2026-07-14" });
+		expect(res.spawns.map((s) => s.occurrence)).toEqual(["2026-07-14"]);
+		expect(res.cursorAdvances).toEqual([{ templateId: "bw", newCursor: "2026-07-28" }]);
+	});
+
+	it("bootstrap с from садится на фазовую неделю (не +1 неделя)", () => {
+		const t = makeTemplate({
+			taskId: "bw",
+			key: "id:bw",
+			nextSpawn: null,
+			recurrence: "every 2 weeks on tue from 2026-07-14",
+			rawLine: "- [ ] Biweekly 🔁 every 2 weeks on tue from 2026-07-14 🆔 bw",
+		});
+		// today=07-20 (нечётная неделя): курсор bootstrap = 07-28, НЕ 07-21
+		const res = plan([tpl(t)], { today: "2026-07-20" });
+		expect(res.spawns).toEqual([]);
+		expect(res.cursorAdvances).toEqual([{ templateId: "bw", newCursor: "2026-07-28" }]);
+	});
+});
+
 describe("makeChildId", () => {
 	it("is <templateId>-<YYYYMMDD>", () => {
 		expect(makeChildId("rev-prio", "2026-07-31")).toBe("rev-prio-20260731");

@@ -64,6 +64,14 @@ export interface Task {
 	/** Значение 🆔, если есть. Предпочтительный якорь для write-back и ⛔. */
 	taskId: string | null;
 	filePath: string;
+	/** Порядковый номер среди id-less строк-двойников с тем же content-key в файле
+	 *  (0-based, в порядке следования по файлу). Назначает индексатор
+	 *  (IndexerService.assignOccurrenceIndexes) — тем же счётчиком, что и хвост
+	 *  <occurrenceIndex> в key. Задачи с 🆔 и синтетические (фикстуры/строки вне
+	 *  индексатора) его НЕ несут (undefined). Делает write-back-адресацию дублей
+	 *  детерминированной: локатор берёт n-ное совпадение в файле, не полагаясь на
+	 *  advisory lineStart (тот дрейфует при вставке/удалении строк выше). */
+	occurrenceIndex?: number;
 	/** Номер строки на момент парса. ТОЛЬКО подсказка — не идентичность. */
 	lineStart: number;
 	lineEnd: number;

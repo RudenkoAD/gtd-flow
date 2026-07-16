@@ -41,7 +41,8 @@ export function buildTemplateVM(task: Task, today: IsoDate): TemplateVM {
 	const expired =
 		!isParseError(ruleParsed) &&
 		ruleParsed.until !== undefined &&
-		nextOccurrence(ruleParsed, today) === null;
+		// anchor = from: при weekly n>1 «исчерпано ли до until» зависит от чётности недель
+		nextOccurrence(ruleParsed, today, ruleParsed.from) === null;
 
 	const badges: TemplateBadge[] = [];
 	if (paused) badges.push("paused");

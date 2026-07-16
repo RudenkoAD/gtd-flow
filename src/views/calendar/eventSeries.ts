@@ -107,6 +107,23 @@ export function joinEventRule(rule: string, time: string): string {
 }
 
 /**
+ * Закрепить чётность недель НОВОЙ серии: для weekly с byDay и n>1 без явного
+ * from дописать 'from <дата серии>'. Иначе фаза недель у серии не закреплена —
+ * разворот в календаре опирался бы на эпоха-фолбэк (стабильно, но фаза
+ * произвольна); явный from делает первым вхождением саму дату создания.
+ * Идемпотентно: from уже есть / правило не weekly-n>1-byDay / битое — текст как есть.
+ * from вставляется ПЕРЕД хвостом 'at' (splitEventRule на правке остаётся рабочим).
+ */
+export function withSeriesAnchor(ruleText: string, seriesDate: IsoDate): string {
+	const parsed = parseRule(ruleText);
+	if (isParseError(parsed)) return ruleText;
+	if (parsed.freq !== "weekly" || parsed.byDay.length === 0 || parsed.n <= 1) return ruleText;
+	if (parsed.from !== undefined) return ruleText;
+	const { rule, time } = splitEventRule(ruleText);
+	return joinEventRule(`${rule} from ${seriesDate}`, time);
+}
+
+/**
  * Строка одноразового события-переноса вхождения серии:
  * `- [ ] <name> 📅 <date>[ HH:mm[-HH:mm]] [🧬 <seriesId>]`. Пустое имя — null.
  * Конец интервала пишется только строго позже начала (иначе выпадает — как в
@@ -154,6 +171,36 @@ export async function createEventSeries(deps: {
 }): Promise<EventWriteResult> {
 	if (isParseError(parseRule(deps.ruleText))) return { ok: false, reason: "invalid-rule" };
 	const line = buildEventLine(deps.name, deps.ruleText);
+	if (line === null) return { ok: false, reason: "empty-name" };
+	try {
+		await deps.vault.ensureFile(deps.eventsFile);
+		await deps.vault.processFrontmatter(deps.eventsFile, (fm) => {
+			fm["gtd-events"] = true;
+		});
+	} catch {
+		return { ok: false, reason: "events-file-create-failed" };
+	}
+	const ok = await deps.vault.processFile(deps.eventsFile, (content) => appendLine(content, line));
+	return ok ? { ok: true } : { ok: false, reason: "write-failed" };
+}
+
+/**
+ * Создать ОДНОРАЗОВОЕ событие — строку `- [ ] <name> 📅 <date>[ HH:mm[-HH:mm]]` в
+ * файле событий (формат buildSingleOccurrenceLine, без 🧬 — новое событие, не
+ * перенос вхождения). Дата и время начала-конца берутся из клика/драга по сетке
+ * (в месячной сетке времени нет — событие «Весь день»). ensureFile + frontmatter
+ * gtd-events: true СТРОГО до append (иначе строка успела бы прожить обычной задачей
+ * и протечь во входящие), затем append строки. Параллель createEventSeries для 🔁.
+ */
+export async function createSingleEvent(deps: {
+	vault: EventVaultPort;
+	eventsFile: string;
+	name: string;
+	date: IsoDate;
+	time: string | null;
+	timeEnd: string | null;
+}): Promise<EventWriteResult> {
+	const line = buildSingleOccurrenceLine(deps.name, deps.date, deps.time, deps.timeEnd, null);
 	if (line === null) return { ok: false, reason: "empty-name" };
 	try {
 		await deps.vault.ensureFile(deps.eventsFile);

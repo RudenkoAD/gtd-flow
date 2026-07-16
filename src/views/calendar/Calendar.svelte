@@ -32,6 +32,7 @@
 		agendaLabel,
 		appendLine,
 		dropDateField,
+		eventTargetForNamespace,
 		expandEventOccurrences,
 		monthGrid,
 		monthTitle,
@@ -53,7 +54,12 @@
 		type CalendarPersistedState,
 		type CalendarWritePort,
 	} from "./calendarLogic";
-	import { createEventSeries, transferEventOccurrence } from "./eventSeries";
+	import {
+		createEventSeries,
+		createSingleEvent,
+		transferEventOccurrence,
+		withSeriesAnchor,
+	} from "./eventSeries";
 	import { EventSeriesModal } from "./EventSeriesModal";
 	import { dropTimeEnd, preservedTimeEnd } from "./timeGrid";
 	import { createPaintController, type PaintPreview } from "./dayStatusPaint";
@@ -376,6 +382,31 @@
 		else if (allMode) new Notice(`Добавлено в пространство «${namespaceLabel(active)}»`);
 	}
 
+	/** Инлайн-создание СОБЫТИЯ из поля ввода (сегмент «Событие»): одноразовое событие
+	 *  `- [ ] <текст> 📅 <дата>[ HH:mm[-HH:mm]]` в файле событий ЛОКАЛЬНОГО пространства
+	 *  вида — В МОМЕНТ ввода. Цель: <root>/События.md (именованное), settings.eventsFile
+	 *  («Общее»), <commonRoot>/События.md (вкладка «Все» — ALL_NS; конкретного
+	 *  пространства нет, пишем в «дом» «Общего»). Файл создаётся с frontmatter
+	 *  gtd-events:true, если его нет. time/timeEnd — из слота/протяжки тайм-сетки
+	 *  (в месячной сетке и полосе «Весь день» — null: событие без времени). */
+	async function quickAddEvent(
+		date: IsoDate,
+		text: string,
+		time: string | null = null,
+		timeEnd: string | null = null,
+	): Promise<void> {
+		if (text.trim() === "") return;
+		const eventsFile = eventTargetForNamespace(
+			get(activeNamespace),
+			namespaces,
+			settings.eventsFile,
+			settings.commonRoot,
+		);
+		const res = await createSingleEvent({ vault, eventsFile, name: text, date, time, timeEnd });
+		if (res.ok) new Notice("GTD Flow: событие создано");
+		else new Notice(`GTD Flow: ${res.reason}`);
+	}
+
 	/** Drop блока-вхождения события на слот тайм-сетки: перенос на дату колонки +
 	 *  время слота с сохранением длительности вхождения. ОДНА атомарная запись в
 	 *  файле событий (см. transferEventOccurrence): серия гасит вхождение через 🚫
@@ -420,11 +451,13 @@
 			{ name: "", rule: "", time: time ?? "" },
 			`Новое событие · ${date}`,
 			(name, ruleText) => {
+				// weekly n>1 с byDay без from → дописать 'from <дата ПКМ>': закрепляет
+				// чётность недель новой серии (иначе фаза опиралась бы на эпоха-фолбэк)
 				void createEventSeries({
 					vault,
 					eventsFile,
 					name,
-					ruleText,
+					ruleText: withSeriesAnchor(ruleText, date),
 				}).then((res) => {
 					if (res.ok) new Notice("GTD Flow: событие создано");
 					else new Notice(`GTD Flow: ${res.reason}`);
@@ -500,6 +533,7 @@
 					statusName={dsFor(date)?.name ?? null}
 					onDropTask={dropTask}
 					onQuickAdd={quickAdd}
+					onQuickAddEvent={(date, text) => quickAddEvent(date, text)}
 					onCreateEvent={createEvent}
 				/>
 			{/each}
@@ -521,6 +555,7 @@
 			paintHandlers={dayStatus === null ? null : paint}
 			onDropTask={dropTask}
 			onQuickAdd={quickAdd}
+			onQuickAddEvent={quickAddEvent}
 			onCreateEvent={createEvent}
 			onMoveOccurrence={moveOccurrence}
 		/>
@@ -558,6 +593,7 @@
 						painting={dsInPreview(date)}
 						onDropTask={dropTask}
 						onQuickAdd={quickAdd}
+						onQuickAddEvent={(date, text) => quickAddEvent(date, text)}
 						onCreateEvent={createEvent}
 					/>
 				{/each}

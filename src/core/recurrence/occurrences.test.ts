@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { weeksBetween } from "./dateMath";
 import type { Rule } from "./grammar";
 import { DEFAULT_OCCURRENCE_CAP, expandOccurrences } from "./occurrences";
 
@@ -144,6 +145,95 @@ describe("expandOccurrences — from (нижняя граница)", () => {
 			"2026-07-15",
 			"2026-07-16",
 			"2026-07-17",
+		]);
+	});
+});
+
+describe("expandOccurrences — weekly n>1 чётность недель (якорь from)", () => {
+	// Ориентиры: вторники июля 2026 — 07-07, 07-14, 07-21, 07-28; 08-11.
+	it("'every 2 weeks on tue from 2026-07-14' → 07-14, 07-28, 08-11 и НЕ 07-21", () => {
+		const r: Rule = { freq: "weekly", n: 2, byDay: [1], from: "2026-07-14" };
+		expect(expandOccurrences(r, "2026-07-01", "2026-08-15")).toEqual([
+			"2026-07-14",
+			"2026-07-28",
+			"2026-08-11",
+		]);
+	});
+
+	it("фаза НЕ зависит от начала видимого диапазона (регресс «появляется каждую неделю»)", () => {
+		const r: Rule = { freq: "weekly", n: 2, byDay: [1], from: "2026-07-14" };
+		// диапазон, начинающийся до/после вторника, даёт ОДНУ И ТУ ЖЕ фазу
+		expect(expandOccurrences(r, "2026-07-01", "2026-07-31")).toEqual(["2026-07-14", "2026-07-28"]);
+		expect(expandOccurrences(r, "2026-07-02", "2026-07-31")).toEqual(["2026-07-14", "2026-07-28"]);
+		expect(expandOccurrences(r, "2026-06-29", "2026-08-09")).toEqual(["2026-07-14", "2026-07-28"]);
+	});
+
+	it("несколько дней в неделю сохраняют фазу", () => {
+		const r: Rule = { freq: "weekly", n: 2, byDay: [1, 4], from: "2026-07-14" }; // вт, пт
+		expect(expandOccurrences(r, "2026-07-01", "2026-08-01")).toEqual([
+			"2026-07-14",
+			"2026-07-17",
+			"2026-07-28",
+			"2026-07-31",
+		]);
+	});
+
+	it("every 3 weeks: шаг ровно 3 недели", () => {
+		const r: Rule = { freq: "weekly", n: 3, byDay: [0], from: "2026-07-13" };
+		expect(expandOccurrences(r, "2026-07-01", "2026-09-01")).toEqual([
+			"2026-07-13",
+			"2026-08-03",
+			"2026-08-24",
+		]);
+	});
+
+	it("переход через границу года", () => {
+		const r: Rule = { freq: "weekly", n: 2, byDay: [3], from: "2026-12-31" }; // чт
+		expect(expandOccurrences(r, "2026-12-15", "2027-02-01")).toEqual([
+			"2026-12-31",
+			"2027-01-14",
+			"2027-01-28",
+		]);
+	});
+
+	it("from+until вместе ограничивают серию, фаза сохранена", () => {
+		const r: Rule = {
+			freq: "weekly",
+			n: 2,
+			byDay: [1],
+			from: "2026-07-14",
+			until: "2026-08-11",
+		};
+		expect(expandOccurrences(r, "2026-07-01", "2026-12-31")).toEqual([
+			"2026-07-14",
+			"2026-07-28",
+			"2026-08-11",
+		]);
+	});
+
+	it("без from фаза стабильна (эпоха-фолбэк): диапазон не сдвигает недели", () => {
+		const r: Rule = { freq: "weekly", n: 2, byDay: [1] };
+		const a = expandOccurrences(r, "2026-07-01", "2026-07-31");
+		const b = expandOccurrences(r, "2026-07-02", "2026-07-31");
+		expect(a).toEqual(b); // одна и та же фаза независимо от начала диапазона
+		// и это ровно каждые 2 недели, а не каждую
+		expect(a).toHaveLength(2);
+		expect(weeksBetween(a[1]!, a[0]!)).toBe(2);
+	});
+
+	it("явный anchor-аргумент задаёт фазу при отсутствии from", () => {
+		const r: Rule = { freq: "weekly", n: 2, byDay: [1] };
+		expect(expandOccurrences(r, "2026-07-01", "2026-08-01", undefined, undefined, "2026-07-14")).toEqual(
+			["2026-07-14", "2026-07-28"],
+		);
+	});
+
+	it("n=1 с byDay не режется якорем (обратная совместимость)", () => {
+		const r: Rule = { freq: "weekly", n: 1, byDay: [1], from: "2026-07-14" };
+		expect(expandOccurrences(r, "2026-07-14", "2026-07-28")).toEqual([
+			"2026-07-14",
+			"2026-07-21",
+			"2026-07-28",
 		]);
 	});
 });

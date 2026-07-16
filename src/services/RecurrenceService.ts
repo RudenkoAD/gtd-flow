@@ -237,7 +237,8 @@ export class RecurrenceService implements RecurrencePort {
 			if (tpl === undefined || tpl.taskId === null || tpl.recurrence === null) return;
 			const rule = parseRule(tpl.recurrence);
 			if (isParseError(rule)) return; // битое правило всплывёт ошибкой ближайшего runPass
-			const next = nextOccurrence(rule, this.deps.todayIso());
+			// anchor = rule.from: чётность недель weekly-правил с n>1 закреплена якорем
+			const next = nextOccurrence(rule, this.deps.todayIso(), rule.from);
 			if (next === null) return; // until исчерпан — снапать некуда
 			await this.deps.dispatcher.dispatch({
 				type: "advance-cursor",
@@ -661,7 +662,8 @@ export class RecurrenceService implements RecurrencePort {
 		// снап курсора — только при адресуемом шаблоне; черновик без 🆔 получит
 		// курсор bootstrap'ом первого прохода после вставки id
 		if (tpl.taskId !== null) {
-			const next = nextOccurrence(rule, this.deps.todayIso());
+			// anchor = rule.from: чётность недель weekly-правил с n>1 закреплена якорем
+			const next = nextOccurrence(rule, this.deps.todayIso(), rule.from);
 			if (next !== null) {
 				await this.deps.dispatcher.dispatch({
 					type: "advance-cursor",

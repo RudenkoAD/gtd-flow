@@ -5,6 +5,7 @@ import {
 	buildEventLine,
 	buildSingleOccurrenceLine,
 	createEventSeries,
+	createSingleEvent,
 	editEventLine,
 	editEventSeries,
 	excludeEventOccurrence,
@@ -148,6 +149,101 @@ describe("createEventSeries", () => {
 			ruleText: "every day",
 		});
 		expect(res).toEqual({ ok: false, reason: "empty-name" });
+	});
+});
+
+describe("createSingleEvent — инлайн-создание одноразового события", () => {
+	it("создаёт файл, ставит frontmatter gtd-events, пишет строку с временем-диапазоном", async () => {
+		const vault = new FakeVault();
+		const res = await createSingleEvent({
+			vault,
+			eventsFile: "Work/События.md",
+			name: "Созвон",
+			date: "2026-07-20",
+			time: "14:30",
+			timeEnd: "16:00",
+		});
+		expect(res.ok).toBe(true);
+		expect(vault.frontmatter.get("Work/События.md")).toEqual({ "gtd-events": true });
+		// формат — buildSingleOccurrenceLine без 🧬 (новое событие, не перенос)
+		expect(vault.files.get("Work/События.md")).toBe("- [ ] Созвон 📅 2026-07-20 14:30-16:00\n");
+	});
+
+	it("без времени (месячная сетка) — событие «Весь день»", async () => {
+		const vault = new FakeVault();
+		const res = await createSingleEvent({
+			vault,
+			eventsFile: "GTD/События.md",
+			name: "День рождения",
+			date: "2026-07-21",
+			time: null,
+			timeEnd: null,
+		});
+		expect(res.ok).toBe(true);
+		expect(vault.files.get("GTD/События.md")).toBe("- [ ] День рождения 📅 2026-07-21\n");
+	});
+
+	it("только начало без конца (клик по слоту) — «📅 <дата> HH:mm»", async () => {
+		const vault = new FakeVault();
+		const res = await createSingleEvent({
+			vault,
+			eventsFile: "GTD/События.md",
+			name: "Встреча",
+			date: "2026-07-20",
+			time: "09:15",
+			timeEnd: null,
+		});
+		expect(res.ok).toBe(true);
+		expect(vault.files.get("GTD/События.md")).toBe("- [ ] Встреча 📅 2026-07-20 09:15\n");
+	});
+
+	it("строка события распознаётся парсером как одноразовое (📅, без 🔁)", async () => {
+		const vault = new FakeVault();
+		await createSingleEvent({
+			vault,
+			eventsFile: "GTD/События.md",
+			name: "Событие",
+			date: "2026-07-20",
+			time: "10:00",
+			timeEnd: "11:00",
+		});
+		const line = vault.files.get("GTD/События.md")!.trimEnd();
+		const t = taskFrom(line, "GTD/События.md", 0);
+		expect(t.due).toBe("2026-07-20");
+		expect(t.dueTime).toBe("10:00");
+		expect(t.dueTimeEnd).toBe("11:00");
+		expect(t.recurrence).toBeNull();
+	});
+
+	it("добавляет строку к уже существующему файлу, не затирая его", async () => {
+		const vault = new FakeVault();
+		vault.files.set("GTD/События.md", "- [ ] Планёрка 🔁 every day at 10:00\n");
+		const res = await createSingleEvent({
+			vault,
+			eventsFile: "GTD/События.md",
+			name: "Разовое",
+			date: "2026-07-22",
+			time: null,
+			timeEnd: null,
+		});
+		expect(res.ok).toBe(true);
+		expect(vault.files.get("GTD/События.md")).toBe(
+			"- [ ] Планёрка 🔁 every day at 10:00\n- [ ] Разовое 📅 2026-07-22\n",
+		);
+	});
+
+	it("пустое имя — отказ без записи", async () => {
+		const vault = new FakeVault();
+		const res = await createSingleEvent({
+			vault,
+			eventsFile: "GTD/События.md",
+			name: "   ",
+			date: "2026-07-20",
+			time: null,
+			timeEnd: null,
+		});
+		expect(res).toEqual({ ok: false, reason: "empty-name" });
+		expect(vault.files.has("GTD/События.md")).toBe(false);
 	});
 });
 

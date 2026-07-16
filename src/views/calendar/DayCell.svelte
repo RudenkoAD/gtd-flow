@@ -7,6 +7,7 @@
 	import type { DndPort } from "../dnd/types";
 	import EventChip from "./EventChip.svelte";
 	import EventOccurrenceChip from "./EventOccurrenceChip.svelte";
+	import QuickAddKindSwitch, { type QuickAddKind } from "./QuickAddKindSwitch.svelte";
 	import type { CalendarWritePort, EventOccurrence, PlacedEvent } from "./calendarLogic";
 
 	let {
@@ -28,6 +29,7 @@
 		painting = false,
 		onDropTask,
 		onQuickAdd,
+		onQuickAddEvent = null,
 		onCreateEvent = null,
 	}: {
 		date: IsoDate;
@@ -59,6 +61,9 @@
 		onDropTask: (taskKey: string, date: IsoDate) => Promise<void>;
 		/** Быстрый ввод задачи с датой этого дня. */
 		onQuickAdd: (date: IsoDate, text: string) => Promise<void>;
+		/** Инлайн-создание СОБЫТИЯ «Весь день» с датой этого дня (сегмент «Событие»
+		 *  переключателя). null — переключатель скрыт, ввод создаёт только задачи. */
+		onQuickAddEvent?: ((date: IsoDate, text: string) => Promise<void>) | null;
 		/** ПКМ по пустому месту — создать повторяющееся событие (time=null для дня). */
 		onCreateEvent?: ((date: IsoDate, time: string | null) => void) | null;
 	} = $props();
@@ -66,6 +71,10 @@
 	let cellEl: HTMLElement | null = $state(null);
 	let adding = $state(false);
 	let draft = $state("");
+	/** Тип создаваемой записи (переключатель «Задача | Событие»); сбрасывается на «Задача». */
+	let addKind = $state<QuickAddKind>("task");
+	/** Обёртка ввода+переключателя — для blur-guard по relatedTarget. */
+	let addWrap = $state<HTMLElement | null>(null);
 
 	// Ячейка — drop-цель; подсветка под курсором — DND_OVER_CLASS от сервиса.
 	// drop-замыкание читает реактивный prop date — цель всегда бьёт в актуальный день.
@@ -117,13 +126,26 @@
 	function cancelDraft(): void {
 		adding = false;
 		draft = "";
+		addKind = "task"; // дефолт восстанавливается к следующему вводу
+	}
+
+	/** blur ввода: отмена, КРОМЕ ухода фокуса в переключатель той же обёртки —
+	 *  клик/Tab по сегменту «Задача|Событие» не схлопывает ввод (иначе выбор
+	 *  типа рвал бы флоу). Escape/blur наружу отменяют, как прежде. */
+	function onDraftBlur(e: FocusEvent): void {
+		const to = e.relatedTarget;
+		if (to instanceof Node && addWrap?.contains(to)) return;
+		cancelDraft();
 	}
 
 	function submitDraft(): void {
 		const text = draft;
+		const kind = addKind;
 		cancelDraft();
 		if (text.trim() === "") return;
-		void onQuickAdd(date, text);
+		// «Событие» → инлайн-создание события «Весь день»; иначе — задача (как прежде)
+		if (kind === "event" && onQuickAddEvent !== null) void onQuickAddEvent(date, text);
+		else void onQuickAdd(date, text);
 	}
 </script>
 
@@ -162,19 +184,24 @@
 			{/if}
 		{/each}
 		{#if adding}
-			<input
-				class="gtd-cal-quickadd"
-				type="text"
-				placeholder="Новая задача…"
-				aria-label="Новая задача на {date}"
-				bind:value={draft}
-				use:focusInput
-				onkeydown={(e) => {
-					if (e.key === "Enter") submitDraft();
-					else if (e.key === "Escape") cancelDraft();
-				}}
-				onblur={cancelDraft}
-			/>
+			<div class="gtd-cal-quickadd-wrap" bind:this={addWrap}>
+				<input
+					class="gtd-cal-quickadd"
+					type="text"
+					placeholder={addKind === "event" ? "Новое событие…" : "Новая задача…"}
+					aria-label="{addKind === 'event' ? 'Новое событие' : 'Новая задача'} на {date}"
+					bind:value={draft}
+					use:focusInput
+					onkeydown={(e) => {
+						if (e.key === "Enter") submitDraft();
+						else if (e.key === "Escape") cancelDraft();
+					}}
+					onblur={onDraftBlur}
+				/>
+				{#if onQuickAddEvent !== null}
+					<QuickAddKindSwitch bind:kind={addKind} />
+				{/if}
+			</div>
 		{/if}
 	</div>
 </div>
@@ -264,6 +291,12 @@
 		flex-direction: column;
 		gap: 2px;
 		overflow-y: auto;
+	}
+	.gtd-cal-quickadd-wrap {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 2px;
 	}
 	.gtd-cal-quickadd {
 		width: 100%;

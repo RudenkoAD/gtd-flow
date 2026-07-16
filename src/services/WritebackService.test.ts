@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Intent } from "../core/intents/Intent";
 import type { Task } from "../core/model/Task";
 import { parseTaskLine } from "../core/parser/parseTaskLine";
+import { computeKey } from "../core/parser/taskKey";
 import { FakeFeed } from "../stores/testSupport";
 import { WritebackService, type WritePort } from "./WritebackService";
 
@@ -42,6 +43,45 @@ function parseLine(path: string, line: string, lineNo = 0): Task {
 		projectActive: true,
 	});
 	if (t === null) throw new Error(`не задача: ${line}`);
+	return t;
+}
+
+/**
+ * Индексирует содержимое как настоящий IndexerService: парс построчно + то же
+ * назначение occurrenceIndex дублям без 🆔 (хвост #n в key и одноимённое поле).
+ * Нужен для тестов адресации: детерминизм дублей завязан именно на occurrenceIndex.
+ */
+function indexContent(feed: FakeFeed, path: string, content: string): void {
+	const lines = content.split("\n");
+	const parsed: Task[] = [];
+	for (let i = 0; i < lines.length; i++) {
+		const t = parseTaskLine(lines[i]!, {
+			filePath: path,
+			lineStart: i,
+			parentLine: null,
+			heading: null,
+			container: "plain",
+			projectActive: true,
+		});
+		if (t !== null) parsed.push(t);
+	}
+	const seen = new Map<string, number>();
+	const withOcc = parsed.map((t) => {
+		if (t.taskId !== null) return t;
+		const n = seen.get(t.key) ?? 0;
+		seen.set(t.key, n + 1);
+		return { ...t, key: n === 0 ? t.key : computeKey(t, n), occurrenceIndex: n };
+	});
+	feed.replaceFile(path, withOcc);
+}
+
+/** Задача файла с данным occurrenceIndex (id-less дубль). */
+function dupByOccurrence(feed: FakeFeed, path: string, occ: number): Task {
+	const t = feed
+		.getIndex()
+		.fileTasks(path)
+		.find((x) => x.occurrenceIndex === occ);
+	if (t === undefined) throw new Error(`нет дубля с occurrenceIndex=${occ}`);
 	return t;
 }
 
@@ -587,5 +627,182 @@ describe("WritebackService: непокрытые этапы", () => {
 			expect(await svc.dispatch(intent)).toEqual({ ok: false, reason: "not-implemented-stage" });
 		}
 		expect(port.calls).toBe(0);
+	});
+});
+
+describe("WritebackService: детерминизм дублей по occurrenceIndex (баг перетаскивания)", () => {
+	it("правка ВТОРОЙ из двух одинаковых меняет именно вторую", async () => {
+		const { port, feed, svc } = makeSvc({ autoInjectId: false });
+		const content = "- [ ] дубль\n- [ ] дубль\n";
+		port.files.set(INBOX, content);
+		indexContent(feed, INBOX, content);
+
+		const res = await svc.dispatch({
+			type: "set-date",
+			key: dupByOccurrence(feed, INBOX, 1).key,
+			field: "due",
+			date: "2026-08-01",
+		});
+
+		expect(res).toEqual({ ok: true });
+		expect(port.files.get(INBOX)).toBe("- [ ] дубль\n- [ ] дубль 📅 2026-08-01\n");
+	});
+
+	it("правка ПЕРВОЙ из двух одинаковых меняет именно первую", async () => {
+		const { port, feed, svc } = makeSvc({ autoInjectId: false });
+		const content = "- [ ] дубль\n- [ ] дубль\n";
+		port.files.set(INBOX, content);
+		indexContent(feed, INBOX, content);
+
+		const res = await svc.dispatch({
+			type: "set-date",
+			key: dupByOccurrence(feed, INBOX, 0).key,
+			field: "due",
+			date: "2026-08-01",
+		});
+
+		expect(res).toEqual({ ok: true });
+		expect(port.files.get(INBOX)).toBe("- [ ] дубль 📅 2026-08-01\n- [ ] дубль\n");
+	});
+
+	it("строки съехали вниз (вставка выше): occurrenceIndex адресует верно, где lineStart промахнулся бы", async () => {
+		const { port, feed, svc } = makeSvc({ autoInjectId: false });
+		// индекс собран, когда дубли стояли на строках 0 и 1
+		indexContent(feed, INBOX, "- [ ] дубль\n- [ ] дубль\n");
+		const second = dupByOccurrence(feed, INBOX, 1); // occurrenceIndex 1, lineStart 1
+		// файл уехал: три строки вставлены сверху, оба дубля теперь на 3 и 4 —
+		// подсказка lineStart=1 ближе к ПЕРВОМУ дублю (строка 3), но править надо второй
+		port.files.set(INBOX, "шапка\nшапка\nшапка\n- [ ] дубль\n- [ ] дубль\n");
+
+		const res = await svc.dispatch({ type: "set-priority", key: second.key, priority: "high" });
+
+		expect(res).toEqual({ ok: true });
+		// ⏫ ушёл на ВТОРОЙ дубль (строка 4), первый (строка 3) нетронут
+		expect(port.files.get(INBOX)).toBe("шапка\nшапка\nшапка\n- [ ] дубль\n- [ ] дубль ⏫\n");
+	});
+
+	it("правка ВТОРОЙ из ТРЁХ одинаковых (set-status) — ровно средняя из хвоста", async () => {
+		const { port, feed, svc } = makeSvc({ autoInjectId: false });
+		const content = "- [ ] дубль\n- [ ] дубль\n- [ ] дубль\n";
+		port.files.set(INBOX, content);
+		indexContent(feed, INBOX, content);
+
+		const res = await svc.dispatch({
+			type: "set-status",
+			key: dupByOccurrence(feed, INBOX, 1).key,
+			statusChar: "x",
+			date: "2026-07-15",
+		});
+
+		expect(res).toEqual({ ok: true });
+		expect(port.files.get(INBOX)).toBe(
+			"- [ ] дубль\n- [x] дубль ✅ 2026-07-15\n- [ ] дубль\n",
+		);
+	});
+
+	it("перенос ВТОРОЙ из двух одинаковых в другой файл (move-line) уносит именно вторую", async () => {
+		const TARGET = "GTD/Project.md";
+		const { port, feed, svc } = makeSvc({ genId: () => "mv1" });
+		const content = "- [ ] дубль\n- [ ] дубль\n";
+		port.files.set(INBOX, content);
+		port.files.set(TARGET, "");
+		indexContent(feed, INBOX, content);
+
+		const res = await svc.dispatch({
+			type: "move-line",
+			key: dupByOccurrence(feed, INBOX, 1).key,
+			toFile: TARGET,
+		});
+
+		expect(res).toEqual({ ok: true });
+		// в источнике осталась ПЕРВАЯ, вторая уехала (получив 🆔 при переносе)
+		expect(port.files.get(INBOX)).toBe("- [ ] дубль\n");
+		expect(port.files.get(TARGET)).toBe("- [ ] дубль 🆔 mv1\n");
+	});
+
+	it("рассинхрон: вторая строка изменена пользователем — правка не бьёт по первой (fail-closed)", async () => {
+		const { port, feed, svc } = makeSvc({ autoInjectId: false });
+		indexContent(feed, INBOX, "- [ ] дубль\n- [ ] дубль\n");
+		const second = dupByOccurrence(feed, INBOX, 1);
+		// пользователь дописал вторую строку — двойников в файле уже не два, а один
+		port.files.set(INBOX, "- [ ] дубль\n- [ ] дубль и ещё дело\n");
+
+		const res = await svc.dispatch({ type: "set-date", key: second.key, field: "due", date: "2026-08-01" });
+
+		expect(res).toEqual({ ok: false, reason: "stale-index" });
+		expect(port.writes).toHaveLength(0); // первый дубль не тронут
+	});
+});
+
+describe("WritebackService: delete-line withChildren (пункт «Удалить»)", () => {
+	it("удаляет задачу вместе с вложенным блоком (строки с бо́льшим отступом)", async () => {
+		const { port, feed, svc } = makeSvc();
+		const victim = parseLine(INBOX, "- [ ] родитель 🆔 p1", 0);
+		feed.replaceFile(INBOX, [victim]);
+		port.files.set(
+			INBOX,
+			"- [ ] родитель 🆔 p1\n    заметка под задачей\n    - [ ] подпункт\n- [ ] сосед\n",
+		);
+
+		const res = await svc.dispatch({ type: "delete-line", key: victim.key, withChildren: true });
+
+		expect(res).toEqual({ ok: true });
+		expect(port.files.get(INBOX)).toBe("- [ ] сосед\n");
+	});
+
+	it("останавливается на сиблинге (отступ ≤ родителя) — его блок не трогает", async () => {
+		const { port, feed, svc } = makeSvc();
+		const victim = parseLine(INBOX, "- [ ] родитель 🆔 p1", 0);
+		feed.replaceFile(INBOX, [victim]);
+		port.files.set(
+			INBOX,
+			"- [ ] родитель 🆔 p1\n    ребёнок родителя\n- [ ] сиблинг\n    ребёнок сиблинга\n",
+		);
+
+		const res = await svc.dispatch({ type: "delete-line", key: victim.key, withChildren: true });
+
+		expect(res).toEqual({ ok: true });
+		expect(port.files.get(INBOX)).toBe("- [ ] сиблинг\n    ребёнок сиблинга\n");
+	});
+
+	it("пустая строка завершает блок (консервативно): ребёнок за пустой строкой остаётся сиротой", async () => {
+		const { port, feed, svc } = makeSvc();
+		const victim = parseLine(INBOX, "- [ ] родитель 🆔 p1", 0);
+		feed.replaceFile(INBOX, [victim]);
+		port.files.set(INBOX, "- [ ] родитель 🆔 p1\n\n    осиротевший ребёнок\n");
+
+		const res = await svc.dispatch({ type: "delete-line", key: victim.key, withChildren: true });
+
+		expect(res).toEqual({ ok: true });
+		expect(port.files.get(INBOX)).toBe("\n    осиротевший ребёнок\n");
+	});
+
+	it("без withChildren удаляет ровно одну строку (дедуп-семантика не изменилась)", async () => {
+		const { port, feed, svc } = makeSvc();
+		const victim = parseLine(INBOX, "- [ ] родитель 🆔 p1", 0);
+		feed.replaceFile(INBOX, [victim]);
+		port.files.set(INBOX, "- [ ] родитель 🆔 p1\n    ребёнок\n");
+
+		const res = await svc.dispatch({ type: "delete-line", key: victim.key });
+
+		expect(res).toEqual({ ok: true });
+		expect(port.files.get(INBOX)).toBe("    ребёнок\n"); // ребёнок осиротел — минимум по умолчанию
+	});
+
+	it("детерминизм: «Удалить» ВТОРОЙ из двух одинаковых убирает вторую с её детьми", async () => {
+		const { port, feed, svc } = makeSvc();
+		const content =
+			"- [ ] дубль\n    ребёнок первого\n- [ ] дубль\n    ребёнок второго\n";
+		port.files.set(INBOX, content);
+		indexContent(feed, INBOX, content);
+
+		const res = await svc.dispatch({
+			type: "delete-line",
+			key: dupByOccurrence(feed, INBOX, 1).key,
+			withChildren: true,
+		});
+
+		expect(res).toEqual({ ok: true });
+		expect(port.files.get(INBOX)).toBe("- [ ] дубль\n    ребёнок первого\n");
 	});
 });

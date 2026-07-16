@@ -5,6 +5,13 @@
  */
 import type { IsoDate, Priority, Task } from "../../core/model/Task";
 import { taskToCalendarEvent, type CalendarField } from "../../core/model/projections";
+import {
+	ALL_NS,
+	NS_CONVENTION,
+	nsCommonTarget,
+	nsTargetPath,
+	type NamespaceDef,
+} from "../../core/namespace/namespace";
 import { isInTickler } from "../../core/query/QueryEngine";
 import { isParseError, parseRule } from "../../core/recurrence/grammar";
 import { expandOccurrences } from "../../core/recurrence/occurrences";
@@ -155,6 +162,18 @@ export function placedTimeEnd(task: Task, field: CalendarField): string | null {
 		case "start":
 			return task.startTimeEnd;
 	}
+}
+
+/**
+ * Бейдж времени записи для чипа/агенды: «HH:mm–HH:mm», когда конец задан и строго
+ * позже начала, иначе только начало «HH:mm»; null — времени нет (без бейджа).
+ * "HH:mm" лексикографика == хронология — конец сверяется сравнением строк (как
+ * layoutDay.hasEnd), вырожденный конец (≤ начала) выпадает, остаётся начало.
+ * Тире — en-dash (U+2013), как в блоках тайм-сетки.
+ */
+export function agendaTimeLabel(time: string | null, timeEnd: string | null): string | null {
+	if (time === null) return null;
+	return timeEnd !== null && timeEnd > time ? `${time}–${timeEnd}` : time;
 }
 
 /**
@@ -333,6 +352,27 @@ export function appendLine(content: string, line: string): string {
 	return content.trimEnd() !== ""
 		? content + (content.endsWith("\n") ? "" : "\n") + line + "\n"
 		: line + "\n";
+}
+
+/**
+ * Файл событий (container events) для ИНЛАЙН-создания события в календаре по
+ * ЛОКАЛЬНОМУ пространству вида:
+ *  • именованное / «Общее» (local ≠ ALL_NS) — <root>/События.md (nsTargetPath),
+ *    фолбэк «Общего» (root не выделен) — eventsFileFallback (settings.eventsFile);
+ *  • вкладка «Все» (local === ALL_NS) — конкретного пространства нет, поэтому файл
+ *    событий ОБЩЕЙ папки <commonRoot>/События.md (nsCommonTarget): общий календарь
+ *    пишет в «дом» «Общего», а не в глобальный дефолт.
+ * Настроек ядро не знает — eventsFileFallback и commonRoot приходят снаружи.
+ */
+export function eventTargetForNamespace(
+	local: string,
+	defs: readonly NamespaceDef[],
+	eventsFileFallback: string,
+	commonRoot: string,
+): string {
+	return local === ALL_NS
+		? nsCommonTarget(ALL_NS, defs, NS_CONVENTION.events, commonRoot)
+		: nsTargetPath(local, defs, NS_CONVENTION.events, eventsFileFallback);
 }
 
 // ---------------------------------------------------------------------------

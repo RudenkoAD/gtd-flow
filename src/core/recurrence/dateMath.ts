@@ -100,3 +100,15 @@ export function dayOfWeek(date: IsoDate): number {
 	// 1970-01-01 — четверг: z=0 → 3
 	return (((z % 7) + 7) % 7 + 3) % 7;
 }
+
+/**
+ * Число ISO-недель (недели считаются от понедельника) между датами a и b:
+ * (понедельник недели a − понедельник недели b) / 7. Всегда целое; знак — как у
+ * a−b. Основа проверки чётности недель для weekly-правил с n>1 и якорем
+ * (см. nextOccurrence/isOccurrence): дата «в фазе» ⇔ weeksBetween(date, anchor) % n === 0.
+ */
+export function weeksBetween(a: IsoDate, b: IsoDate): number {
+	const mondayA = toEpochDays(a) - dayOfWeek(a);
+	const mondayB = toEpochDays(b) - dayOfWeek(b);
+	return (mondayA - mondayB) / 7;
+}

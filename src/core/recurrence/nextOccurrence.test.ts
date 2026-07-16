@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import fc from "fast-check";
-import { clampDay, compare, fromParts } from "./dateMath";
+import { clampDay, compare, fromParts, weeksBetween } from "./dateMath";
 import type { Rule } from "./grammar";
 import { isOccurrence, nextOccurrence } from "./nextOccurrence";
 
@@ -66,6 +66,93 @@ describe("nextOccurrence — weekly", () => {
 		// перечисленный день СЛЕДУЮЩЕЙ недели, не через n недель
 		const r2: Rule = { freq: "weekly", n: 2, byDay: [0, 3] }; // mon, thu
 		expect(nextOccurrence(r2, "2026-07-17")).toBe("2026-07-20"); // пт → пн следующей недели
+	});
+});
+
+describe("nextOccurrence — weekly n>1 с якорем (чётность недель)", () => {
+	// Ориентиры 2026: 07-13 пн, 07-14 вт, 07-17 пт, 07-21 вт, 07-28 вт, 08-11 вт.
+	it("'every 2 weeks on tue from 2026-07-14': только чётные (от from) недели", () => {
+		const r: Rule = { freq: "weekly", n: 2, byDay: [1], from: "2026-07-14" };
+		expect(nextOccurrence(r, "2026-07-13", r.from)).toBe("2026-07-14"); // первое = сам from
+		expect(nextOccurrence(r, "2026-07-14", r.from)).toBe("2026-07-28"); // +2 недели
+		expect(nextOccurrence(r, "2026-07-28", r.from)).toBe("2026-08-11");
+		// НЕ даёт 2026-07-21: неделя не в фазе
+		expect(nextOccurrence(r, "2026-07-15", r.from)).toBe("2026-07-28");
+	});
+	it("снап от не-члена «не той» недели уходит на ближайшую фазовую (не +1 неделя)", () => {
+		const r: Rule = { freq: "weekly", n: 2, byDay: [1], from: "2026-07-14" };
+		// bootstrap after=today−1=07-19 (вс нечётной недели) → 07-28, НЕ 07-21
+		expect(nextOccurrence(r, "2026-07-19", r.from)).toBe("2026-07-28");
+		// пн 07-20 нечётной недели → 07-28
+		expect(nextOccurrence(r, "2026-07-20", r.from)).toBe("2026-07-28");
+		// сам вторник 07-21 нечётной недели (был бы «членом» без якоря) → 07-28
+		expect(nextOccurrence(r, "2026-07-21", r.from)).toBe("2026-07-28");
+	});
+	it("несколько дней в неделю: tue,fri сохраняют фазу", () => {
+		const r: Rule = { freq: "weekly", n: 2, byDay: [1, 4], from: "2026-07-14" };
+		expect(nextOccurrence(r, "2026-07-14", r.from)).toBe("2026-07-17"); // вт → пт той же недели
+		expect(nextOccurrence(r, "2026-07-17", r.from)).toBe("2026-07-28"); // пт → вт через 2 недели
+		expect(nextOccurrence(r, "2026-07-28", r.from)).toBe("2026-07-31"); // вт → пт
+		// пт 07-24 нечётной недели → вт 07-28 (следующая фазовая)
+		expect(nextOccurrence(r, "2026-07-24", r.from)).toBe("2026-07-28");
+	});
+	it("переход через границу года", () => {
+		// 2026-12-31 — четверг (dow=3)
+		const r: Rule = { freq: "weekly", n: 2, byDay: [3], from: "2026-12-31" };
+		expect(nextOccurrence(r, "2026-12-31", r.from)).toBe("2027-01-14"); // +2 недели
+		expect(nextOccurrence(r, "2027-01-01", r.from)).toBe("2027-01-14"); // НЕ 2027-01-07
+	});
+	it("every 3 weeks: шаг ровно 3 недели от якоря", () => {
+		const r: Rule = { freq: "weekly", n: 3, byDay: [0], from: "2026-07-13" }; // пн
+		expect(nextOccurrence(r, "2026-07-13", r.from)).toBe("2026-08-03"); // +3 недели
+		expect(nextOccurrence(r, "2026-08-03", r.from)).toBe("2026-08-24");
+		expect(nextOccurrence(r, "2026-07-20", r.from)).toBe("2026-08-03"); // НЕ 07-20/07-27
+		expect(nextOccurrence(r, "2026-07-27", r.from)).toBe("2026-08-03");
+	});
+	it("from+until вместе: серия ограничена с обеих сторон, фаза сохранена", () => {
+		const r: Rule = {
+			freq: "weekly",
+			n: 2,
+			byDay: [1],
+			from: "2026-07-14",
+			until: "2026-07-28",
+		};
+		expect(nextOccurrence(r, "2026-07-13", r.from)).toBe("2026-07-14");
+		expect(nextOccurrence(r, "2026-07-14", r.from)).toBe("2026-07-28"); // ровно until
+		expect(nextOccurrence(r, "2026-07-28", r.from)).toBeNull(); // за until
+	});
+	it("обратная совместимость: n=1 — все перечисленные дни (якорь ничего не режет)", () => {
+		const r: Rule = { freq: "weekly", n: 1, byDay: [1], from: "2026-07-14" };
+		expect(nextOccurrence(r, "2026-07-14", r.from)).toBe("2026-07-21");
+		expect(nextOccurrence(r, "2026-07-21", r.from)).toBe("2026-07-28");
+	});
+	it("обратная совместимость: weekly без byDay игнорирует якорь (шаг 7*n от after)", () => {
+		const r: Rule = { freq: "weekly", n: 2, byDay: [], from: "2026-07-14" };
+		expect(nextOccurrence(r, "2026-07-15", r.from)).toBe("2026-07-29");
+	});
+	it("без якоря (anchor undefined) — прежняя семантика цепочки курсоров", () => {
+		const r: Rule = { freq: "weekly", n: 2, byDay: [1] };
+		// от члена — шаг 2 недели; от не-члена — ближайший вторник следующей недели
+		expect(nextOccurrence(r, "2026-07-14")).toBe("2026-07-28");
+		expect(nextOccurrence(r, "2026-07-15")).toBe("2026-07-21");
+	});
+});
+
+describe("isOccurrence — weekly n>1 чётность недель при якоре", () => {
+	it("с якорем режет «не ту» неделю, без якоря — любой перечисленный день", () => {
+		const r: Rule = { freq: "weekly", n: 2, byDay: [1], from: "2026-07-14" };
+		expect(isOccurrence(r, "2026-07-14", r.from)).toBe(true);
+		expect(isOccurrence(r, "2026-07-21", r.from)).toBe(false); // не та неделя
+		expect(isOccurrence(r, "2026-07-28", r.from)).toBe(true);
+		expect(isOccurrence(r, "2026-08-11", r.from)).toBe(true);
+		expect(isOccurrence(r, "2026-07-15", r.from)).toBe(false); // не вторник
+		// без якоря — прежнее поведение (любой вторник — член)
+		expect(isOccurrence(r, "2026-07-21")).toBe(true);
+	});
+	it("n=1 с якорем: все перечисленные дни — члены", () => {
+		const r: Rule = { freq: "weekly", n: 1, byDay: [1], from: "2026-07-14" };
+		expect(isOccurrence(r, "2026-07-14", r.from)).toBe(true);
+		expect(isOccurrence(r, "2026-07-21", r.from)).toBe(true);
 	});
 });
 
@@ -306,6 +393,63 @@ describe("nextOccurrence ⊨ isOccurrence (property)", () => {
 				}
 			}),
 			{ numRuns: 300 },
+		);
+	});
+});
+
+// --- property: при якоре чётность недель weekly n>1 кратна n ---
+
+const arbWeeklyAnchored = fc
+	.tuple(
+		fc.integer({ min: 2, max: 5 }), // n>1
+		arbByDay,
+		arbDate, // якорь (from)
+	)
+	.map(
+		([n, byDay, from]): Extract<Rule, { freq: "weekly" }> => ({
+			freq: "weekly",
+			n,
+			byDay,
+			from,
+		}),
+	);
+
+describe("nextOccurrence — якорь ⇒ фаза недель кратна n (property)", () => {
+	it("каждое вхождение лежит в неделе, кратно n отстоящей от недели якоря", () => {
+		fc.assert(
+			fc.property(arbWeeklyAnchored, arbDate, (rule, after) => {
+				const from = rule.from!;
+				let prev = after;
+				for (let k = 0; k < 6; k++) {
+					const next = nextOccurrence(rule, prev, from);
+					if (next === null) return;
+					// вхождение — член с учётом якоря
+					expect(isOccurrence(rule, next, from)).toBe(true);
+					// неделя вхождения кратно n отстоит от недели якоря
+					expect(weeksBetween(next, from) % rule.n).toBe(0);
+					prev = next;
+				}
+			}),
+			{ numRuns: 400 },
+		);
+	});
+
+	it("расстояние между соседними вхождениями по неделям кратно n", () => {
+		fc.assert(
+			fc.property(arbWeeklyAnchored, arbDate, (rule, after) => {
+				const from = rule.from!;
+				let prev = nextOccurrence(rule, after, from);
+				if (prev === null) return;
+				for (let k = 0; k < 6; k++) {
+					const next = nextOccurrence(rule, prev, from);
+					if (next === null) return;
+					expect(compare(next, prev)).toBe(1);
+					// разница недель (соседи одной недели → 0, тоже кратно n)
+					expect(weeksBetween(next, prev) % rule.n).toBe(0);
+					prev = next;
+				}
+			}),
+			{ numRuns: 400 },
 		);
 	});
 });

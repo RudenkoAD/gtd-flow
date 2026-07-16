@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
 import type { Task } from "../../core/model/Task";
 import type { CalendarField } from "../../core/model/projections";
+import { ALL_NS, DEFAULT_NS, type NamespaceDef } from "../../core/namespace/namespace";
 import {
 	AGENDA_PAGE_DAYS,
 	agendaDays,
 	agendaLabel,
+	agendaTimeLabel,
 	appendLine,
 	deferredUntil,
 	dropDateField,
+	eventTargetForNamespace,
 	expandEventOccurrences,
 	monthGrid,
 	monthStart,
@@ -512,5 +515,65 @@ describe("expandEventOccurrences (§события)", () => {
 	it("одноразовое без 📅 (и без 🔁) игнорируется", () => {
 		const noop = event({ recurrence: null, due: null });
 		expect(expandEventOccurrences([noop], "2026-07-15", "2026-07-31").size).toBe(0);
+	});
+});
+
+describe("agendaTimeLabel — бейдж времени агенды/чипа", () => {
+	it("конец задан и строго позже начала — диапазон HH:mm–HH:mm", () => {
+		expect(agendaTimeLabel("09:00", "10:30")).toBe("09:00–10:30");
+		expect(agendaTimeLabel("23:15", "23:59")).toBe("23:15–23:59");
+	});
+
+	it("конца нет — только начало", () => {
+		expect(agendaTimeLabel("14:30", null)).toBe("14:30");
+	});
+
+	it("вырожденный конец (≤ начала) выпадает — остаётся начало", () => {
+		expect(agendaTimeLabel("10:00", "10:00")).toBe("10:00");
+		expect(agendaTimeLabel("10:00", "08:00")).toBe("10:00");
+	});
+
+	it("времени нет — null (без бейджа)", () => {
+		expect(agendaTimeLabel(null, null)).toBeNull();
+		// конец без начала бессмыслен — тоже null
+		expect(agendaTimeLabel(null, "10:00")).toBeNull();
+	});
+});
+
+describe("eventTargetForNamespace — файл событий инлайн-создания по пространству", () => {
+	const WORK: NamespaceDef = { name: "Работа", root: "Work" };
+	const LIFE: NamespaceDef = { name: "Жизнь", root: "Личное" };
+	const DEFS = [WORK, LIFE];
+	const EVENTS_FALLBACK = "GTD/Events.md";
+	const COMMON = "GTD";
+
+	it("именованное пространство — <root>/События.md", () => {
+		expect(eventTargetForNamespace("Работа", DEFS, EVENTS_FALLBACK, COMMON)).toBe(
+			"Work/События.md",
+		);
+		expect(eventTargetForNamespace("Жизнь", DEFS, EVENTS_FALLBACK, COMMON)).toBe(
+			"Личное/События.md",
+		);
+	});
+
+	it("«Общее» (DEFAULT_NS) — выделенный фолбэк settings.eventsFile", () => {
+		expect(eventTargetForNamespace(DEFAULT_NS, DEFS, EVENTS_FALLBACK, COMMON)).toBe(
+			"GTD/Events.md",
+		);
+	});
+
+	it("вкладка «Все» (ALL_NS) — файл событий ОБЩЕЙ папки <commonRoot>/События.md", () => {
+		expect(eventTargetForNamespace(ALL_NS, DEFS, EVENTS_FALLBACK, COMMON)).toBe(
+			"GTD/События.md",
+		);
+	});
+
+	it("ALL_NS с пустым commonRoot — голое имя файла (в корне хранилища)", () => {
+		expect(eventTargetForNamespace(ALL_NS, DEFS, EVENTS_FALLBACK, "")).toBe("События.md");
+	});
+
+	it("пространств не настроено — любое имя падает на фолбэк, ALL_NS — на commonRoot", () => {
+		expect(eventTargetForNamespace(DEFAULT_NS, [], EVENTS_FALLBACK, COMMON)).toBe("GTD/Events.md");
+		expect(eventTargetForNamespace(ALL_NS, [], EVENTS_FALLBACK, COMMON)).toBe("GTD/События.md");
 	});
 });

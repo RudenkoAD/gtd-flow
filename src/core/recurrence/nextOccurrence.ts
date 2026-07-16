@@ -11,11 +11,14 @@
  * - Месячный/годовой шаг привязан к дню ПРАВИЛА, а не к дню after:
  *   «every month on the 15th» после 2026-07-20 → 2026-08-15.
  * - daily и weekly-без-byDay не имеют абсолютного якоря: цепочку задаёт курсор 🔜
- *   (следующее — просто after + шаг). Для weekly с byDay при n>1 чётность недель
- *   привязана к ЦЕПОЧКЕ КУРСОРОВ, а не к неделе произвольного after: n-недельный
- *   шаг действует только от after-члена правила (курсоры — всегда члены);
- *   от не-члена (bootstrap after=today−1, снап) — ближайший перечисленный день
- *   следующей недели (понедельник — начало недели).
+ *   (следующее — просто after + шаг).
+ * - weekly с byDay при n>1: чётность недель детерминирует ЯКОРЬ (anchor) —
+ *   rule.from либо базовая дата серии события. При известном якоре членами
+ *   считаются перечисленные дни ТОЛЬКО в неделях, отстоящих от недели якоря
+ *   (недели от понедельника) на кратное n. Якоря нет (anchor === undefined) —
+ *   прежняя семантика ЦЕПОЧКИ КУРСОРОВ: n-недельный шаг действует лишь от
+ *   after-члена (курсоры — всегда члены); от не-члена (bootstrap after=today−1,
+ *   снап) — ближайший перечисленный день следующей недели.
  */
 import type { IsoDate } from "../model/Task";
 import type { Rule } from "./grammar";
@@ -27,6 +30,7 @@ import {
 	daysInMonth,
 	fromParts,
 	toParts,
+	weeksBetween,
 } from "./dateMath";
 
 /** Жёсткий предел итераций для любых сканирующих циклов повторов. */
@@ -37,7 +41,7 @@ function capUntil(cand: IsoDate, until: IsoDate | undefined): IsoDate | null {
 	return cand;
 }
 
-export function nextOccurrence(rule: Rule, after: IsoDate): IsoDate | null {
+export function nextOccurrence(rule: Rule, after: IsoDate, anchor?: IsoDate): IsoDate | null {
 	// клауза from (нижняя граница, §6): вхождений раньше from не бывает. Поднимаем
 	// курсор поиска до from−1 — «строго после» тогда впервые попадёт на дату ≥ from.
 	// until-семантику (верхняя граница) это не трогает — её держит capUntil.
@@ -64,14 +68,33 @@ export function nextOccurrence(rule: Rule, after: IsoDate): IsoDate | null {
 			const days = [...rule.byDay].sort((a, b) => a - b);
 			const dow = dayOfWeek(after);
 			const weekStart = addDays(after, -dow); // понедельник недели after
+			const first = days[0];
+			if (first === undefined) return null; // недостижимо: length > 0
+
+			// Якорь (rule.from либо базовая дата серии) закрепляет чётность недель:
+			// при n>1 члены — перечисленные дни лишь в неделях, кратно n отстоящих
+			// от недели якоря. off — смещение недели after от фазовой по модулю n.
+			if (anchor !== undefined && rule.n > 1) {
+				const off = ((weeksBetween(after, anchor) % rule.n) + rule.n) % rule.n;
+				if (off === 0) {
+					// неделя «в фазе»: ближайший перечисленный день строго позже after —
+					// здесь же; исчерпаны — прыжок ровно на n недель вперёд
+					for (const wd of days) {
+						if (wd > dow) return capUntil(addDays(weekStart, wd), rule.until);
+					}
+					return capUntil(addDays(weekStart, 7 * rule.n + first), rule.until);
+				}
+				// неделя не в фазе: до следующей фазовой (n − off) недель, первый день
+				return capUntil(addDays(weekStart, 7 * (rule.n - off) + first), rule.until);
+			}
+
+			// без якоря — семантика цепочки курсоров (прежнее поведение):
+			// n-недельный шаг только от члена правила; воскресный after (bootstrap
+			// today−1) принадлежит ПРЕДЫДУЩЕЙ неделе — шаг 7*n перепрыгнул бы
+			// ближайшее вхождение, сдвинув всю цепочку на неделю
 			for (const wd of days) {
 				if (wd > dow) return capUntil(addDays(weekStart, wd), rule.until);
 			}
-			const first = days[0];
-			if (first === undefined) return null; // недостижимо: length > 0
-			// n-недельный шаг только от члена правила: воскресный after (bootstrap
-			// today−1) принадлежит ПРЕДЫДУЩЕЙ неделе, и шаг 7*n перепрыгнул бы
-			// сегодняшнее вхождение, сдвинув всю цепочку на неделю
 			const stride = days.includes(dow) ? 7 * rule.n : 7;
 			return capUntil(addDays(weekStart, stride + first), rule.until);
 		}
@@ -106,11 +129,13 @@ export function nextOccurrence(rule: Rule, after: IsoDate): IsoDate | null {
 
 /**
  * Тест членства даты в правиле — валидация курсора 🔜 (ТЗ §6).
- * Для правил без абсолютного якоря (daily, weekly без byDay) любая дата — член;
- * для weekly с n>1 чётность недель не проверяется (якоря нет). Проверяется
- * только структурная совместимость: день недели / день месяца / месяц+день, until.
+ * Для правил без абсолютного якоря (daily, weekly без byDay) любая дата — член.
+ * Для weekly с byDay и n>1 чётность недель проверяется ТОЛЬКО при известном
+ * якоре (anchor: rule.from либо базовая дата серии): дата — член, если её неделя
+ * отстоит от недели якоря на кратное n. Без якоря (anchor === undefined) —
+ * лишь структурная совместимость (день недели), как в семантике цепочки курсоров.
  */
-export function isOccurrence(rule: Rule, date: IsoDate): boolean {
+export function isOccurrence(rule: Rule, date: IsoDate, anchor?: IsoDate): boolean {
 	if (rule.from !== undefined && compare(date, rule.from) < 0) return false;
 	if (rule.until !== undefined && compare(date, rule.until) > 0) return false;
 	switch (rule.freq) {
@@ -119,7 +144,10 @@ export function isOccurrence(rule: Rule, date: IsoDate): boolean {
 		case "weekdays":
 			return dayOfWeek(date) <= 4;
 		case "weekly":
-			return rule.byDay.length === 0 || rule.byDay.includes(dayOfWeek(date));
+			if (rule.byDay.length === 0) return true;
+			if (!rule.byDay.includes(dayOfWeek(date))) return false;
+			// чётность недель — только при известном якоре и n>1
+			return anchor === undefined || rule.n <= 1 || weeksBetween(date, anchor) % rule.n === 0;
 		case "monthly": {
 			const p = toParts(date);
 			const dom = rule.day === "last" ? daysInMonth(p.y, p.m) : clampDay(p.y, p.m, rule.day);

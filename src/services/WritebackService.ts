@@ -39,7 +39,15 @@ export interface WritebackDeps {
 export interface LineTarget {
 	taskId: string | null;
 	description: string;
-	/** ТОЛЬКО подсказка (advisory): выбор ближайшего кандидата, не идентичность. */
+	/** Порядковый номер среди id-less двойников с тем же описанием в файле
+	 *  (0-based, в порядке файла) — назначает индексатор. При наличии делает
+	 *  адресацию content-key ДЕТЕРМИНИРОВАННОЙ: локатор берёт ровно n-ное
+	 *  совпадение в файле, а не «ближайшее к lineStart». undefined — фолбэк на
+	 *  lineStart-подсказку (строки вне индексатора: фикстуры, шаблоны и пр.). */
+	occurrenceIndex?: number;
+	/** ТОЛЬКО подсказка (advisory): фолбэк-выбор ближайшего кандидата, когда
+	 *  occurrenceIndex недоступен/протух (в файле меньше совпадений, чем ждал
+	 *  индекс). Не идентичность. */
 	lineStart: number;
 }
 
@@ -90,34 +98,73 @@ function parseAt(lines: readonly string[], i: number, filePath: string): Task | 
 	});
 }
 
-/**
- * Поиск строки задачи в актуальном содержимом (ТЗ §3):
- * 1) по 🆔, если он у задачи есть;
- * 2) иначе по content-key: строки с тем же normalizedDescription и БЕЗ 🆔
- *    (строка с 🆔 принадлежит id-ключу — захватывать её по содержимому нельзя).
- * Из нескольких кандидатов — ближайший к advisory lineStart. Не нашли → -1.
- *
- * Экспортирован: RecurrenceService локализует строку шаблона тем же механизмом
- * (правка 🔁 не выражается через Intent — recurrence-поле текстовое).
- */
-export function locateTaskLine(lines: readonly string[], filePath: string, target: LineTarget): number {
-	let best = -1;
-	let bestDist = Infinity;
+/** Индексы строк — носителей 🆔, в порядке файла (id уникален; дубли id
+ *  fail-clos'ятся выше по стеку — advance-cursor/move-line). */
+function idMatchIndices(lines: readonly string[], filePath: string, taskId: string): number[] {
+	const out: number[] = [];
 	for (let i = 0; i < lines.length; i++) {
 		const t = parseAt(lines, i, filePath);
-		if (t === null) continue;
-		const hit =
-			target.taskId !== null
-				? t.taskId === target.taskId
-				: t.taskId === null && t.description === target.description;
-		if (!hit) continue;
-		const dist = Math.abs(i - target.lineStart);
+		if (t !== null && t.taskId === taskId) out.push(i);
+	}
+	return out;
+}
+
+/** Индексы id-less строк с данным описанием, в порядке файла — популяция, по
+ *  которой индексатор нумерует occurrenceIndex (та же дисциплина content-key:
+ *  строка с 🆔 принадлежит id-ключу и в дубли по содержимому не входит). */
+function idlessMatchIndices(lines: readonly string[], filePath: string, description: string): number[] {
+	const out: number[] = [];
+	for (let i = 0; i < lines.length; i++) {
+		const t = parseAt(lines, i, filePath);
+		if (t !== null && t.taskId === null && t.description === description) out.push(i);
+	}
+	return out;
+}
+
+/**
+ * Выбор из совпадений: детерминированно n-ное (occurrenceIndex), иначе — ближайшее
+ * к advisory lineStart. occurrenceIndex вне диапазона (в файле меньше совпадений,
+ * чем ждал индекс) ⇒ фолбэк на подсказку; протухание в бо́льшую сторону ловит
+ * отдельная fail-closed сверка count в вызывающем коде.
+ */
+function pickMatch(matches: readonly number[], occurrenceIndex: number | undefined, lineStart: number): number {
+	if (matches.length === 0) return -1;
+	if (occurrenceIndex !== undefined && occurrenceIndex >= 0 && occurrenceIndex < matches.length) {
+		return matches[occurrenceIndex]!;
+	}
+	let best = -1;
+	let bestDist = Infinity;
+	for (const i of matches) {
+		const dist = Math.abs(i - lineStart);
 		if (dist < bestDist) {
 			best = i;
 			bestDist = dist;
 		}
 	}
 	return best;
+}
+
+/**
+ * Поиск строки задачи в актуальном содержимом (ТЗ §3):
+ * 1) по 🆔, если он у задачи есть;
+ * 2) иначе по content-key: строки с тем же normalizedDescription и БЕЗ 🆔
+ *    (строка с 🆔 принадлежит id-ключу — захватывать её по содержимому нельзя).
+ * Для двойников без 🆔 берётся ровно occurrenceIndex-ное совпадение в файле
+ * (детерминизм: перетаскивание/правка второй из одинаковых задач бьёт именно во
+ * вторую, а не в «ближайшую к подсказке» — lineStart дрейфует при сдвиге строк
+ * выше). Нет occurrenceIndex → ближайший к advisory lineStart. Не нашли → -1.
+ *
+ * Экспортирован: RecurrenceService локализует строку шаблона тем же механизмом
+ * (правка 🔁 не выражается через Intent — recurrence-поле текстовое).
+ */
+export function locateTaskLine(lines: readonly string[], filePath: string, target: LineTarget): number {
+	const matches =
+		target.taskId !== null
+			? idMatchIndices(lines, filePath, target.taskId)
+			: idlessMatchIndices(lines, filePath, target.description);
+	// occurrenceIndex осмыслен только для content-key (id-адресация уникальна)
+	const occ = target.taskId === null ? target.occurrenceIndex : undefined;
+	return pickMatch(matches, occ, target.lineStart);
 }
 
 /**
@@ -137,6 +184,25 @@ export function locateExactTaskLine(
 	exclude?: ReadonlySet<number>,
 ): number {
 	const want = target.rawLine.trimEnd();
+	// content-key двойники: сперва детерминированно выбираем occurrenceIndex-ного
+	// кандидата, ПОТОМ сверяем его текст (удаление необратимо — не бьём вслепую по
+	// изменённой пользователем строке; протухшая подсказка не подсунет чужую).
+	if (
+		target.taskId === null &&
+		target.occurrenceIndex !== undefined &&
+		target.occurrenceIndex >= 0
+	) {
+		const matches = idlessMatchIndices(lines, filePath, target.description);
+		if (target.occurrenceIndex >= matches.length) {
+			// в файле меньше двойников, чем ждал индекс, — не угадываем, фолбэк ниже
+		} else {
+			const idx = matches[target.occurrenceIndex]!;
+			if (exclude !== undefined && exclude.has(idx)) return -1;
+			return lines[idx]!.trimEnd() === want ? idx : -1;
+		}
+	}
+	// Фолбэк (id-адресация ЛИБО нет occurrenceIndex): среди кандидатов с ТОЧНЫМ
+	// текстом строки — ближайший к advisory lineStart.
 	let best = -1;
 	let bestDist = Infinity;
 	for (let i = 0; i < lines.length; i++) {
@@ -156,6 +222,30 @@ export function locateExactTaskLine(
 		}
 	}
 	return best;
+}
+
+/** Ширина ведущего отступа строки (пробелы/табы как символы). В пределах одного
+ *  файла отступ списков консистентен, поэтому сравнение длин надёжно отличает
+ *  ребёнка (глубже) от родителя/сиблинга. */
+function leadingWsWidth(line: string): number {
+	const m = /^[ \t]*/.exec(line);
+	return m !== null ? m[0].length : 0;
+}
+
+/** Длина вложенного блока задачи на строке idx: сколько непосредственно
+ *  следующих строк имеют отступ СТРОГО глубже родительского. Останов на первой
+ *  строке с отступом ≤ родительского ИЛИ на пустой строке (см. deleteLine:
+ *  консервативно, чтобы не срезать лишнее необратимо). */
+function childBlockLength(lines: readonly string[], idx: number): number {
+	const parentIndent = leadingWsWidth(lines[idx]!);
+	let n = 0;
+	for (let i = idx + 1; i < lines.length; i++) {
+		const line = lines[i]!;
+		if (line.trim() === "") break; // пустая строка завершает блок
+		if (leadingWsWidth(line) <= parentIndent) break; // не глубже — не ребёнок
+		n++;
+	}
+	return n;
 }
 
 /** Сколько id-less строк с этим описанием в содержимом файла (для сверки
@@ -359,6 +449,8 @@ export class WritebackService implements IntentDispatcher {
 		const locTarget: LineTarget = {
 			taskId: knownId,
 			description: task.description,
+			// детерминизм для двойников без 🆔: переносим ровно свою из одинаковых
+			occurrenceIndex: task.occurrenceIndex,
 			lineStart: task.lineStart,
 		};
 		const expectedIdless =
@@ -434,20 +526,30 @@ export class WritebackService implements IntentDispatcher {
 		return delFailure === null ? { ok: true } : { ok: false, reason: delFailure };
 	}
 
-	// --- удаление строки (ТОЛЬКО дедуп регулярных, ТЗ §3/§6) ---
+	// --- удаление строки (дедуп регулярных ТЗ §3/§6 + «Удалить» из меню) ---
 
 	/**
-	 * Удалить ровно одну строку (вместе с её '\n'): локализация СТРОЖЕ, чем у
-	 * правок, — поверх 🆔/content-key кандидат обязан текстуально совпадать с
-	 * rawLine задачи (locateExactTaskLine): протухшая после сдвига строк
-	 * подсказка lineStart не может подсунуть под нож изменённую пользователем
-	 * строку (кипера дедупа) — удаление необратимо, правки хотя бы видимы.
-	 * splice по массиву строк съедает и разделитель: удаление последней строки
-	 * без хвостового '\n' забирает разделитель СЛЕВА — файл не копит пустых строк.
-	 * Повторный dispatch после успеха даёт {ok:false,'line-not-found'} —
-	 * для дедупа это штатный исход: строки уже нет, удалять нечего.
+	 * Удалить строку задачи (вместе с её '\n'): локализация СТРОЖЕ, чем у правок,
+	 * — поверх 🆔/content-key кандидат обязан текстуально совпадать с rawLine
+	 * задачи (locateExactTaskLine): протухшая после сдвига строк подсказка
+	 * lineStart не подсунет под нож изменённую пользователем строку — удаление
+	 * необратимо, правки хотя бы видимы. Для двойников без 🆔 берётся ровно
+	 * occurrenceIndex-ный носитель (детерминизм: «Удалить» на второй из
+	 * одинаковых убирает именно вторую). splice по массиву строк съедает и
+	 * разделитель: удаление последней строки без хвостового '\n' забирает
+	 * разделитель СЛЕВА — файл не копит пустых строк. Повторный dispatch после
+	 * успеха даёт {ok:false,'line-not-found'} — для дедупа это штатный исход.
+	 *
+	 * withChildren (пункт меню «Удалить»): вместе со строкой убирается её
+	 * вложенный блок — непосредственно следующие строки С БО́ЛЬШИМ отступом
+	 * (дети списка), до первой строки с отступом ≤ родительского или до пустой
+	 * строки. Так «Удалить» уносит визуально принадлежащий задаче под-блок
+	 * (заметки/подпункты), а не оставляет сирот. Пустая строка ЗАВЕРШАЕТ блок —
+	 * консервативно: лучше оставить сироту (поправимо), чем срезать лишнее
+	 * (необратимо). Дедуп (withChildren не задан) удаляет РОВНО одну строку —
+	 * машинные копии бездетны, семантика §6 не меняется.
 	 */
-	private async deleteLine(intent: { key: string }): Promise<IntentResult> {
+	private async deleteLine(intent: { key: string; withChildren?: boolean }): Promise<IntentResult> {
 		const task = this.deps.feed.getIndex().get(intent.key);
 		if (task === undefined) return { ok: false, reason: "task-not-found" };
 
@@ -470,7 +572,8 @@ export class WritebackService implements IntentDispatcher {
 				failure = "stale-index";
 				return null;
 			}
-			lines.splice(idx, 1);
+			const count = intent.withChildren === true ? 1 + childBlockLength(lines, idx) : 1;
+			lines.splice(idx, count);
 			return lines.join("\n");
 		});
 		return failure === null ? { ok: true } : { ok: false, reason: failure };

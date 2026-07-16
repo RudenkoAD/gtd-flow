@@ -1,11 +1,9 @@
 node_modules/
 main.js
 .claude/settings.local.json
-test-vault/.obsidian/plugins/
-test-vault/.obsidian/workspace*.json
+# dev-хранилище для живой проверки в Obsidian — не часть плагина и может
+# содержать личные данные; в репозиторий не публикуется
+test-vault/
 *.map
 dist/
 .DS_Store
-test-vault/.obsidian/app.json
-test-vault/.obsidian/appearance.json
-test-vault/.obsidian/core-plugins.json

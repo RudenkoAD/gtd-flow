@@ -17,6 +17,12 @@ export interface GtdFlowSettings {
 	 *  НЕ force-include запроса входящих: «задача с датой — уже разобрана», формула
 	 *  входящих смотрит только на состояние задачи, не на её файл. */
 	inboxSources: string[];
+	/** Включать ли во «Входящие» активные задачи из ОБЫЧНЫХ заметок (container
+	 *  "plain"). false (по умолчанию) — входящие ограничены файлами GTD Flow:
+	 *  захват (gtd-inbox) и готовые задачи проектов. true — старое поведение,
+	 *  во входящие попадают активные неразобранные задачи из любого файла
+	 *  хранилища. Календарь/отложенные/доски настройка не затрагивает. */
+	inboxIncludePlain: boolean;
 	/** Как определяется hasProject вне gtd-project файлов. */
 	projectStrategy: "tag" | "folder";
 	projectTagPrefix: string;
@@ -53,6 +59,7 @@ export interface GtdFlowSettings {
 
 export const DEFAULT_SETTINGS: GtdFlowSettings = {
 	inboxSources: ["GTD/Inbox.md"],
+	inboxIncludePlain: false,
 	projectStrategy: "tag",
 	projectTagPrefix: "#project/",
 	calendarPlacement: ["due", "scheduled", "start"],

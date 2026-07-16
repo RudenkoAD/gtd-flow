@@ -96,12 +96,17 @@ export const DEMO_PROJECT: DemoFileSpec = {
 	],
 };
 
-/** Регулярные: один недельный шаблон. */
+/**
+ * Регулярные: один недельный шаблон. 🆔 задан сразу и детерминированно
+ * (demo-review): спавн-проход строит id копий как <🆔>-YYYYMMDD, и без 🆔 на
+ * шаблоне первый же проход упёрся бы в ошибку «нет 🆔». Демо не должно порождать
+ * ошибок вообще, поэтому id зашит в контент, а не инжектится лениво на месте.
+ */
 export const DEMO_RECURRING: DemoFileSpec = {
 	path: "GTD/Регулярные.md",
 	container: "recurring",
 	frontmatter: { "gtd-recurring": true },
-	bodyLines: ["# Регулярные", "", "- [ ] Еженедельный обзор 🔁 every week on friday"],
+	bodyLines: ["# Регулярные", "", "- [ ] Еженедельный обзор 🔁 every week on friday 🆔 demo-review"],
 };
 
 /** События: одна еженедельная серия с временем. */

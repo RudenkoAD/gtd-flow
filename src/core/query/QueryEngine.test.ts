@@ -45,6 +45,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
 }
 
 function ctxOf(tasks: Task[]): QueryContext {
+	// Новый дефолт скоупа входящих: includePlain === false — обычные заметки исключены.
 	return {
 		tasks,
 		today: TODAY,
@@ -53,37 +54,46 @@ function ctxOf(tasks: Task[]): QueryContext {
 	};
 }
 
+/** Контекст со включённым plain-скоупом (inboxIncludePlain === true) — старое поведение. */
+function ctxOfInclude(tasks: Task[]): QueryContext {
+	return { ...ctxOf(tasks), settingsBits: defaultInboxConfig(undefined, true) };
+}
+
 function inboxKeys(tasks: Task[]): string[] {
 	return evaluate({ kind: "inbox" }, ctxOf(tasks)).map((t) => t.key);
 }
 
-describe("inbox — упрощённая формула §1 (фидбек-раунд 2: «задача с датой — уже разобрана»)", () => {
-	it("захвачено и не разобрано (без тега доски, проекта и due) — во входящих", () => {
-		const t = makeTask();
+function inboxKeysInclude(tasks: Task[]): string[] {
+	return evaluate({ kind: "inbox" }, ctxOfInclude(tasks)).map((t) => t.key);
+}
+
+describe("inbox — формула §1 (скоуп входящих: по умолчанию только файлы GTD Flow)", () => {
+	it("захвачено и не разобрано (container inbox, без тега доски, проекта и due) — во входящих", () => {
+		const t = makeTask({ filePath: "GTD/Inbox.md", container: "inbox" });
 		expect(inboxKeys([t])).toEqual([t.key]);
 	});
 
-	it("задача без даты — во входящих из ЛЮБОГО файла (понятие источника из запроса ушло)", () => {
-		const anywhere = makeTask({ filePath: "Заметки/случайный файл.md" });
-		const inCapture = makeTask({ filePath: "GTD/Capture/phone.md" });
+	it("захват (container inbox) — во входящих из ЛЮБОГО файла-захвата (понятие источника из запроса ушло)", () => {
+		const anywhere = makeTask({ filePath: "Заметки/Inbox.md", container: "inbox" });
+		const inCapture = makeTask({ filePath: "GTD/Capture/phone.md", container: "inbox" });
 		expect(inboxKeys([anywhere, inCapture]).sort()).toEqual(
 			[anywhere.key, inCapture.key].sort(),
 		);
 	});
 
 	it("hasDue исключает", () => {
-		const t = makeTask({ due: "2026-07-20" });
+		const t = makeTask({ container: "inbox", due: "2026-07-20" });
 		expect(inboxKeys([t])).toEqual([]);
 	});
 
-	it("hasDue исключает и в бывшем файле-источнике: задача с 📅 в GTD/Inbox.md — НЕ во входящих", () => {
+	it("hasDue исключает и в файле-захвате: задача с 📅 в GTD/Inbox.md — НЕ во входящих", () => {
 		// force-include упразднён: планирование задачи прямо в Inbox.md — это разбор
-		const t = makeTask({ filePath: "GTD/Inbox.md", due: "2026-07-20" });
+		const t = makeTask({ filePath: "GTD/Inbox.md", container: "inbox", due: "2026-07-20" });
 		expect(inboxKeys([t])).toEqual([]);
 	});
 
 	it("тег доски исключает", () => {
-		const t = makeTask({ tags: ["#kanban/work/todo"] });
+		const t = makeTask({ container: "inbox", tags: ["#kanban/work/todo"] });
 		expect(inboxKeys([t])).toEqual([]);
 	});
 
@@ -101,7 +111,7 @@ describe("inbox — упрощённая формула §1 (фидбек-рау
 
 	it("регрессия живого теста: drag на доску прямо из Inbox.md убирает из входящих", () => {
 		// Карточка получила #kanban/... прямо в Inbox.md — разобрана (!hasBoardTag).
-		const t = makeTask({ filePath: "GTD/Inbox.md", tags: ["#kanban/work/doing"] });
+		const t = makeTask({ filePath: "GTD/Inbox.md", container: "inbox", tags: ["#kanban/work/doing"] });
 		expect(inboxKeys([t])).toEqual([]);
 	});
 
@@ -132,17 +142,19 @@ describe("inbox — упрощённая формула §1 (фидбек-рау
 		expect(inboxKeys([t])).toEqual([]);
 	});
 
-	it("неактивные (done/отложенные/шаблоны) — не во входящих независимо от файла", () => {
-		const done = makeTask({ filePath: "GTD/Inbox.md", statusChar: "x" });
-		const deferred = makeTask({ filePath: "GTD/Inbox.md", start: "2026-08-01" });
+	it("неактивные (done/отложенные/шаблоны) — не во входящих даже в файле захвата", () => {
+		const done = makeTask({ filePath: "GTD/Inbox.md", container: "inbox", statusChar: "x" });
+		const deferred = makeTask({ filePath: "GTD/Inbox.md", container: "inbox", start: "2026-08-01" });
 		const template = makeTask({ filePath: "GTD/Inbox.md", container: "recurring" });
 		expect(inboxKeys([done, deferred, template])).toEqual([]);
 	});
 
-	it("container inbox ведёт себя как plain: активная задача файла захвата — во входящих", () => {
-		// gtd-inbox лишь помечает файл захвата; на формулу входящих он не влияет
+	it("container inbox: активная задача файла захвата — во входящих (при любом скоупе)", () => {
+		// gtd-inbox помечает файл захвата: его задачи во входящих всегда, независимо
+		// от inboxIncludePlain (скоуп ограничивает только обычные заметки).
 		const captured = makeTask({ filePath: "GTD/Inbox.md", container: "inbox" });
 		expect(inboxKeys([captured])).toEqual([captured.key]);
+		expect(inboxKeysInclude([captured])).toEqual([captured.key]);
 	});
 
 	it("container inbox: те же исключения, что у plain (due/тег доски разбирают задачу)", () => {
@@ -158,22 +170,60 @@ describe("inbox — упрощённая формула §1 (фидбек-рау
 	});
 });
 
+describe("inbox — скоуп входящих (настройка inboxIncludePlain)", () => {
+	it("plain-задача обычной заметки: НЕ во входящих при false, ВО входящих при true", () => {
+		// причина настройки: на реальном vault сотни чек-листов в обычных заметках
+		// затапливали входящие. По умолчанию (false) они исключены.
+		const plain = makeTask({ filePath: "Заметки/дела.md", container: "plain" });
+		expect(inboxKeys([plain])).toEqual([]); // default false
+		expect(inboxKeysInclude([plain])).toEqual([plain.key]); // includePlain=true — старое поведение
+	});
+
+	it("plain-задача с due/тегом доски исключена в ОБОИХ режимах (скоуп не переопределяет разбор)", () => {
+		const withDue = makeTask({ container: "plain", due: "2026-07-20" });
+		const onBoard = makeTask({ container: "plain", tags: ["#kanban/work/todo"] });
+		expect(inboxKeysInclude([withDue, onBoard])).toEqual([]);
+		expect(inboxKeys([withDue, onBoard])).toEqual([]);
+	});
+
+	it("захват (container inbox) — во входящих в ОБОИХ режимах", () => {
+		const captured = makeTask({ filePath: "GTD/Inbox.md", container: "inbox" });
+		expect(inboxKeys([captured])).toEqual([captured.key]);
+		expect(inboxKeysInclude([captured])).toEqual([captured.key]);
+	});
+
+	it("готовая задача проекта — во входящих в ОБОИХ режимах (проект не зависит от скоупа plain)", () => {
+		const ready = makeTask({ container: "project" });
+		expect(inboxKeys([ready])).toEqual([ready.key]);
+		expect(inboxKeysInclude([ready])).toEqual([ready.key]);
+	});
+
+	it("не-готовая задача проекта — не во входящих в ОБОИХ режимах", () => {
+		const dep = makeTask({ taskId: "a1", statusChar: " ", container: "project" });
+		const blocked = makeTask({ container: "project", dependsOn: ["a1"] });
+		expect(inboxKeys([dep, blocked])).toEqual([dep.key]);
+		expect(inboxKeysInclude([dep, blocked])).toEqual([dep.key]);
+	});
+});
+
 describe("inbox — сортировка", () => {
 	it("приоритет по убыванию, затем created по возрастанию (null в конец)", () => {
-		// все без даты/тегов/проекта — все проходят фильтр входящих
-		const plain = makeTask({ filePath: "GTD/Inbox.md", priority: "none" });
-		const top = makeTask({ filePath: "GTD/Inbox.md", priority: "highest" });
+		// все из файла захвата (container inbox), без даты/тегов/проекта — все проходят фильтр
+		const plain = makeTask({ filePath: "GTD/Inbox.md", container: "inbox", priority: "none" });
+		const top = makeTask({ filePath: "GTD/Inbox.md", container: "inbox", priority: "highest" });
 		const highLate = makeTask({
 			filePath: "GTD/Inbox.md",
+			container: "inbox",
 			priority: "high",
 			created: "2026-07-05",
 		});
 		const highEarly = makeTask({
 			filePath: "GTD/Inbox.md",
+			container: "inbox",
 			priority: "high",
 			created: "2026-07-01",
 		});
-		const highNoCreated = makeTask({ filePath: "GTD/Inbox.md", priority: "high" });
+		const highNoCreated = makeTask({ filePath: "GTD/Inbox.md", container: "inbox", priority: "high" });
 		expect(inboxKeys([plain, top, highLate, highEarly, highNoCreated])).toEqual([
 			top.key,
 			highEarly.key,

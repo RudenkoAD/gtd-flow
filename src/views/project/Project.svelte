@@ -30,6 +30,7 @@
 		menuPorts = null,
 		persisted,
 		persist,
+		openOverview = null,
 	}: {
 		taskStore: TaskStore;
 		dispatcher: IntentDispatcher;
@@ -42,6 +43,8 @@
 		/** Состояние из workspace-раскладки; приходит ПОСЛЕ монтирования. */
 		persisted: Readable<ProjectPersistedState>;
 		persist: (s: ProjectPersistedState) => void;
+		/** Открыть вид «Проекты» (обзор). null — когда кнопка выхода не нужна. */
+		openOverview?: (() => void) | null;
 	} = $props();
 
 	// props фиксированы на время монтирования (вид пересоздаётся с leaf)
@@ -157,6 +160,16 @@
 
 <div class="gtd-project">
 	<div class="gtd-project-header">
+		{#if openOverview !== null}
+			<button
+				class="gtd-project-overview"
+				onclick={openOverview}
+				title="К списку проектов"
+				aria-label="К списку проектов"
+			>
+				↑
+			</button>
+		{/if}
 		<select
 			class="dropdown gtd-project-select"
 			aria-label="Проект"
@@ -263,6 +276,12 @@
 		gap: 8px;
 		padding: 6px 10px;
 		border-bottom: 1px solid var(--background-modifier-border);
+	}
+	.gtd-project-overview {
+		flex: none;
+		font-size: var(--font-ui-smaller, 0.85em);
+		padding: 2px 8px;
+		line-height: 1;
 	}
 	.gtd-project-select {
 		max-width: 50%;

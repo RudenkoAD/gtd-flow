@@ -88,4 +88,27 @@ describe("bucketDeferDate — дата 🛫 при drop на бакет", () => 
 		const w = makeTask({ filePath: "a.md", start: bucketDeferDate("thisWeek", TODAY, 1) });
 		expect(bucketize([w], TODAY, 1).thisWeek).toEqual([w]);
 	});
+
+	// Предзаполнение пикера при дропе (drop → pickDate(initial = bucketDeferDate)):
+	// инвариант, гарантирующий, что карточка после дропа не «исчезает», — дата
+	// строго в будущем, иначе defer не отложил бы задачу (§1: in tickler требует
+	// start > today) и она пропала бы из всех бакетов.
+	describe("предзаполнение пикера строго в будущем при любом дне недели", () => {
+		const days: IsoDate[] = [
+			"2026-07-13", // пн — начало недели
+			"2026-07-15", // ср
+			"2026-07-18", // сб — предпоследний день недели с пн
+			"2026-07-19", // вс — последний день недели с пн
+			"2026-07-31", // граница месяца
+		];
+		for (const fdow of [0, 1] as const) {
+			for (const today of days) {
+				for (const id of ["tomorrow", "thisWeek", "later"] as const) {
+					it(`${id} @ ${today} (fdow=${fdow}) > today`, () => {
+						expect(bucketDeferDate(id, today, fdow) > today).toBe(true);
+					});
+				}
+			}
+		}
+	});
 });

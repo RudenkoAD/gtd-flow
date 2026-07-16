@@ -79,6 +79,22 @@ export class GtdSettingsTab extends PluginSettingTab {
 					await this.save();
 				});
 			});
+
+		new Setting(el)
+			.setName("Входящие: включать задачи из обычных заметок")
+			.setDesc(
+				"По умолчанию выключено: во «Входящие» попадают только файлы GTD Flow — " +
+					"захват (gtd-inbox) и готовые задачи проектов. Включите, если хотите видеть " +
+					"во входящих активные неразобранные задачи из любых заметок хранилища. " +
+					"На календарь, отложенные и доски не влияет.",
+			)
+			.addToggle((toggle) => {
+				toggle.setValue(this.plugin.settings.inboxIncludePlain);
+				toggle.onChange(async (value) => {
+					this.plugin.settings.inboxIncludePlain = value;
+					await this.save();
+				});
+			});
 	}
 
 	// ── Проекты ─────────────────────────────────────────────────────────────

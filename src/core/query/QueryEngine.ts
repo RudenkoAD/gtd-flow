@@ -30,19 +30,32 @@ export interface QueryContext {
  * остались только целями записи quick-add/spawn):
  *
  * inbox := active && !hasBoardTag && !hasDue
- *       && (!hasProject || (projectActive && ready))
- * где hasProject = container === "project", hasDue = t.due !== null.
+ *       && (container === "project" ? (projectActive && ready)
+ *           : container === "plain"  ? includePlain
+ *           : true)                          // container "inbox" — всегда
+ * где hasDue = t.due !== null, includePlain — настройка скоупа входящих.
  *
  * !hasBoardTag — итог живой верификации раунда 1: карточка, перетащенная
  * на доску прямо из Inbox.md, обязана уйти из входящих, иначе разбор
  * входящих не «опустошает» их — доверие к инбоксу ломается.
+ *
+ * СКОУП ВХОДЯЩИХ (фидбек-раунд по реальному vault): на хранилище с сотнями
+ * чек-листов в обычных заметках формула «активная задача из любого файла»
+ * затапливала входящие. По умолчанию (includePlain === false) задачи обычных
+ * файлов (container "plain") во входящие НЕ попадают — остаются только захват
+ * (container "inbox") и готовые задачи проектов. includePlain === true
+ * возвращает старое поведение «всё хранилище». Календарь/отложенные/доски
+ * настройка не затрагивает — меняется только членство во входящих.
  */
 export function isInInbox(t: Task, ctx: QueryContext): boolean {
 	if (!isActive(t, ctx.today)) return false;
 	const bits = ctx.settingsBits;
 	if (bits.hasBoardTag(t) || bits.hasDue(t)) return false;
-	if (t.container !== "project") return true;
-	return t.projectActive && ready(t, ctx.today, ctx.resolveDep);
+	if (t.container === "project") return t.projectActive && ready(t, ctx.today, ctx.resolveDep);
+	// Обычные заметки: во входящие только с явного разрешения (скоуп входящих).
+	if (t.container === "plain") return bits.includePlain;
+	// container "inbox" — файл захвата, всегда во входящих (если активна и не разобрана).
+	return true;
 }
 
 /**

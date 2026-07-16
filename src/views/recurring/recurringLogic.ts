@@ -5,6 +5,7 @@
  * обвязкой.
  */
 import type { IsoDate, Task } from "../../core/model/Task";
+import { parseTaskLine } from "../../core/parser/parseTaskLine";
 import { isParseError, parseRule, type ParseError, type Rule } from "../../core/recurrence/grammar";
 import { nextOccurrence } from "../../core/recurrence/nextOccurrence";
 import { recurringTemplateTarget } from "../common/taskActions";
@@ -100,13 +101,15 @@ export function groupByFileAndHeading(templates: readonly TemplateVM[]): Templat
 
 /**
  * Строка нового шаблона: `- [ ] <название> 🔁 <правило>` (та же форма, что
- * buildEventLine для серий событий). Схлопывает пробелы в названии. Пустое
- * название — null (не пишем).
+ * buildEventLine для серий событий), плюс ` 🆔 <id>` при заданном taskId.
+ * 🆔 нужен спавн-проходу (childId = <🆔>-YYYYMMDD): шаблон без него упёрся бы в
+ * ошибку «нет 🆔». Схлопывает пробелы в названии. Пустое название — null (не пишем).
  */
-export function buildTemplateLine(name: string, ruleText: string): string | null {
+export function buildTemplateLine(name: string, ruleText: string, taskId?: string): string | null {
 	const n = name.replace(/\s+/g, " ").trim();
 	if (n === "") return null;
-	return `- [ ] ${n} 🔁 ${ruleText.trim()}`;
+	const base = `- [ ] ${n} 🔁 ${ruleText.trim()}`;
+	return taskId !== undefined && taskId !== "" ? `${base} 🆔 ${taskId}` : base;
 }
 
 /** Структурный порт файла шаблонов; совместим с VaultAdapter (ensure+process+fm). */
@@ -125,12 +128,49 @@ function appendLine(content: string, line: string): string {
 		: line + "\n";
 }
 
+const BASE36 = "0123456789abcdefghijklmnopqrstuvwxyz";
+
+/** 6-символьный base36 🆔 — тот же генератор, что в WritebackService/CardService/eventSeries. */
+function defaultGenId(): string {
+	let s = "";
+	for (let i = 0; i < 6; i++) s += BASE36.charAt(Math.floor(Math.random() * BASE36.length));
+	return s;
+}
+
+/** 🆔, уже занятые в содержимом файла шаблонов — сверка для ленивого генератора. */
+function existingIds(content: string, filePath: string): Set<string> {
+	const ids = new Set<string>();
+	const lines = content.split("\n");
+	for (let i = 0; i < lines.length; i++) {
+		const t = parseTaskLine(lines[i]!, {
+			filePath,
+			lineStart: i,
+			parentLine: null,
+			heading: null,
+			container: "recurring",
+			projectActive: true,
+		});
+		if (t?.taskId != null) ids.add(t.taskId);
+	}
+	return ids;
+}
+
+/** Свежий 🆔, не совпадающий с уже занятыми в файле; крайний случай — последний кандидат. */
+function freshTemplateId(taken: ReadonlySet<string>, genId: () => string): string {
+	let id = genId();
+	for (let attempt = 0; attempt < 64 && taken.has(id); attempt++) id = genId();
+	return id;
+}
+
 /**
  * Создать шаблон регулярной задачи с нуля: цель — первый существующий
  * gtd-recurring файл, иначе `<папка GTD>/Recurring.md` (recurringTemplateTarget).
  * Файл гарантируется с флагом `gtd-recurring: true` СТРОГО до append (иначе
  * строка успела бы прожить как обычная задача и протечь во входящие — тот же
  * инвариант, что createEventSeries). Правило валидируется parseRule до записи.
+ * 🆔 проставляется сразу (childId спавна = <🆔>-YYYYMMDD): шаблон без него упёрся
+ * бы в ошибку «нет 🆔» на первом же спавн-проходе. id генерируется в момент записи
+ * и сверяется с уже занятыми в файле (кросс-файловая коллизия base36-id ничтожна).
  * Возврат — путь файла, куда добавлена строка (для Notice/навигации).
  */
 export async function createTemplate(deps: {
@@ -141,10 +181,14 @@ export async function createTemplate(deps: {
 	spawnTarget: string;
 	name: string;
 	ruleText: string;
+	/** Генератор 🆔; по умолчанию 6 символов base36 (как в WritebackService/CardService). */
+	genId?: () => string;
 }): Promise<TemplateWriteResult> {
 	if (isParseError(parseRule(deps.ruleText))) return { ok: false, reason: "invalid-rule" };
-	const line = buildTemplateLine(deps.name, deps.ruleText);
-	if (line === null) return { ok: false, reason: "empty-name" };
+	// проверка имени до записи (id не тратим, файл не создаём) — buildTemplateLine
+	// без id возвращает null ровно на пустом имени
+	if (buildTemplateLine(deps.name, deps.ruleText) === null) return { ok: false, reason: "empty-name" };
+	const genId = deps.genId ?? defaultGenId;
 	const target = recurringTemplateTarget(deps.recurringFiles, deps.spawnTarget);
 	try {
 		await deps.vault.ensureFile(target.path);
@@ -154,7 +198,14 @@ export async function createTemplate(deps: {
 	} catch {
 		return { ok: false, reason: "template-file-create-failed" };
 	}
-	const ok = await deps.vault.processFile(target.path, (content) => appendLine(content, line));
+	// 🆔 генерируется ВНУТРИ transform, на актуальном содержимом файла — сверка
+	// коллизий видит все уже занятые в нём id (в т.ч. дописанные гонкой)
+	const ok = await deps.vault.processFile(target.path, (content) => {
+		const taskId = freshTemplateId(existingIds(content, target.path), genId);
+		const line = buildTemplateLine(deps.name, deps.ruleText, taskId);
+		if (line === null) return null; // недостижимо: имя уже проверено выше
+		return appendLine(content, line);
+	});
 	return ok ? { ok: true, path: target.path } : { ok: false, reason: "write-failed" };
 }
 

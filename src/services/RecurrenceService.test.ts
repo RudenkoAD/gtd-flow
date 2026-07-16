@@ -74,6 +74,8 @@ interface HarnessOptions {
 	catchUp?: "latest" | "all" | "none";
 	catchUpCap?: number;
 	indexReady?: boolean;
+	/** Детерминированный генератор 🆔 для ленивой инъекции в шаблон без него. */
+	genId?: () => string;
 }
 
 /** Обвязка: реальный WritebackService как диспетчер поверх общего FakePort. */
@@ -98,6 +100,7 @@ function makeHarness(over: HarnessOptions = {}) {
 		ensureFile: async (path) => {
 			if (!port.files.has(path)) port.files.set(path, "");
 		},
+		...(over.genId !== undefined ? { genId: over.genId } : {}),
 	});
 	/** Эмуляция индексатора: перечитать все файлы порта в индекс. */
 	const sync = () => {
@@ -235,8 +238,8 @@ describe("RecurrenceService: полный цикл спавна", () => {
 		expect(port.files.get(REC)).toBe("- [ ] Standup 🔁 every day 🆔 stand 🔜 2026-07-16\n");
 	});
 
-	it("сломанные шаблоны попадают в errors, здоровые спавнятся", async () => {
-		const { port, svc, sync } = makeHarness({ today: "2026-07-15" });
+	it("сломанное правило — в errors; шаблон без 🆔 — не ошибка, а инъекция id", async () => {
+		const { port, svc, sync } = makeHarness({ today: "2026-07-15", genId: () => "injected1" });
 		port.files.set(
 			REC,
 			[
@@ -250,10 +253,53 @@ describe("RecurrenceService: полный цикл спавна", () => {
 		const report = await svc.runPass();
 
 		expect(report.spawned).toBe(1);
-		expect(report.errors).toHaveLength(2);
-		const byTemplate = new Map(report.errors.map((e) => [e.templateId, e.message]));
-		expect(byTemplate.get("bad1")).toContain("unparseable");
-		expect(byTemplate.get(null)).toContain("🆔");
+		// ошибка "нет 🆔" исчезла как класс: остаётся только кривое правило
+		expect(report.errors).toHaveLength(1);
+		expect(report.errors[0]!.templateId).toBe("bad1");
+		expect(report.errors[0]!.message).toContain("unparseable");
+		// строке без 🆔 вписан детерминированный id — в этом же проходе, без спавна
+		expect(port.files.get(REC)).toContain("- [ ] Без айди 🔁 every day 🆔 injected1");
+	});
+});
+
+describe("RecurrenceService: ленивая инъекция 🆔 в шаблон без него", () => {
+	it("проход 1 вписывает 🆔 (без спавна и без ошибки), проход 2 спавнит", async () => {
+		const { port, svc, sync } = makeHarness({ today: "2026-07-15", genId: () => "genrec" });
+		port.files.set(REC, "- [ ] Обзор 🔁 every day\n");
+		sync();
+
+		const first = await svc.runPass();
+
+		expect(first.errors).toEqual([]);
+		expect(first.spawned).toBe(0); // спавн отдан следующему проходу
+		expect(port.files.get(REC)).toBe("- [ ] Обзор 🔁 every day 🆔 genrec\n");
+		expect(port.files.get(INBOX) ?? "").toBe(""); // копии в этом проходе нет
+
+		sync(); // индексатор увидел 🆔 на шаблоне
+
+		const second = await svc.runPass();
+
+		expect(second.errors).toEqual([]);
+		expect(second.spawned).toBe(1);
+		expect(port.files.get(INBOX)).toContain("🧬 genrec 🆔 genrec-20260715");
+	});
+
+	it("повторный проход до реиндекса НЕ вписывает второй id (идемпотентность окна дебаунса)", async () => {
+		const ids = ["id1", "id2"];
+		let n = 0;
+		const { port, svc, sync } = makeHarness({ today: "2026-07-15", genId: () => ids[n++]! });
+		port.files.set(REC, "- [ ] Обзор 🔁 every day\n");
+		sync();
+
+		await svc.runPass();
+		const afterFirst = port.files.get(REC);
+		// индекс НЕ пересинхронизирован: шаблон в индексе всё ещё без 🆔
+		const second = await svc.runPass();
+
+		expect(port.files.get(REC)).toBe(afterFirst); // id не переписан
+		expect(port.files.get(REC)).toContain("🆔 id1");
+		expect(port.files.get(REC)).not.toContain("id2");
+		expect(second.errors).toEqual([]);
 	});
 });
 

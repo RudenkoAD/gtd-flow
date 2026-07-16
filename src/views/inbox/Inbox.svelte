@@ -39,7 +39,7 @@
 	// svelte-ignore state_referenced_locally
 	const tasks = inboxStore(
 		taskStore,
-		defaultInboxConfig(settings.inboxSources),
+		defaultInboxConfig(settings.inboxSources, settings.inboxIncludePlain),
 		settings.debounceMs.queryRecompute,
 	);
 	// svelte-ignore state_referenced_locally

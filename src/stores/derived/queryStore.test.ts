@@ -165,8 +165,13 @@ describe("готовые фабрики: реальный evaluate поверх 
 
 	it("inboxStore: захваченное без due/доски/проекта — во входящих; с due — нет", () => {
 		const { feed, ts } = setup();
-		const captured = makeTask({ filePath: "notes.md", lineStart: 1 });
-		const withDue = makeTask({ filePath: "notes.md", lineStart: 2, due: "2026-07-20" });
+		const captured = makeTask({ filePath: "notes.md", lineStart: 1, container: "inbox" });
+		const withDue = makeTask({
+			filePath: "notes.md",
+			lineStart: 2,
+			container: "inbox",
+			due: "2026-07-20",
+		});
 		feed.replaceFile("notes.md", [captured, withDue]);
 
 		const store = inboxStore(ts, defaultInboxConfig([]));

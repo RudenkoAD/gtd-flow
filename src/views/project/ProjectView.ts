@@ -40,6 +40,8 @@ export class ProjectView extends GtdView {
 			projects: plugin.projects ?? null,
 			settings: plugin.settings,
 			menuPorts: taskMenuPortsFromPlugin(plugin),
+			// Выход из графа проекта в обзор «Проекты» (симметрично openProject там).
+			openOverview: () => void plugin.activateView("projects"),
 			persisted: { subscribe: this.persisted.subscribe },
 			persist: (s: ProjectPersistedState) => {
 				this.lastState = s;

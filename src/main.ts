@@ -19,6 +19,7 @@ import { createGtdView } from "./views/createView";
 import { DndService } from "./views/dnd/DndService";
 import { createDemoVault, demoVaultNotice } from "./onboarding/demoVault";
 import { WelcomeModal } from "./onboarding/WelcomeModal";
+import { ensureCaptureFile } from "./views/common/taskActions";
 
 export default class GtdFlowPlugin extends Plugin {
 	settings: GtdFlowSettings = DEFAULT_SETTINGS;
@@ -82,7 +83,12 @@ export default class GtdFlowPlugin extends Plugin {
 			settings: () => this.settings.recurring,
 			todayIso: () => clock.todayIso(),
 			indexReady: () => this.indexReadyFlag,
-			ensureFile: (path) => this.vaultAdapter.ensureFile(path),
+			// spawnTarget — цель захвата: помечаем gtd-inbox (идемпотентно), иначе
+			// при скоупе входящих «только GTD-файлы» копии регулярных стали бы
+			// невидимы во входящих (ensureFile создал бы файл без флага)
+			ensureFile: async (path) => {
+				await ensureCaptureFile(this.vaultAdapter, path);
+			},
 		});
 		clock.onDayRollover(() => void this.recurrence.runPass());
 		this.projects = new ProjectService({

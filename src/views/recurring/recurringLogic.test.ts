@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Task } from "../../core/model/Task";
+import { parseTaskLine } from "../../core/parser/parseTaskLine";
 import { isParseError } from "../../core/recurrence/grammar";
 import { makeTask } from "../../stores/testSupport";
 import {
@@ -206,14 +207,48 @@ describe("createTemplate", () => {
 		spawnTarget: "GTD/Inbox.md",
 		name: "Полить цветы",
 		ruleText: "every day",
+		genId: () => "tpl001",
 	};
 
-	it("нет файлов шаблонов — создаёт <папка GTD>/Recurring.md с флагом и строкой", async () => {
+	it("нет файлов шаблонов — создаёт <папка GTD>/Recurring.md с флагом, строкой и 🆔", async () => {
 		const vault = new FakeVault();
 		const res = await createTemplate({ vault, recurringFiles: [], ...base });
 		expect(res).toEqual({ ok: true, path: "GTD/Recurring.md" });
-		expect(vault.files.get("GTD/Recurring.md")).toBe("- [ ] Полить цветы 🔁 every day\n");
+		expect(vault.files.get("GTD/Recurring.md")).toBe("- [ ] Полить цветы 🔁 every day 🆔 tpl001\n");
 		expect(vault.fm.get("GTD/Recurring.md")).toEqual({ "gtd-recurring": true });
+	});
+
+	it("новая строка получает 🆔 (спавн-проход строит childId = <🆔>-YYYYMMDD)", async () => {
+		const vault = new FakeVault();
+		await createTemplate({ vault, recurringFiles: [], ...base });
+		const line = vault.files.get("GTD/Recurring.md")!.trimEnd();
+		const t = parseTaskLine(line, {
+			filePath: "GTD/Recurring.md",
+			lineStart: 0,
+			parentLine: null,
+			heading: null,
+			container: "recurring",
+			projectActive: true,
+		});
+		expect(t?.taskId).toBe("tpl001");
+	});
+
+	it("🆔 не сталкивается с уже занятым в файле — генератор перебирает кандидаты", async () => {
+		const vault = new FakeVault({ "GTD/Recurring.md": "- [ ] старый 🔁 every week 🆔 dup" });
+		const seq = ["dup", "free"];
+		let n = 0;
+		const res = await createTemplate({
+			vault,
+			recurringFiles: ["GTD/Recurring.md"],
+			spawnTarget: "GTD/Inbox.md",
+			name: "Полить цветы",
+			ruleText: "every day",
+			genId: () => seq[n++]!,
+		});
+		expect(res.ok).toBe(true);
+		expect(vault.files.get("GTD/Recurring.md")).toBe(
+			"- [ ] старый 🔁 every week 🆔 dup\n- [ ] Полить цветы 🔁 every day 🆔 free\n",
+		);
 	});
 
 	it("флаг gtd-recurring ставится СТРОГО до записи строки (ensureFile до processFile)", async () => {
@@ -232,7 +267,7 @@ describe("createTemplate", () => {
 		});
 		expect(res).toEqual({ ok: true, path: "GTD/Recurring.md" });
 		expect(vault.files.get("GTD/Recurring.md")).toBe(
-			"- [ ] старый 🔁 every week\n- [ ] Полить цветы 🔁 every day\n",
+			"- [ ] старый 🔁 every week\n- [ ] Полить цветы 🔁 every day 🆔 tpl001\n",
 		);
 	});
 

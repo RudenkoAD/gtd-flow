@@ -25,6 +25,11 @@ export type QuerySpec =
 export interface InboxConfig {
 	hasBoardTag: (t: Task) => boolean;
 	hasDue: (t: Task) => boolean;
+	/** Скоуп входящих (скалярная настройка, а не Settings в ядре): включать ли
+	 *  активные задачи из ОБЫЧНЫХ заметок (container "plain"). false — входящие
+	 *  ограничены файлами GTD Flow (захват gtd-inbox + готовые задачи проектов).
+	 *  См. isInInbox в QueryEngine. */
+	includePlain: boolean;
 }
 
 export function defaultHasBoardTag(t: Task): boolean {
@@ -43,7 +48,14 @@ export function defaultHasDue(t: Task): boolean {
  * вызовов видов/фабрик (Inbox.svelte, queryStore передают settings.inboxSources):
  * формула входящих упрощена — «задача с датой — уже разобрана», force-include
  * источников захвата упразднён.
+ *
+ * includePlain — единственная реальная настройка формулы: скоуп входящих
+ * (см. InboxConfig.includePlain). По умолчанию false: входящие смотрят только
+ * на файлы GTD Flow. Вид передаёт сюда settings.inboxIncludePlain.
  */
-export function defaultInboxConfig(_inboxSources?: readonly string[]): InboxConfig {
-	return { hasBoardTag: defaultHasBoardTag, hasDue: defaultHasDue };
+export function defaultInboxConfig(
+	_inboxSources?: readonly string[],
+	includePlain = false,
+): InboxConfig {
+	return { hasBoardTag: defaultHasBoardTag, hasDue: defaultHasDue, includePlain };
 }

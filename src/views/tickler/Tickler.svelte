@@ -5,6 +5,7 @@
 	import { ticklerStore } from "../../stores/derived/queryStore";
 	import type { TaskStore } from "../../stores/taskStore";
 	import { confirm } from "../common/ConfirmModal";
+	import { pickDate } from "../common/pickers";
 	import TaskCard from "../common/TaskCard.svelte";
 	import type { TaskMenuPorts } from "../common/taskMenu";
 	import type { DndPort } from "../dnd/types";
@@ -50,9 +51,10 @@
 		later: null,
 	});
 
-	// Секция-бакет = drop-цель (ТЗ §8): drop пишет 🛫 = дата бакета
-	// (bucketDeferDate). $today читается в drop-замыкании — актуальна на момент
-	// жеста, а не регистрации.
+	// Секция-бакет = drop-цель (ТЗ §8): drop открывает пикер даты, предзаполненный
+	// датой бакета (bucketDeferDate) — карточка не «исчезает» молча, а пользователь
+	// видит/правит дату откладывания и получает Notice. $today читается в
+	// drop-замыкании — актуальна на момент жеста, а не регистрации.
 	$effect(() => {
 		if (dnd === null) return;
 		const unregs: (() => void)[] = [];
@@ -64,7 +66,11 @@
 					el,
 					accepts: (p) => p.taskKey !== "",
 					drop: async (p) => {
-						const until = bucketDeferDate(bucket.id, $today, settings.firstDayOfWeek);
+						// Пикер предзаполнен датой бакета; отмена (null) — карточка
+						// остаётся где была, ничего не пишем.
+						const suggested = bucketDeferDate(bucket.id, $today, settings.firstDayOfWeek);
+						const until = await pickDate(app, "Отложить до", suggested);
+						if (until === null) return;
 						// «🛫 и 📅 взаимоисключающие»: отложить запланированную —
 						// только сняв план, с подтверждением (атомарная запись).
 						const task = taskStore.index().get(p.taskKey);
@@ -86,8 +92,11 @@
 							until,
 							clearDue,
 						});
+						// Всегда явный отклик на успех: карточка уходит из исходного
+						// вида (или не меняется видимо, если 🛫 уже был на эту дату) —
+						// без Notice это читается как «карточка просто исчезла».
 						if (!res.ok) new Notice(`GTD Flow: ${res.reason}`);
-						else if (clearDue) new Notice(`Отложена до ${until}, план снят`);
+						else new Notice(clearDue ? `Отложена до ${until}, план снят` : `Отложена до ${until}`);
 					},
 				}),
 			);

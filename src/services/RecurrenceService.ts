@@ -65,6 +65,8 @@ export interface RecurrenceDeps {
 	indexReady: () => boolean;
 	/** Создать файл-цель спавна (и папку), если его ещё нет (VaultAdapter.ensureFile). */
 	ensureFile: (path: string) => Promise<void>;
+	/** Генератор 🆔; по умолчанию 6 символов base36 (как в WritebackService/CardService). */
+	genId?: () => string;
 }
 
 // ---------------------------------------------------------------------------
@@ -84,6 +86,14 @@ function emptyReport(): SpawnReport {
 
 function errorMessage(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
+}
+
+const BASE36 = "0123456789abcdefghijklmnopqrstuvwxyz";
+
+function defaultGenId(): string {
+	let s = "";
+	for (let i = 0; i < 6; i++) s += BASE36.charAt(Math.floor(Math.random() * BASE36.length));
+	return s;
 }
 
 /** Все 🆔 из содержимого файла — повторная проверка ВНУТРИ transform:
@@ -156,7 +166,20 @@ export class RecurrenceService implements RecurrencePort {
 	 */
 	private mutex: Promise<unknown> = Promise.resolve();
 
-	constructor(private readonly deps: RecurrenceDeps) {}
+	private readonly genId: () => string;
+
+	/**
+	 * Память «ключ id-less шаблона → вписанный нами 🆔» на окно дебаунса
+	 * реиндексации (~150мс): пока индекс отдаёт шаблон ещё БЕЗ taskId, повторный
+	 * runPass НЕ должен выдать ему второй (другой) id, а обязан подождать. После
+	 * реиндекса ключ шаблона переезжает в 'id:<🆔>' и из числа id-less исчезает —
+	 * его запись здесь вычищается (иначе память растёт по сессии).
+	 */
+	private readonly injectedIds = new Map<string, string>();
+
+	constructor(private readonly deps: RecurrenceDeps) {
+		this.genId = deps.genId ?? defaultGenId;
+	}
 
 	private locked<T>(fn: () => Promise<T>): Promise<T> {
 		const run = this.mutex.then(fn, fn);
@@ -217,16 +240,34 @@ export class RecurrenceService implements RecurrencePort {
 		const today = this.deps.todayIso();
 		const index = this.deps.feed.getIndex();
 
-		// 1. шаблоны + все занятые 🆔 (любой статус носителя)
+		// 1. шаблоны + все занятые 🆔 (любой статус носителя); шаблоны без 🆔
+		//    копим отдельно — им нужна ленивая инъекция, а не ошибка
 		const templates: TemplateInfo[] = [];
+		const idless: Task[] = [];
 		const existingIds = new Set<string>();
+		// 🆔, вписанные нами в прошлых проходах этой сессии, индекс мог ещё не
+		// увидеть (дебаунс) — держим занятыми, чтобы freshId не выдал дубликат
+		for (const injected of this.injectedIds.values()) existingIds.add(injected);
 		for (const t of index.all()) {
 			if (t.taskId !== null) existingIds.add(t.taskId);
 			if (t.container !== "recurring") continue;
+			if (t.taskId === null) {
+				idless.push(t);
+				continue;
+			}
 			const rule: Rule | ParseError =
 				t.recurrence === null ? { error: "missing 🔁 rule" } : parseRule(t.recurrence);
 			templates.push({ task: t, rule });
 		}
+
+		// 1a. Ленивая инъекция 🆔 в шаблоны без него (ТЗ §6: детерминированный
+		//     childId невозможен без стабильного 🆔). Это НЕ ошибка и НЕ спавн в
+		//     этом проходе: пишем только 🆔 (set-id), а спавн отдаём СЛЕДУЮЩЕМУ
+		//     проходу — после реиндекса и окна синка двух устройств, когда 🆔 успел
+		//     сойтись. Иначе копии минтились бы от ещё-не-сошедшегося случайного
+		//     id и на втором устройстве осиротели бы. Ошибка "template has no 🆔"
+		//     как класс исчезает: planSpawns этих шаблонов уже не видит.
+		await this.injectMissingIds(idless, existingIds);
 
 		const plan = planSpawns({
 			templates,
@@ -258,6 +299,45 @@ export class RecurrenceService implements RecurrencePort {
 		// 4. дедуп коллизий 🆔 (после схождения синка двух устройств)
 		await this.dedupPass(report);
 		return report;
+	}
+
+	/**
+	 * Вписать 🆔 в шаблоны без него — по одному свежему id на шаблон, интентом
+	 * set-id (та же ленивая механика, что у CardService.openOrCreate). Память
+	 * injectedIds закрывает окно дебаунса реиндексации: пока индекс отдаёт шаблон
+	 * ещё без taskId, повторный проход НЕ выдаёт второй id, а ждёт. Ключи,
+	 * переставшие быть id-less шаблонами (реиндекс переименовал ключ в 'id:<🆔>' /
+	 * шаблон удалён), из памяти вычищаются. Спавн этих шаблонов — дело следующего
+	 * прохода: здесь ни спавна, ни курсора, ни ошибки в report.
+	 */
+	private async injectMissingIds(idless: readonly Task[], existingIds: Set<string>): Promise<void> {
+		const seen = new Set<string>();
+		for (const t of idless) {
+			seen.add(t.key);
+			if (this.injectedIds.has(t.key)) continue; // уже вписали в этой сессии — ждём реиндекс
+			const fresh = this.freshId(existingIds);
+			if (fresh === null) continue; // генератор зациклился на занятых id — повторит следующий проход
+			const res = await this.deps.dispatcher.dispatch({ type: "set-id", key: t.key, taskId: fresh });
+			if (res.ok) {
+				this.injectedIds.set(t.key, fresh);
+				existingIds.add(fresh); // не переиспользовать этот id для соседнего id-less шаблона
+			}
+		}
+		// прунинг памяти: ключи, ушедшие из числа id-less шаблонов
+		for (const key of [...this.injectedIds.keys()]) {
+			if (!seen.has(key)) this.injectedIds.delete(key);
+		}
+	}
+
+	/** Свежий 🆔 для ленивой инъекции: минуя и занятые (existingIds — индекс плюс
+	 *  выданные в этом проходе), и все носители по индексу; 32 попытки — как в
+	 *  WritebackService.freshId. null — генератор зациклился на занятых id. */
+	private freshId(existingIds: ReadonlySet<string>): string | null {
+		for (let attempt = 0; attempt < 32; attempt++) {
+			const id = this.genId();
+			if (!existingIds.has(id) && this.deps.feed.getIndex().resolveDep(id).length === 0) return id;
+		}
+		return null;
 	}
 
 	/** Возвращает templateId, чьи копии НЕ записаны (их курсоры трогать нельзя). */

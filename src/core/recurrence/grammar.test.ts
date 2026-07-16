@@ -145,6 +145,90 @@ describe("parseRule — event time ('at' tail, §события)", () => {
 	});
 });
 
+describe("parseRule — from clause (lower bound, §6)", () => {
+	it("parses 'from' on every frequency", () => {
+		expect(ok("every day from 2026-07-15")).toEqual({
+			freq: "daily",
+			n: 1,
+			from: "2026-07-15",
+		});
+		expect(ok("every weekday from 2026-07-15")).toEqual({
+			freq: "weekdays",
+			from: "2026-07-15",
+		});
+		expect(ok("every wednesday from 2026-07-15")).toEqual({
+			freq: "weekly",
+			n: 1,
+			byDay: [2],
+			from: "2026-07-15",
+		});
+		expect(ok("every 2 weeks on mon, thu from 2026-07-15")).toEqual({
+			freq: "weekly",
+			n: 2,
+			byDay: [0, 3],
+			from: "2026-07-15",
+		});
+		expect(ok("every month on the 15th from 2026-07-15")).toEqual({
+			freq: "monthly",
+			n: 1,
+			day: 15,
+			from: "2026-07-15",
+		});
+		expect(ok("every year on april 1 from 2026-07-15")).toEqual({
+			freq: "yearly",
+			n: 1,
+			month: 4,
+			day: 1,
+			from: "2026-07-15",
+		});
+	});
+
+	it("accepts 'from' in any position relative to at/until", () => {
+		const expected: Rule = {
+			freq: "weekly",
+			n: 1,
+			byDay: [2],
+			eventTime: "18:00",
+			eventTimeEnd: "19:30",
+			from: "2026-07-15",
+			until: "2026-09-10",
+		};
+		// from перед at и until
+		expect(ok("every wednesday from 2026-07-15 at 18:00-19:30 until 2026-09-10")).toEqual(expected);
+		// from между at и until
+		expect(ok("every wednesday at 18:00-19:30 from 2026-07-15 until 2026-09-10")).toEqual(expected);
+		// from после until
+		expect(ok("every wednesday at 18:00-19:30 until 2026-09-10 from 2026-07-15")).toEqual(expected);
+	});
+
+	it("round-trips from together with event time and until", () => {
+		expect(ok("every day from 2026-07-15 until 2026-12-31 at 09:00")).toEqual({
+			freq: "daily",
+			n: 1,
+			from: "2026-07-15",
+			until: "2026-12-31",
+			eventTime: "09:00",
+		});
+	});
+
+	it("allows from == until (single-day window)", () => {
+		expect(ok("every day from 2026-07-15 until 2026-07-15")).toEqual({
+			freq: "daily",
+			n: 1,
+			from: "2026-07-15",
+			until: "2026-07-15",
+		});
+	});
+
+	it("rejects duplicate, invalid and out-of-order from", () => {
+		bad("every day from 2026-07-15 from 2026-07-16"); // duplicate
+		bad("every day from tomorrow");
+		bad("every day from 2026-02-30"); // не календарная дата
+		bad("every day from"); // нет даты
+		bad("every day from 2026-09-10 until 2026-07-15"); // from > until
+	});
+});
+
 describe("parseRule — rejects", () => {
 	it("rejects empty and bare 'every'", () => {
 		bad("");

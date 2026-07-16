@@ -5,6 +5,8 @@
  * - nextOccurrence(rule, after) — минимальная дата вхождения СТРОГО ПОСЛЕ after.
  * - until ВКЛЮЧИТЕЛЬНО: вхождение, попадающее ровно на until, порождается;
  *   всё, что позже, — null.
+ * - from ВКЛЮЧИТЕЛЬНО: нижняя граница серии — вхождений раньше from не бывает;
+ *   курсор поиска клампится до from−1 (see below), until-семантика не меняется.
  * - КЛАМПИНГ: «on the 31st» → Jan 31, Feb 28/29, Mar 31… (не пропуск, как в RFC 5545).
  * - Месячный/годовой шаг привязан к дню ПРАВИЛА, а не к дню after:
  *   «every month on the 15th» после 2026-07-20 → 2026-08-15.
@@ -36,6 +38,12 @@ function capUntil(cand: IsoDate, until: IsoDate | undefined): IsoDate | null {
 }
 
 export function nextOccurrence(rule: Rule, after: IsoDate): IsoDate | null {
+	// клауза from (нижняя граница, §6): вхождений раньше from не бывает. Поднимаем
+	// курсор поиска до from−1 — «строго после» тогда впервые попадёт на дату ≥ from.
+	// until-семантику (верхняя граница) это не трогает — её держит capUntil.
+	if (rule.from !== undefined && compare(after, addDays(rule.from, -1)) < 0) {
+		after = addDays(rule.from, -1);
+	}
 	switch (rule.freq) {
 		case "daily":
 			return capUntil(addDays(after, rule.n), rule.until);
@@ -103,6 +111,7 @@ export function nextOccurrence(rule: Rule, after: IsoDate): IsoDate | null {
  * только структурная совместимость: день недели / день месяца / месяц+день, until.
  */
 export function isOccurrence(rule: Rule, date: IsoDate): boolean {
+	if (rule.from !== undefined && compare(date, rule.from) < 0) return false;
 	if (rule.until !== undefined && compare(date, rule.until) > 0) return false;
 	switch (rule.freq) {
 		case "daily":

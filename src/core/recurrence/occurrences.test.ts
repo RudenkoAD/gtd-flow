@@ -107,6 +107,47 @@ describe("expandOccurrences — исключения (🚫)", () => {
 	});
 });
 
+describe("expandOccurrences — from (нижняя граница)", () => {
+	// Ориентир: среды июля 2026 — 07-01, 07-08, 07-15, 07-22, 07-29.
+	it("серия from 2026-07-15 не рендерит среды 1 и 8 июля, но рендерит 15-е и позже", () => {
+		const r: Rule = { freq: "weekly", n: 1, byDay: [2], from: "2026-07-15" }; // среды
+		expect(expandOccurrences(r, "2026-07-01", "2026-07-29")).toEqual([
+			"2026-07-15",
+			"2026-07-22",
+			"2026-07-29",
+		]);
+	});
+
+	it("from и until вместе ограничивают серию с обеих сторон", () => {
+		const r: Rule = {
+			freq: "weekly",
+			n: 1,
+			byDay: [2],
+			from: "2026-07-15",
+			until: "2026-07-22",
+		};
+		expect(expandOccurrences(r, "2026-07-01", "2026-08-31")).toEqual(["2026-07-15", "2026-07-22"]);
+	});
+
+	it("from сочетается с исключениями (🚫)", () => {
+		const r: Rule = { freq: "weekly", n: 1, byDay: [2], from: "2026-07-15" };
+		const exclude = new Set(["2026-07-22"]);
+		expect(expandOccurrences(r, "2026-07-01", "2026-07-29", undefined, exclude)).toEqual([
+			"2026-07-15",
+			"2026-07-29",
+		]);
+	});
+
+	it("daily from: первое вхождение — ровно from, ничего раньше", () => {
+		const r: Rule = { freq: "daily", n: 1, from: "2026-07-15" };
+		expect(expandOccurrences(r, "2026-07-10", "2026-07-17")).toEqual([
+			"2026-07-15",
+			"2026-07-16",
+			"2026-07-17",
+		]);
+	});
+});
+
 describe("expandOccurrences — cap", () => {
 	it("обрывается на потолке", () => {
 		const r: Rule = { freq: "daily", n: 1 };

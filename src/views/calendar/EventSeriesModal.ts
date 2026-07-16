@@ -15,6 +15,7 @@ const RULE_EXAMPLES: readonly string[] = [
 	"every tuesday",
 	"every 2 weeks on mon, thu",
 	"every month on the last day",
+	"every wed from 2026-07-15 until 2026-09-10",
 ];
 
 export interface EventSeriesInitial {

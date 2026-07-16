@@ -3,18 +3,23 @@
  *
  *   every [N] (day|days|week|weeks|month|months|year|years|weekday|<weekday>)
  *             [on <weekday-list>] [on the <ordinal> | on the last day]
- *             [on <month-name> <day>] [at HH:mm[-HH:mm]] [until YYYY-MM-DD]
+ *             [on <month-name> <day>] [at HH:mm[-HH:mm]]
+ *             [from YYYY-MM-DD] [until YYYY-MM-DD]
  *
  * Хвост "at HH:mm[-HH:mm]" — время вхождения повторяющегося события календаря
  * (ТЗ §события): 'every tuesday at 19:00-20:30', 'every day at 09:00'. Для
  * шаблонов регулярного ящика он игнорируется движком спавна (date-уровень).
+ *
+ * Клаузы "from YYYY-MM-DD" (нижняя граница, включительно) и "until YYYY-MM-DD"
+ * (верхняя граница, включительно) ограничивают серию с обеих сторон; порядок
+ * относительно on/at свободный, каждая — не более одного раза, from ≤ until.
  *
  * rrule.js отвергнут сознательно: RFC-семантика ПРОПУСКАЕТ несуществующие даты,
  * а нам нужен клампинг («on the 31st» → Feb 28/29). Регистронезависимо;
  * имена дней недели и месяцев — полные и трёхбуквенные.
  */
 import type { IsoDate } from "../model/Task";
-import { isValidIsoDate } from "./dateMath";
+import { compare, isValidIsoDate } from "./dateMath";
 
 /**
  * Опциональное время вхождения (ТЗ §события): хвост " at HH:mm[-HH:mm]" правила.
@@ -29,14 +34,23 @@ export interface EventTime {
 	eventTimeEnd?: string;
 }
 
+// from: нижняя граница серии (включительно, §6) — вхождений раньше неё не бывает.
+// until: верхняя граница (включительно). Обе опциональны и валидны на любом freq.
 export type Rule =
-	| ({ freq: "daily"; n: number; until?: IsoDate } & EventTime)
-	| ({ freq: "weekdays"; until?: IsoDate } & EventTime)
+	| ({ freq: "daily"; n: number; from?: IsoDate; until?: IsoDate } & EventTime)
+	| ({ freq: "weekdays"; from?: IsoDate; until?: IsoDate } & EventTime)
 	// byDay: 0=понедельник … 6=воскресенье (см. dateMath.dayOfWeek).
 	// byDay=[] легально («every week until …») — шаг от курсора без привязки к дню.
-	| ({ freq: "weekly"; n: number; byDay: number[]; until?: IsoDate } & EventTime)
-	| ({ freq: "monthly"; n: number; day: number | "last"; until?: IsoDate } & EventTime)
-	| ({ freq: "yearly"; n: number; month: number; day: number; until?: IsoDate } & EventTime);
+	| ({ freq: "weekly"; n: number; byDay: number[]; from?: IsoDate; until?: IsoDate } & EventTime)
+	| ({ freq: "monthly"; n: number; day: number | "last"; from?: IsoDate; until?: IsoDate } & EventTime)
+	| ({
+			freq: "yearly";
+			n: number;
+			month: number;
+			day: number;
+			from?: IsoDate;
+			until?: IsoDate;
+	  } & EventTime);
 
 export interface ParseError {
 	error: string;
@@ -148,7 +162,8 @@ export function parseRule(text: string): Rule | ParseError {
 		unitWeekday = wd;
 	}
 
-	// клаузы on/until/at (порядок свободный, каждая — не более одного раза)
+	// клаузы on/from/until/at (порядок свободный, каждая — не более одного раза)
+	let from: IsoDate | undefined;
 	let until: IsoDate | undefined;
 	let onWeekdays: number[] | null = null;
 	let onMonthDay: number | "last" | null = null;
@@ -179,6 +194,17 @@ export function parseRule(text: string): Rule | ParseError {
 				eventTime = startPart;
 				eventTimeEnd = endPart;
 			}
+			i++;
+			continue;
+		}
+		if (t === "from") {
+			i++;
+			const dt = tokens[i];
+			if (dt === undefined || !isValidIsoDate(dt)) {
+				return { error: "expected a valid YYYY-MM-DD date after 'from'" };
+			}
+			if (from !== undefined) return { error: "duplicate 'from'" };
+			from = dt;
 			i++;
 			continue;
 		}
@@ -256,9 +282,15 @@ export function parseRule(text: string): Rule | ParseError {
 		onWeekdays = [...new Set(list)].sort((a, b) => a - b);
 	}
 
-	// хвостовые опции (until + время вхождения) — единым спредом на любой freq
+	// нижняя граница не может быть позже верхней (обе включительно)
+	if (from !== undefined && until !== undefined && compare(from, until) > 0) {
+		return { error: "'from' must not be after 'until'" };
+	}
+
+	// хвостовые опции (from + until + время вхождения) — единым спредом на любой freq
 	const withTail = (r: Rule): Rule => {
 		const out = { ...r };
+		if (from !== undefined) out.from = from;
 		if (until !== undefined) out.until = until;
 		if (eventTime !== undefined) out.eventTime = eventTime;
 		if (eventTimeEnd !== undefined) out.eventTimeEnd = eventTimeEnd;

@@ -132,7 +132,7 @@ npm run build   # соберёт main.js
    - [ ] Ревью приоритетов 🔺 🔁 every month on the last day 🛫 -3d 🆔 rev-prio
    ```
 
-   В нужный день копия появляется во входящих; курсор `🔜` на шаблоне сдвигается автоматически. Правила: `every day`, `every 2 weeks on mon, thu`, `every month on the 31st` (в феврале — 28/29), `every year on april 1 until 2027-01-01`.
+   В нужный день копия появляется во входящих; курсор `🔜` на шаблоне сдвигается автоматически. Правила: `every day`, `every 2 weeks on mon, thu`, `every month on the 31st` (в феврале — 28/29), `every year on april 1 until 2027-01-01`. Границы серии задают `from …` (нижняя, включительно) и `until …` (верхняя): `every wednesday from 2026-07-15 until 2026-09-10`.
 
 6. Входящие — файл с `gtd-inbox: true`:
 

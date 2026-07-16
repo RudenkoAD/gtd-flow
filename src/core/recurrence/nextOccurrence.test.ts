@@ -136,6 +136,51 @@ describe("nextOccurrence — until (ВКЛЮЧИТЕЛЬНО)", () => {
 	});
 });
 
+describe("nextOccurrence — from (нижняя граница, ВКЛЮЧИТЕЛЬНО)", () => {
+	it("daily: первое вхождение приходится ровно на from", () => {
+		const r: Rule = { freq: "daily", n: 1, from: "2026-07-15" };
+		expect(nextOccurrence(r, "2026-07-01")).toBe("2026-07-15"); // курсор до from поднят
+		expect(nextOccurrence(r, "2026-07-14")).toBe("2026-07-15"); // ровно from−1
+		expect(nextOccurrence(r, "2026-07-15")).toBe("2026-07-16"); // от самого from — штатный шаг
+	});
+	it("weekly: пропускает перечисленные дни раньше from", () => {
+		const r: Rule = { freq: "weekly", n: 1, byDay: [2], from: "2026-07-15" }; // среды
+		// среды 07-01, 07-08 до from не отдаются; первая — 07-15
+		expect(nextOccurrence(r, "2026-07-01")).toBe("2026-07-15");
+		expect(nextOccurrence(r, "2026-07-15")).toBe("2026-07-22");
+	});
+	it("monthly: якорный день раньше from пропускается", () => {
+		const r: Rule = { freq: "monthly", n: 1, day: 15, from: "2026-07-15" };
+		expect(nextOccurrence(r, "2026-05-01")).toBe("2026-07-15"); // не 05-15 / 06-15
+	});
+	it("не влияет, когда after уже позже from", () => {
+		const r: Rule = { freq: "daily", n: 1, from: "2026-01-01" };
+		expect(nextOccurrence(r, "2026-07-15")).toBe("2026-07-16"); // клампа нет
+	});
+	it("сочетается с until с обеих сторон", () => {
+		const r: Rule = { freq: "daily", n: 1, from: "2026-07-15", until: "2026-07-17" };
+		expect(nextOccurrence(r, "2026-07-01")).toBe("2026-07-15");
+		expect(nextOccurrence(r, "2026-07-15")).toBe("2026-07-16");
+		expect(nextOccurrence(r, "2026-07-16")).toBe("2026-07-17");
+		expect(nextOccurrence(r, "2026-07-17")).toBeNull(); // за until
+	});
+});
+
+describe("isOccurrence — from", () => {
+	it("отвергает даты раньше from, принимает from и позже", () => {
+		const r: Rule = { freq: "daily", n: 1, from: "2026-07-15" };
+		expect(isOccurrence(r, "2026-07-14")).toBe(false);
+		expect(isOccurrence(r, "2026-07-15")).toBe(true);
+		expect(isOccurrence(r, "2026-07-16")).toBe(true);
+	});
+	it("отвергает структурный член раньше from (weekly)", () => {
+		const r: Rule = { freq: "weekly", n: 1, byDay: [2], from: "2026-07-15" };
+		expect(isOccurrence(r, "2026-07-08")).toBe(false); // среда до from
+		expect(isOccurrence(r, "2026-07-15")).toBe(true);
+		expect(isOccurrence(r, "2026-07-22")).toBe(true);
+	});
+});
+
 describe("isOccurrence", () => {
 	it("matches clamped monthly days", () => {
 		const r: Rule = { freq: "monthly", n: 1, day: 31 };
@@ -219,8 +264,16 @@ const arbRuleBase: fc.Arbitrary<Rule> = fc.oneof(
 );
 
 const arbRule: fc.Arbitrary<Rule> = fc
-	.tuple(arbRuleBase, fc.option(arbDate, { nil: undefined }))
-	.map(([r, until]) => (until === undefined ? r : { ...r, until }));
+	.tuple(
+		arbRuleBase,
+		fc.option(arbDate, { nil: undefined }),
+		fc.option(arbDate, { nil: undefined }),
+	)
+	.map(([r, from, until]) => ({
+		...r,
+		...(from === undefined ? {} : { from }),
+		...(until === undefined ? {} : { until }),
+	}));
 
 describe("nextOccurrence ⊨ isOccurrence (property)", () => {
 	it("every non-null result is a member of the rule and strictly after 'after'", () => {
@@ -230,6 +283,9 @@ describe("nextOccurrence ⊨ isOccurrence (property)", () => {
 				if (next === null) return; // until исчерпан — легально
 				expect(compare(next, after)).toBe(1);
 				expect(isOccurrence(rule, next)).toBe(true);
+				if (rule.from !== undefined) {
+					expect(compare(next, rule.from)).toBeGreaterThanOrEqual(0);
+				}
 				if (rule.until !== undefined) {
 					expect(compare(next, rule.until)).toBeLessThanOrEqual(0);
 				}

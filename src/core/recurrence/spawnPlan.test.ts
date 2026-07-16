@@ -436,6 +436,44 @@ describe("planSpawns — MAX_ITERATIONS truncation (>1000 missed occurrences)", 
 	});
 });
 
+describe("planSpawns — from (нижняя граница шаблона)", () => {
+	it("шаблон с from в будущем не спавнит, курсор паркуется на from", () => {
+		const t = makeTemplate({
+			nextSpawn: null, // bootstrap
+			recurrence: "every day from 2026-08-01",
+			rawLine: "- [ ] Future habit 🔁 every day from 2026-08-01 🆔 rev-prio",
+		});
+		const res = plan([tpl(t)], { today: "2026-07-15" });
+		expect(res.spawns).toEqual([]);
+		expect(res.cursorAdvances).toEqual([{ templateId: "rev-prio", newCursor: "2026-08-01" }]);
+		expect(res.errors).toEqual([]);
+	});
+
+	it("не спавнит вхождений раньше from при курсоре до from (снап вперёд)", () => {
+		const t = makeTemplate({
+			nextSpawn: "2026-07-12", // до from — не член правила
+			recurrence: "every day from 2026-07-20",
+			rawLine: "- [ ] Bounded 🔁 every day from 2026-07-20 🆔 rev-prio 🔜 2026-07-12",
+		});
+		const res = plan([tpl(t)], { today: "2026-07-15" });
+		expect(res.spawns).toEqual([]);
+		expect(res.cursorAdvances).toEqual([{ templateId: "rev-prio", newCursor: "2026-07-20" }]);
+	});
+
+	it("спавнит начиная ровно с from, ничего раньше (catchUp all)", () => {
+		const t = makeTemplate({
+			taskId: "daily",
+			key: "id:daily",
+			nextSpawn: "2026-07-13",
+			recurrence: "every day from 2026-07-13",
+			rawLine: "- [ ] Standup 🔁 every day from 2026-07-13 🆔 daily 🔜 2026-07-13",
+		});
+		const res = plan([tpl(t)], { today: "2026-07-15", catchUp: "all" });
+		expect(res.spawns.map((s) => s.occurrence)).toEqual(["2026-07-13", "2026-07-14", "2026-07-15"]);
+		expect(res.cursorAdvances).toEqual([{ templateId: "daily", newCursor: "2026-07-16" }]);
+	});
+});
+
 describe("makeChildId", () => {
 	it("is <templateId>-<YYYYMMDD>", () => {
 		expect(makeChildId("rev-prio", "2026-07-31")).toBe("rev-prio-20260731");

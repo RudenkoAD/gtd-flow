@@ -1,12 +1,21 @@
 <script lang="ts">
 	import { Notice, type App } from "obsidian";
+	import { derived, get, type Readable } from "svelte/store";
+	import {
+		NS_CONVENTION,
+		nsTargetPath,
+		type NamespaceDef,
+		type NamespaceFilter,
+	} from "../../core/namespace/namespace";
 	import { defaultInboxConfig } from "../../core/query/querySpec";
 	import type { IntentDispatcher } from "../../services/WritebackService";
 	import type { GtdFlowSettings } from "../../settings/Settings";
 	import { inboxStore } from "../../stores/derived/queryStore";
 	import type { TaskStore } from "../../stores/taskStore";
+	import NamespaceSwitcher from "../common/NamespaceSwitcher.svelte";
+	import { namespaceLabel } from "../common/namespaceSwitcher";
 	import TaskCard from "../common/TaskCard.svelte";
-	import { captureTarget, ensureCaptureFile } from "../common/taskActions";
+	import { captureTargetInNamespace, ensureCaptureFileNs } from "../common/taskActions";
 	import type { TaskMenuPorts } from "../common/taskMenu";
 	import VirtualList from "../common/VirtualList.svelte";
 	import type { DndPort } from "../dnd/types";
@@ -21,6 +30,9 @@
 		dnd = null,
 		menuPorts = null,
 		vault,
+		activeNamespace,
+		namespaces,
+		setActiveNamespace,
 	}: {
 		taskStore: TaskStore;
 		dispatcher: IntentDispatcher;
@@ -32,7 +44,22 @@
 		menuPorts?: TaskMenuPorts | null;
 		/** Структурный порт записи для быстрого ввода; совместим с VaultAdapter. */
 		vault: InboxWritePort;
+		/** Реактивное активное пространство (plugin.activeNamespace$). */
+		activeNamespace: Readable<string>;
+		/** Снимок списка пространств (settings.namespaces). */
+		namespaces: readonly NamespaceDef[];
+		/** Глобальная смена активного пространства (plugin.setActiveNamespace). */
+		setActiveNamespace: (name: string) => void;
 	} = $props();
+
+	// Фильтр пространства для inboxStore: derive из активного пространства + список
+	// корней. Смена активного инвалидирует мемо-ключ стора (ось nsKey) и пере-рендерит
+	// подпиской — эпоху индекса это не бампает (см. память проекта).
+	// svelte-ignore state_referenced_locally
+	const namespace$: Readable<NamespaceFilter> = derived(activeNamespace, (a) => ({
+		active: a,
+		defs: namespaces,
+	}));
 
 	// props фиксированы на время монтирования (вид пересоздаётся с leaf) —
 	// одноразовый снимок при инициализации намеренный
@@ -41,6 +68,7 @@
 		taskStore,
 		defaultInboxConfig(settings.inboxSources, settings.inboxIncludePlain),
 		settings.debounceMs.queryRecompute,
+		namespace$,
 	);
 	// svelte-ignore state_referenced_locally
 	const today = taskStore.today;
@@ -48,6 +76,8 @@
 	let query = $state("");
 	const shown = $derived(filterTasks($tasks, query));
 	const filtered = $derived(query.trim() !== "");
+	/** Метка активного пространства для пустого состояния — только когда настроено. */
+	const nsLabel = $derived(namespaces.length === 0 ? null : namespaceLabel($activeNamespace));
 
 	// --- быстрый ввод новой задачи (append в первый gtd-inbox файл, фолбэк inboxSources[0]) ---
 	let newTask = $state("");
@@ -55,18 +85,22 @@
 	async function addTask(): Promise<void> {
 		const transform = inboxCaptureTransform(newTask);
 		if (transform === null) return; // пусто после санитации — молча ничего
-		// цель захвата вычисляется В МОМЕНТ ввода: первый файл gtd-inbox из живого
-		// индекса, иначе фолбэк на настройку inboxSources[0]
-		const target = captureTarget(taskStore.index().all(), settings.inboxSources);
-		if (target === undefined) {
+		// цель захвата — В ПРОСТРАНСТВЕ активного namespace, В МОМЕНТ ввода: первый
+		// файл gtd-inbox этого пространства из живого индекса, иначе конвенционный
+		// <root>/Входящие.md (именованное) или inboxSources[0] («Общее»).
+		const active = get(activeNamespace);
+		const fallback = nsTargetPath(active, namespaces, NS_CONVENTION.inbox, settings.inboxSources[0] ?? "");
+		const target = captureTargetInNamespace(taskStore.index().all(), active, namespaces, fallback);
+		if (target === "") {
 			new Notice("GTD Flow: не задан файл входящих (inboxSources)");
 			return;
 		}
 		const entered = newTask;
 		newTask = ""; // очистка сразу — быстрый ввод серии, фокус остаётся на input
 		try {
-			// файл входящих создаётся и помечается gtd-inbox: true СТРОГО до записи строки
-			if (!(await ensureCaptureFile(vault, target))) {
+			// файл входящих создаётся и помечается gtd-inbox: true (+ gtd-namespace для
+			// файла-исключения вне корня пространства) СТРОГО до записи строки
+			if (!(await ensureCaptureFileNs(vault, target, active, namespaces))) {
 				new Notice(`GTD Flow: не удалось подготовить файл входящих ${target}\nТекст: ${entered}`, 0);
 				return;
 			}
@@ -106,6 +140,7 @@
 			placeholder="Фильтр…"
 			bind:value={query}
 		/>
+		<NamespaceSwitcher active={activeNamespace} {namespaces} onSelect={setActiveNamespace} />
 	</div>
 	<div class="gtd-inbox-new">
 		<input
@@ -118,7 +153,9 @@
 	</div>
 	{#if shown.length === 0}
 		<div class="gtd-inbox-empty">
-			{filtered ? "Ничего не найдено" : "Входящие пусты"}
+			{filtered ? "Ничего не найдено" : "Входящие пусты"}{nsLabel !== null && !filtered
+				? ` · ${nsLabel}`
+				: ""}
 		</div>
 	{:else}
 		<VirtualList items={shown}>

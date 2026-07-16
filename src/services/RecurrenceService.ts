@@ -24,6 +24,7 @@ import { MAX_ITERATIONS, nextOccurrence } from "../core/recurrence/nextOccurrenc
 import {
 	makeChildId,
 	planSpawns,
+	type PlannedSpawn,
 	type SpawnPlanResult,
 	type TemplateInfo,
 } from "../core/recurrence/spawnPlan";
@@ -65,6 +66,15 @@ export interface RecurrenceDeps {
 	indexReady: () => boolean;
 	/** Создать файл-цель спавна (и папку), если его ещё нет (VaultAdapter.ensureFile). */
 	ensureFile: (path: string) => Promise<void>;
+	/**
+	 * Цель спавна для КОНКРЕТНОГО шаблона: копия регулярного идёт во входящие
+	 * ПРОСТРАНСТВА ШАБЛОНА (не активного!) — рабочий шаблон спавнит в рабочий inbox,
+	 * даже когда активна «Жизнь» (дизайн). Резолвинг пространства/цели инжектируется
+	 * (сервис не знает о Settings/defs): main.ts подставляет nsTargetPath(...). Опционален
+	 * — без него ВСЕ спавны идут в единый settings().spawnTarget (обратная совместимость,
+	 * поведение до пространств; тесты без деп-функции им и пользуются).
+	 */
+	spawnTargetFor?: (template: Task) => string;
 	/** Генератор 🆔; по умолчанию 6 символов base36 (как в WritebackService/CardService). */
 	genId?: () => string;
 }
@@ -181,6 +191,19 @@ export class RecurrenceService implements RecurrencePort {
 		this.genId = deps.genId ?? defaultGenId;
 	}
 
+	/**
+	 * Файл-цель спавна шаблона: деп-функция spawnTargetFor (пространство ШАБЛОНА),
+	 * иначе единый глобальный settings().spawnTarget (обратная совместимость).
+	 * template === undefined (шаблон исчез из индекса между планом и записью) —
+	 * тоже глобальный фолбэк.
+	 */
+	private spawnTargetOf(template: Task | undefined): string {
+		if (this.deps.spawnTargetFor !== undefined && template !== undefined) {
+			return this.deps.spawnTargetFor(template);
+		}
+		return this.deps.settings().spawnTarget;
+	}
+
 	private locked<T>(fn: () => Promise<T>): Promise<T> {
 		const run = this.mutex.then(fn, fn);
 		this.mutex = run.then(
@@ -245,6 +268,9 @@ export class RecurrenceService implements RecurrencePort {
 		const templates: TemplateInfo[] = [];
 		const idless: Task[] = [];
 		const existingIds = new Set<string>();
+		// templateId → задача-шаблон: нужна на фазе записи, чтобы развести спавны
+		// по входящим ПРОСТРАНСТВА каждого шаблона (spawnTargetOf).
+		const templateById = new Map<string, Task>();
 		// 🆔, вписанные нами в прошлых проходах этой сессии, индекс мог ещё не
 		// увидеть (дебаунс) — держим занятыми, чтобы freshId не выдал дубликат
 		for (const injected of this.injectedIds.values()) existingIds.add(injected);
@@ -258,6 +284,7 @@ export class RecurrenceService implements RecurrencePort {
 			const rule: Rule | ParseError =
 				t.recurrence === null ? { error: "missing 🔁 rule" } : parseRule(t.recurrence);
 			templates.push({ task: t, rule });
+			templateById.set(t.taskId, t);
 		}
 
 		// 1a. Ленивая инъекция 🆔 в шаблоны без него (ТЗ §6: детерминированный
@@ -280,8 +307,13 @@ export class RecurrenceService implements RecurrencePort {
 			report.errors.push({ templateId: e.templateId, message: e.message });
 		}
 
-		// 2. СНАЧАЛА копии: один processFile на весь батч
-		const failedSpawnTemplates = await this.applySpawns(plan, settings.spawnTarget, report);
+		// 2. СНАЧАЛА копии: спавны группируются по файлу-цели (входящие пространства
+		//    шаблона), по одному processFile на цель.
+		const failedSpawnTemplates = await this.applySpawns(
+			plan,
+			(templateId) => this.spawnTargetOf(templateById.get(templateId)),
+			report,
+		);
 
 		// 3. ПОТОМ курсоры; шаблонам с незаписанной копией курсор не двигаем —
 		//    иначе вхождение потеряно (следующий проход его уже не увидит)
@@ -340,38 +372,57 @@ export class RecurrenceService implements RecurrencePort {
 		return null;
 	}
 
-	/** Возвращает templateId, чьи копии НЕ записаны (их курсоры трогать нельзя). */
+	/**
+	 * Возвращает templateId, чьи копии НЕ записаны (их курсоры трогать нельзя).
+	 * Спавны группируются по файлу-цели (targetOf по templateId → входящие
+	 * пространства шаблона) — по одному ensureFile+processFile на цель. Отказ
+	 * записи одной цели помечает failed ТОЛЬКО её шаблоны: курсоры шаблонов
+	 * других пространств двигаются штатно (их копии легли). report.spawned
+	 * аккумулируется по всем целям.
+	 */
 	private async applySpawns(
 		plan: SpawnPlanResult,
-		spawnTarget: string,
+		targetOf: (templateId: string) => string,
 		report: SpawnReport,
 	): Promise<Set<string>> {
 		const failed = new Set<string>();
 		if (plan.spawns.length === 0) return failed;
-		try {
-			await this.deps.ensureFile(spawnTarget);
-			let transformRan = false;
-			let appended = 0;
-			await this.deps.write.processFile(spawnTarget, (content) => {
-				transformRan = true;
-				appended = 0; // transform может быть вызван повторно — считаем заново
-				const present = collectContentIds(content, spawnTarget);
-				const fresh = plan.spawns.filter((s) => !present.has(s.childId));
-				if (fresh.length === 0) return null; // все уже в файле (гонка/повтор) — ноль записей
-				appended = fresh.length;
-				return appendToContent(content, fresh.map((s) => s.instanceLine).join("\n"));
-			});
-			if (!transformRan) {
-				// файла нет даже после ensureFile — копий нет, курсоры не двигаем
-				for (const s of plan.spawns) failed.add(s.templateId);
-				report.errors.push({ templateId: null, message: `spawn target missing: ${spawnTarget}` });
-			} else {
-				report.spawned = appended;
+
+		// разложить спавны по файлу-цели (сохраняя порядок внутри группы)
+		const byTarget = new Map<string, PlannedSpawn[]>();
+		for (const s of plan.spawns) {
+			const target = targetOf(s.templateId);
+			const list = byTarget.get(target);
+			if (list !== undefined) list.push(s);
+			else byTarget.set(target, [s]);
+		}
+
+		for (const [target, spawns] of byTarget) {
+			try {
+				await this.deps.ensureFile(target);
+				let transformRan = false;
+				let appended = 0;
+				await this.deps.write.processFile(target, (content) => {
+					transformRan = true;
+					appended = 0; // transform может быть вызван повторно — считаем заново
+					const present = collectContentIds(content, target);
+					const fresh = spawns.filter((s) => !present.has(s.childId));
+					if (fresh.length === 0) return null; // все уже в файле (гонка/повтор) — ноль записей
+					appended = fresh.length;
+					return appendToContent(content, fresh.map((s) => s.instanceLine).join("\n"));
+				});
+				if (!transformRan) {
+					// файла нет даже после ensureFile — копий этой цели нет, курсоры не двигаем
+					for (const s of spawns) failed.add(s.templateId);
+					report.errors.push({ templateId: null, message: `spawn target missing: ${target}` });
+				} else {
+					report.spawned += appended;
+				}
+			} catch (err) {
+				// отказ записи цели: НИ ОДНА её копия не легла (vault.process атомарен)
+				for (const s of spawns) failed.add(s.templateId);
+				report.errors.push({ templateId: null, message: `spawn append failed: ${errorMessage(err)}` });
 			}
-		} catch (err) {
-			// отказ записи: считаем, что НИ ОДНА копия не легла (vault.process атомарен)
-			for (const s of plan.spawns) failed.add(s.templateId);
-			report.errors.push({ templateId: null, message: `spawn append failed: ${errorMessage(err)}` });
 		}
 		return failed;
 	}
@@ -543,7 +594,8 @@ export class RecurrenceService implements RecurrencePort {
 		const spawn = plan.spawns[0];
 		if (spawn === undefined) return { ok: false, reason: "plan-empty" }; // недостижимо
 
-		const target = this.deps.settings().spawnTarget;
+		// внеплановая копия идёт во входящие ПРОСТРАНСТВА ШАБЛОНА (как плановый спавн)
+		const target = this.spawnTargetOf(tpl);
 		try {
 			await this.deps.ensureFile(target);
 			let transformRan = false;

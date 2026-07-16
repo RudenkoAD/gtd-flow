@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { BoardDef } from "../core/board/boardFile";
 import type { Task } from "../core/model/Task";
+import { type NamespaceFilter } from "../core/namespace/namespace";
 import { FakeFeed, makeTask } from "../stores/testSupport";
 import {
 	BoardService,
@@ -44,7 +45,7 @@ interface Harness {
 	service: BoardService;
 }
 
-function makeHarness(): Harness {
+function makeHarness(nsFilter?: () => NamespaceFilter): Harness {
 	const queue: string[] = [];
 	const feed = new FakeFeed("2026-07-15");
 	const dispatcher = new FakeDispatcher(queue);
@@ -69,6 +70,7 @@ function makeHarness(): Harness {
 			ensured.push(path);
 		},
 		containerPaths: () => [...containers],
+		...(nsFilter !== undefined ? { namespaceFilter: nsFilter } : {}),
 	});
 	return { feed, dispatcher, queue, frontmatters, patched, containers, ensured, service };
 }
@@ -199,6 +201,72 @@ describe("BoardService.discoverBoards", () => {
 		expect(boards).toEqual([]);
 		expect(errors).toHaveLength(1);
 		expect(errors[0]!.error).toMatch(/columns/);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// discoverBoards — фильтр по активному пространству
+// ---------------------------------------------------------------------------
+
+describe("BoardService.discoverBoards: фильтр по пространству", () => {
+	const DEFS = [
+		{ name: "Работа", root: "Work" },
+		{ name: "Жизнь", root: "Личное" },
+	];
+
+	function seedTwoBoards(h: Harness): void {
+		h.containers.add("Work/Доски/Спринт.md");
+		h.containers.add("Личное/Доски/Дом.md");
+		h.frontmatters.set("Work/Доски/Спринт.md", {
+			"gtd-board": true,
+			id: "sprint",
+			columns: [{ id: "todo", match: "#kanban/sprint/todo" }],
+		});
+		h.frontmatters.set("Личное/Доски/Дом.md", {
+			"gtd-board": true,
+			id: "home",
+			columns: [{ id: "todo", match: "#kanban/home/todo" }],
+		});
+	}
+
+	it("активное именованное пространство показывает только свои доски", () => {
+		let active = "Работа";
+		const h = makeHarness(() => ({ active, defs: DEFS }));
+		seedTwoBoards(h);
+
+		expect(h.service.discoverBoards().boards.map((b) => b.path)).toEqual(["Work/Доски/Спринт.md"]);
+		active = "Жизнь";
+		expect(h.service.discoverBoards().boards.map((b) => b.path)).toEqual(["Личное/Доски/Дом.md"]);
+	});
+
+	it("пустой defs ⇒ фильтр прозрачен (обе доски)", () => {
+		const h = makeHarness(() => ({ active: "Работа", defs: [] }));
+		seedTwoBoards(h);
+		expect(h.service.discoverBoards().boards).toHaveLength(2);
+	});
+
+	it("gtd-namespace override уводит доску в другое пространство", () => {
+		const h = makeHarness(() => ({ active: "Жизнь", defs: DEFS }));
+		h.containers.add("Work/Доски/Личная.md");
+		h.frontmatters.set("Work/Доски/Личная.md", {
+			"gtd-board": true,
+			"gtd-namespace": "Жизнь",
+			id: "personal",
+			columns: [{ id: "todo", match: "#kanban/personal/todo" }],
+		});
+		// физически в Work/, но override → видна в «Жизни»
+		expect(h.service.discoverBoards().boards.map((b) => b.path)).toEqual(["Work/Доски/Личная.md"]);
+	});
+
+	it("createBoard видит id ВСЕХ пространств (уникальность #kanban/<id> глобальна)", async () => {
+		const h = makeHarness(() => ({ active: "Работа", defs: DEFS }));
+		seedTwoBoards(h); // есть доска id 'home' в «Жизни», активна «Работа»
+		// создаём доску с именем, чей slug = 'home' → id должен уникализироваться
+		const res = await h.service.createBoard("Work/Доски/home.md", "home");
+		expect(res.ok).toBe(true);
+		const created = h.frontmatters.get("Work/Доски/home.md")!;
+		// 'home' занят в другом пространстве → суффикс, иначе карточки слились бы по тегу
+		expect(created["id"]).toBe("home-2");
 	});
 });
 

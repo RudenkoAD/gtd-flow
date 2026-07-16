@@ -25,6 +25,13 @@ export class ProjectsOverviewView extends GtdView {
 			taskStore: plugin.taskStore,
 			projects: plugin.projects ?? null,
 			app: plugin.app,
+			// Пространства (namespaces): реактивный источник активного, список
+			// определений и сеттер — для NamespaceSwitcher в шапке и ns-цели нового
+			// проекта. Смена активного не бампает эпоху индекса — вид пере-рендерится
+			// подпиской на activeNamespace$ (см. память проекта), как на epoch.
+			activeNamespace$: plugin.activeNamespace$,
+			namespaces: plugin.settings.namespaces,
+			setActiveNamespace: (name: string) => plugin.setActiveNamespace(name),
 			openProject: (projectPath: string) => void this.openProjectGraph(projectPath),
 		};
 	}

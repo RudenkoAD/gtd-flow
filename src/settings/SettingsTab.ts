@@ -9,9 +9,11 @@ import type { CalendarField } from "./Settings";
 import {
 	CALENDAR_FIELDS,
 	formatDeferPresets,
+	formatNamespaces,
 	formatPathList,
 	parseDeferPresets,
 	parseIntInRange,
+	parseNamespaces,
 	parsePathList,
 	reorderCalendarPlacement,
 } from "./settingsFormat";
@@ -45,6 +47,7 @@ export class GtdSettingsTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 		this.sectionInbox(containerEl);
+		this.sectionNamespaces(containerEl);
 		this.sectionProjects(containerEl);
 		this.sectionCalendar(containerEl);
 		this.sectionDefer(containerEl);
@@ -95,6 +98,55 @@ export class GtdSettingsTab extends PluginSettingTab {
 					await this.save();
 				});
 			});
+	}
+
+	// ── Пространства ──────────────────────────────────────────────────────────
+
+	private sectionNamespaces(el: HTMLElement): void {
+		new Setting(el).setName("Пространства GTD").setHeading();
+
+		const setting = new Setting(el)
+			.setName("Список пространств")
+			.setDesc(
+				"Несколько независимых GTD в одном хранилище: «Имя: корневая/папка», по одной " +
+					"на строку. Пример: «Работа: Areas/Work». Файл принадлежит пространству с самым " +
+					"длинным совпавшим корнем; всё вне корней — встроенное пространство «Общее». " +
+					"Frontmatter «gtd-namespace: Имя» перебивает папку (для файла-исключения вне своей " +
+					"папки). Пусто (по умолчанию) — пространств нет, поведение и интерфейс прежние. " +
+					"Активное пространство переключается селектором в шапках видов или командой " +
+					"«Переключить пространство GTD».",
+			);
+		// Живая валидация: нераспознанные строки не сохраняются и перечисляются тут.
+		const errorEl = el.createDiv({ cls: "setting-item-description mod-warning" });
+		setting.addTextArea((text) => {
+			text.inputEl.rows = 4;
+			text.setPlaceholder("Работа: Areas/Work\nЛичное: Areas/Personal");
+			text.setValue(formatNamespaces(this.plugin.settings.namespaces));
+			text.onChange(async (raw) => {
+				const { namespaces, invalid } = parseNamespaces(raw);
+				errorEl.setText(
+					invalid.length > 0
+						? `Не распознано (формат «Имя: Папка», имя уникально): ${invalid.join("; ")}`
+						: "",
+				);
+				// мутация НА МЕСТЕ (splice), не подмена ссылки: смонтированные виды
+				// держат ссылку на этот массив в props — подмена оставила бы им
+				// застывший снапшот списка (ревью)
+				this.plugin.settings.namespaces.splice(
+					0,
+					this.plugin.settings.namespaces.length,
+					...namespaces,
+				);
+				// активное пространство могло указывать на удалённое/переименованное — нормализуем
+				// через setActiveNamespace: откатит к «Общему» и пере-рендерит виды своим store
+				// (смена настроек эпоху индекса не бампает). Он же персистит настройки.
+				this.plugin.setActiveNamespace(this.plugin.settings.activeNamespace);
+				// имя могло не смениться (setActiveNamespace тогда молчит) — форс-толчок,
+				// чтобы открытые виды перечитали обновлённый список пространств
+				this.plugin.pokeNamespaceViews();
+				await this.save();
+			});
+		});
 	}
 
 	// ── Проекты ─────────────────────────────────────────────────────────────

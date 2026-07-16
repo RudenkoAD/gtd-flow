@@ -82,6 +82,7 @@ vi.mock("obsidian", () => ({
 }));
 
 import { registerCommands } from "./commands";
+import { DEFAULT_NS } from "./core/namespace/namespace";
 import type GtdFlowPlugin from "./main";
 
 // --- обвязка ---
@@ -104,7 +105,8 @@ function makePlugin(over?: {
 	const processFrontmatter = vi.fn(over?.processFrontmatter ?? (() => Promise.resolve(true)));
 	const plugin = {
 		app: {},
-		settings: { inboxSources: ["GTD/Inbox.md"] },
+		// capture() пространств: активное «Общее» + пустой список ⇒ прежний фолбэк
+		settings: { inboxSources: ["GTD/Inbox.md"], activeNamespace: DEFAULT_NS, namespaces: [] },
 		vaultAdapter: { ensureFile, processFile, processFrontmatter },
 		// цель захвата теперь ищет gtd-inbox файлы в индексе; пустой индекс ⇒ фолбэк inboxSources[0]
 		taskStore: { index: () => ({ all: () => [] as never[] }) },

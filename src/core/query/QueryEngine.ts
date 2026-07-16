@@ -15,6 +15,7 @@ import {
 	type ResolveDep,
 } from "../model/gtdState";
 import { taskToCalendarEvent } from "../model/projections";
+import { inNamespace, type NamespaceFilter } from "../namespace/namespace";
 import type { InboxConfig, QuerySpec } from "./querySpec";
 
 export interface QueryContext {
@@ -22,6 +23,22 @@ export interface QueryContext {
 	today: IsoDate;
 	resolveDep: ResolveDep;
 	settingsBits: InboxConfig;
+	/**
+	 * Активное пространство + определения (per-namespace виды). Кросс-режущий
+	 * параметр, а не свойство отдельного QuerySpec: активное пространство одно на
+	 * всё приложение. Опционален и прозрачен по умолчанию — существующие вызовы
+	 * (без namespace) и пустой defs фильтр не меняют (обратная совместимость).
+	 * Применяется к inbox / tickler / all-templates / calendar-range (per-namespace
+	 * русла §1); project-members и active им не затрагиваются (см. evaluate).
+	 */
+	namespace?: NamespaceFilter;
+}
+
+/** Предикат активного пространства. Прозрачен (всегда true), когда namespace не
+ *  задан или пространств нет (defs пуст) — точка обратной совместимости. */
+function nsPredicate(ns: NamespaceFilter | undefined): (t: Task) => boolean {
+	if (ns === undefined || ns.defs.length === 0) return () => true;
+	return (t) => inNamespace(t.filePath, t.nsOverride ?? null, ns);
 }
 
 /**
@@ -69,30 +86,34 @@ export function isInTickler(t: Task, today: IsoDate): boolean {
 }
 
 export function evaluate(spec: QuerySpec, ctx: QueryContext): Task[] {
+	const inNs = nsPredicate(ctx.namespace);
 	switch (spec.kind) {
 		case "inbox": {
-			const out = collect(ctx.tasks, (t) => isInInbox(t, ctx));
+			const out = collect(ctx.tasks, (t) => inNs(t) && isInInbox(t, ctx));
 			out.sort(cmpInbox);
 			return out;
 		}
 		case "tickler": {
-			const out = collect(ctx.tasks, (t) => isInTickler(t, ctx.today));
+			const out = collect(ctx.tasks, (t) => inNs(t) && isInTickler(t, ctx.today));
 			out.sort(cmpTickler);
 			return out;
 		}
 		case "active": {
+			// active — тестовый запрос, в проде не строится: пространством не режем.
 			const out = collect(ctx.tasks, (t) => isActive(t, ctx.today));
 			out.sort(cmpLocation);
 			return out;
 		}
 		case "all-templates": {
-			const out = collect(ctx.tasks, (t) => isTemplate(t));
+			// Регулярные — per-namespace вид (шаблоны активного пространства), §дизайн.
+			const out = collect(ctx.tasks, (t) => inNs(t) && isTemplate(t));
 			out.sort(cmpLocation);
 			return out;
 		}
 		case "project-members": {
 			// Членство = задачи файла проекта (byFile, §7) — без фильтра по состоянию:
-			// вид проекта показывает и done, и blocked.
+			// вид проекта показывает и done, и blocked. Пространством не режем: сам файл
+			// проекта уже ns-консистентен (доска/проект отфильтрованы на этапе выбора).
 			const out = collect(ctx.tasks, (t) => t.filePath === spec.path);
 			out.sort(cmpLocation);
 			return out;
@@ -100,6 +121,8 @@ export function evaluate(spec: QuerySpec, ctx: QueryContext): Task[] {
 		case "calendar-range": {
 			const placed: { t: Task; date: IsoDate }[] = [];
 			for (const t of ctx.tasks) {
+				// не из активного пространства — мимо (per-namespace календарь §дизайн)
+				if (!inNs(t)) continue;
 				// EVENT-шаблоны рендерятся ОТДЕЛЬНО как виртуальные вхождения (expandOccurrences),
 				// сама строка события в календарь-диапазон как задача не протекает.
 				// ARCHIVED исключён здесь же: архив полностью инертен — зачёркнутая

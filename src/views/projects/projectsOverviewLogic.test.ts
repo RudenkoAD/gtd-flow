@@ -131,4 +131,23 @@ describe("newProjectPath", () => {
 		expect(newProjectPath([], "Альфа", (p) => taken.has(p))).toBe("Projects/Альфа 3.md");
 		expect(newProjectPath([], "Бета", (p) => taken.has(p))).toBe("Projects/Бета.md");
 	});
+
+	it("явный dir (namespace-цель) перебивает каталог существующих проектов", () => {
+		// вид передаёт nsTargetPath(active, defs, projectsDir, projectDir(existing)):
+		// проект именованного пространства ложится в <root>/Проекты, а не рядом с чужими
+		expect(newProjectPath(["Work/Beta.md"], "Гамма", () => false, "Жизнь/Проекты")).toBe(
+			"Жизнь/Проекты/Гамма.md",
+		);
+	});
+
+	it("явный dir === \"\" — проект в корне хранилища", () => {
+		expect(newProjectPath(["Work/Beta.md"], "Гамма", () => false, "")).toBe("Гамма.md");
+	});
+
+	it("явный dir + занятый путь — суффикс в том же каталоге", () => {
+		const taken = new Set(["Жизнь/Проекты/Гамма.md"]);
+		expect(newProjectPath([], "Гамма", (p) => taken.has(p), "Жизнь/Проекты")).toBe(
+			"Жизнь/Проекты/Гамма 2.md",
+		);
+	});
 });

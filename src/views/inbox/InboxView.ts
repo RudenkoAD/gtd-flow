@@ -34,6 +34,10 @@ export class InboxView extends GtdView {
 			menuPorts: taskMenuPortsFromPlugin(plugin),
 			// структурный порт InboxWritePort — совместим с VaultAdapter
 			vault: plugin.vaultAdapter,
+			// реактивный источник активного пространства + переключатель (глобально)
+			activeNamespace: plugin.activeNamespace$,
+			namespaces: plugin.settings.namespaces,
+			setActiveNamespace: (name: string) => plugin.setActiveNamespace(name),
 		};
 	}
 }

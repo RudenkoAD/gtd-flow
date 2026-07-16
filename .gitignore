@@ -1,5 +1,7 @@
 node_modules/
 main.js
+# настройки плагина в test-vault (junction указывает в корень репо)
+data.json
 .claude/settings.local.json
 # dev-хранилище для живой проверки в Obsidian — не часть плагина и может
 # содержать личные данные; в репозиторий не публикуется

@@ -100,21 +100,26 @@ export function sanitizeProjectName(name: string): string | null {
 }
 
 /**
- * Путь нового файла-проекта `<projectDir>/<имя>.md` (ТЗ NUX §6/§7). null — имя
+ * Путь нового файла-проекта `<dir>/<имя>.md` (ТЗ NUX §6/§7). null — имя
  * пустое после санитации: вызывающий показывает Notice и не создаёт проект.
  *
  * exists — проверка занятости пути в ХРАНИЛИЩЕ (vault.getFileByPath), а не только
  * среди известных проектов: createProject иначе дописал бы gtd-project в чужую
  * обычную заметку с совпавшим именем. Занято → суффикс « 2», « 3»…
+ *
+ * dir — явный каталог назначения (namespace-aware цель от вызывающего:
+ * nsTargetPath(active, defs, NS_CONVENTION.projectsDir, projectDir(...))). Без
+ * него (старые вызовы/тесты) — прежнее поведение: каталог рядом с существующими
+ * проектами (projectDir).
  */
 export function newProjectPath(
 	existingPaths: readonly string[],
 	name: string,
 	exists: (path: string) => boolean = () => false,
+	dir: string = projectDir(existingPaths),
 ): string | null {
 	const safe = sanitizeProjectName(name);
 	if (safe === null) return null;
-	const dir = projectDir(existingPaths);
 	const pathOf = (base: string): string => (dir === "" ? `${base}.md` : `${dir}/${base}.md`);
 	let path = pathOf(safe);
 	for (let n = 2; exists(path); n++) path = pathOf(`${safe} ${n}`);

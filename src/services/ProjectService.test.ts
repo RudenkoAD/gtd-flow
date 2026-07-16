@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Task } from "../core/model/Task";
+import { type NamespaceFilter } from "../core/namespace/namespace";
 import { parseTaskLine } from "../core/parser/parseTaskLine";
 import { FakeFeed, makeTask } from "../stores/testSupport";
 import { MOVE_DEBOUNCE_MS, ProjectService } from "./ProjectService";
@@ -47,7 +48,9 @@ interface Harness {
 	patchCount: () => number;
 }
 
-function makeHarness(opts: { today?: string; genId?: () => string } = {}): Harness {
+function makeHarness(
+	opts: { today?: string; genId?: () => string; nsFilter?: () => NamespaceFilter } = {},
+): Harness {
 	const queue: string[] = [];
 	const feed = new FakeFeed(opts.today ?? "2026-07-15");
 	const port = new FakePort(queue);
@@ -72,6 +75,7 @@ function makeHarness(opts: { today?: string; genId?: () => string } = {}): Harne
 			ensured.push(p);
 		},
 		containerPaths: () => [...containers],
+		...(opts.nsFilter !== undefined ? { namespaceFilter: opts.nsFilter } : {}),
 		dispatcher,
 		todayIso: () => feed.today(),
 		genId: opts.genId,
@@ -190,6 +194,51 @@ describe("ProjectService.discoverProjects", () => {
 		loadProject(h, P, ["- [ ] задача 🆔 aa1"], { name: "Ремонт" });
 		h.containers.add(P);
 		expect(h.svc.discoverProjects()).toHaveLength(1);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// discoverProjects — фильтр по активному пространству
+// ---------------------------------------------------------------------------
+
+describe("ProjectService.discoverProjects: фильтр по пространству", () => {
+	const DEFS = [
+		{ name: "Работа", root: "Work" },
+		{ name: "Жизнь", root: "Личное" },
+	];
+
+	function seedTwoProjects(h: Harness): void {
+		h.containers.add("Work/Проекты/Релиз.md");
+		h.containers.add("Личное/Проекты/Отпуск.md");
+		h.frontmatters.set("Work/Проекты/Релиз.md", { "gtd-project": true, name: "Релиз" });
+		h.frontmatters.set("Личное/Проекты/Отпуск.md", { "gtd-project": true, name: "Отпуск" });
+	}
+
+	it("активное именованное пространство показывает только свои проекты", () => {
+		let active = "Работа";
+		const h = makeHarness({ nsFilter: () => ({ active, defs: DEFS }) });
+		seedTwoProjects(h);
+
+		expect(h.svc.discoverProjects().map((s) => s.path)).toEqual(["Work/Проекты/Релиз.md"]);
+		active = "Жизнь";
+		expect(h.svc.discoverProjects().map((s) => s.path)).toEqual(["Личное/Проекты/Отпуск.md"]);
+	});
+
+	it("пустой defs ⇒ фильтр прозрачен (оба проекта)", () => {
+		const h = makeHarness({ nsFilter: () => ({ active: "Работа", defs: [] }) });
+		seedTwoProjects(h);
+		expect(h.svc.discoverProjects()).toHaveLength(2);
+	});
+
+	it("gtd-namespace override уводит проект в другое пространство", () => {
+		const h = makeHarness({ nsFilter: () => ({ active: "Жизнь", defs: DEFS }) });
+		h.containers.add("Work/Проекты/Личный.md");
+		h.frontmatters.set("Work/Проекты/Личный.md", {
+			"gtd-project": true,
+			"gtd-namespace": "Жизнь",
+			name: "Личный",
+		});
+		expect(h.svc.discoverProjects().map((s) => s.path)).toEqual(["Work/Проекты/Личный.md"]);
 	});
 });
 

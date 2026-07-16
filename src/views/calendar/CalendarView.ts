@@ -42,6 +42,10 @@ export class CalendarView extends GtdView {
 			// структурный порт CalendarWritePort — совместим с VaultAdapter
 			vault: plugin.vaultAdapter,
 			dayStatus: plugin.dayStatus,
+			// реактивный источник активного пространства + переключатель (глобально)
+			activeNamespace: plugin.activeNamespace$,
+			namespaces: plugin.settings.namespaces,
+			setActiveNamespace: (name: string) => plugin.setActiveNamespace(name),
 			persisted: { subscribe: this.persisted.subscribe },
 			persist: (s: CalendarPersistedState) => {
 				this.lastState = s;

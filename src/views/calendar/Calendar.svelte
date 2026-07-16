@@ -1,14 +1,23 @@
 <script lang="ts">
 	import { Notice, type App } from "obsidian";
-	import { get, type Readable } from "svelte/store";
+	import { derived, get, type Readable } from "svelte/store";
 	import type { IsoDate, Task } from "../../core/model/Task";
+	import {
+		inNamespace,
+		NS_CONVENTION,
+		nsTargetPath,
+		type NamespaceDef,
+		type NamespaceFilter,
+	} from "../../core/namespace/namespace";
 	import type { IntentDispatcher } from "../../services/WritebackService";
 	import type { GtdFlowSettings } from "../../settings/Settings";
 	import { calendarRangeStore } from "../../stores/derived/queryStore";
 	import type { TaskStore } from "../../stores/taskStore";
 	import { addDaysIso } from "../common/dates";
 	import { confirm } from "../common/ConfirmModal";
-	import { captureTarget, ensureCaptureFile } from "../common/taskActions";
+	import NamespaceSwitcher from "../common/NamespaceSwitcher.svelte";
+	import { namespaceLabel } from "../common/namespaceSwitcher";
+	import { captureTargetInNamespace, ensureCaptureFileNs } from "../common/taskActions";
 	import type { TaskMenuPorts } from "../common/taskMenu";
 	import type { DndPort, OccurrenceDrag } from "../dnd/types";
 	import DayCell from "./DayCell.svelte";
@@ -58,6 +67,9 @@
 		vault,
 		menuPorts = null,
 		dayStatus = null,
+		activeNamespace,
+		namespaces,
+		setActiveNamespace,
 		persisted,
 		persist,
 	}: {
@@ -69,10 +81,16 @@
 		dnd: DndPort | null;
 		/** Порты паритета без drag (меню/пикеры/карточка), ТЗ §8 слой 3. */
 		menuPorts?: TaskMenuPorts | null;
-		/** Быстрый ввод пишет в inboxSources[0] (структурный порт VaultAdapter). */
+		/** Быстрый ввод пишет в цель захвата активного пространства (структурный порт VaultAdapter). */
 		vault: CalendarWritePort;
 		/** Порт статусов дней (покраска календаря) или null. */
 		dayStatus?: DayStatusPort | null;
+		/** Реактивное активное пространство (plugin.activeNamespace$). */
+		activeNamespace: Readable<string>;
+		/** Снимок списка пространств (settings.namespaces). */
+		namespaces: readonly NamespaceDef[];
+		/** Глобальная смена активного пространства (plugin.setActiveNamespace). */
+		setActiveNamespace: (name: string) => void;
 		/** Состояние из workspace-раскладки; приходит ПОСЛЕ монтирования. */
 		persisted: Readable<CalendarPersistedState>;
 		persist: (s: CalendarPersistedState) => void;
@@ -82,6 +100,17 @@
 	// одноразовый снимок при инициализации намеренный
 	// svelte-ignore state_referenced_locally
 	const today = taskStore.today;
+
+	// Фильтр пространства: реактивный derive из активного namespace + список корней.
+	// Задачи/события календаря режутся по нему; смена активного пере-рендерит вид
+	// подпиской (эпоху индекса не бампает, см. память проекта).
+	// svelte-ignore state_referenced_locally
+	const namespace$: Readable<NamespaceFilter> = derived(activeNamespace, (a) => ({
+		active: a,
+		defs: namespaces,
+	}));
+	/** Метка активного пространства для шапки — только когда пространства настроены. */
+	const nsLabel = $derived(namespaces.length === 0 ? null : namespaceLabel($activeNamespace));
 
 	let mode = $state<CalendarMode>("month");
 	// svelte-ignore state_referenced_locally
@@ -108,19 +137,23 @@
 	// живой store на диапазон — подписка внутри $effect с отпиской при пересоздании.
 	let rangeTasks = $state<Task[]>([]);
 	$effect(() => {
+		// namespace$ — стабильная ссылка (не реактивная зависимость $effect): стор
+		// пересоздаётся лишь на смену диапазона, смену пространства он ловит своей
+		// внутренней подпиской (ось nsKey мемо-ключа).
 		const store = calendarRangeStore(
 			taskStore,
 			range.from,
 			range.to,
 			settings.calendarPlacement,
 			settings.debounceMs.queryRecompute,
+			namespace$,
 		);
 		return store.subscribe((v) => {
 			rangeTasks = v;
 		});
 	});
 
-	// Просроченные: события всего vault с датой < today; пересоздание на смене дня.
+	// Просроченные: события АКТИВНОГО пространства с датой < today; пересоздание на смене дня.
 	let overdueRaw = $state<Task[]>([]);
 	$effect(() => {
 		const store = calendarRangeStore(
@@ -129,23 +162,38 @@
 			addDaysIso($today, -1),
 			settings.calendarPlacement,
 			settings.debounceMs.queryRecompute,
+			namespace$,
 		);
 		return store.subscribe((v) => {
 			overdueRaw = v;
 		});
 	});
 
-	// Серии-события (container events) — из индекса, реактивно по epoch.
-	// В calendar-range QueryEngine их не отдаёт: рендерим ОТДЕЛЬНО как виртуальные
-	// вхождения (expandEventOccurrences), пере-сборка при смене видимого диапазона.
+	// Серии-события (container events) — из индекса, реактивно по epoch И по смене
+	// активного пространства. В calendar-range QueryEngine их не отдаёт: рендерим
+	// ОТДЕЛЬНО как виртуальные вхождения (expandEventOccurrences). Серия событий —
+	// per-namespace: EVENT-задачи режем через inNamespace ДО разворачивания вхождений
+	// (шов сервисной фазы: событийная серия принадлежит своему пространству).
 	let eventSeries = $state<Task[]>([]);
-	$effect(() =>
-		taskStore.epoch.subscribe(() => {
+	$effect(() => {
+		const recompute = (filter: NamespaceFilter): void => {
 			const out: Task[] = [];
-			for (const t of taskStore.index().all()) if (t.container === "events") out.push(t);
+			for (const t of taskStore.index().all())
+				if (t.container === "events" && inNamespace(t.filePath, t.nsOverride ?? null, filter))
+					out.push(t);
 			eventSeries = out;
-		}),
-	);
+		};
+		let filter = get(namespace$);
+		const unsubNs = namespace$.subscribe((f) => {
+			filter = f;
+			recompute(filter);
+		});
+		const unsubEpoch = taskStore.epoch.subscribe(() => recompute(filter));
+		return () => {
+			unsubNs();
+			unsubEpoch();
+		};
+	});
 	const eventsByDay = $derived(expandEventOccurrences(eventSeries, range.from, range.to));
 
 	// --- статусы дней (покраска календаря) ---
@@ -296,13 +344,18 @@
 	): Promise<void> {
 		const line = quickAddLine(text, date, time, timeEnd);
 		if (line === null) return;
-		const target = captureTarget(taskStore.index().all(), settings.inboxSources);
-		if (target === undefined) {
+		// цель захвата — В АКТИВНОМ пространстве, В МОМЕНТ ввода: его первый gtd-inbox
+		// файл, иначе <root>/Входящие.md (именованное) / inboxSources[0] («Общее»).
+		const active = get(activeNamespace);
+		const fallback = nsTargetPath(active, namespaces, NS_CONVENTION.inbox, settings.inboxSources[0] ?? "");
+		const target = captureTargetInNamespace(taskStore.index().all(), active, namespaces, fallback);
+		if (target === "") {
 			new Notice("GTD Flow: не задан файл входящих (inboxSources)");
 			return;
 		}
-		// файл входящих создаётся и помечается gtd-inbox: true СТРОГО до записи строки
-		if (!(await ensureCaptureFile(vault, target))) {
+		// файл входящих создаётся и помечается gtd-inbox: true (+ gtd-namespace для
+		// файла-исключения вне корня пространства) СТРОГО до записи строки
+		if (!(await ensureCaptureFileNs(vault, target, active, namespaces))) {
 			new Notice(`GTD Flow: не удалось подготовить файл входящих ${target}`);
 			return;
 		}
@@ -343,6 +396,14 @@
 	/** ПКМ по пустому месту → «Повторяющееся событие…»: модал → createEventSeries.
 	 *  time — из слота тайм-сетки (prefill), null для DayCell (месяц/неделя/агенда). */
 	function createEvent(date: IsoDate, time: string | null): void {
+		// цель серии — файл событий АКТИВНОГО пространства: <root>/События.md
+		// (именованное) или settings.eventsFile («Общее»); значение берём в момент ПКМ.
+		const eventsFile = nsTargetPath(
+			get(activeNamespace),
+			namespaces,
+			NS_CONVENTION.events,
+			settings.eventsFile,
+		);
 		new EventSeriesModal(
 			app,
 			{ name: "", rule: "", time: time ?? "" },
@@ -350,7 +411,7 @@
 			(name, ruleText) => {
 				void createEventSeries({
 					vault,
-					eventsFile: settings.eventsFile,
+					eventsFile,
 					name,
 					ruleText,
 				}).then((res) => {
@@ -369,7 +430,7 @@
 			<button onclick={goToday}>Сегодня</button>
 			<button aria-label="Вперёд" onclick={goNext}>›</button>
 		</div>
-		<span class="gtd-cal-title">{title}</span>
+		<span class="gtd-cal-title">{title}{nsLabel !== null ? ` · ${nsLabel}` : ""}</span>
 		{#if overdue.length > 0}
 			<button
 				class="gtd-cal-overdue"
@@ -384,6 +445,7 @@
 				<button class:is-active={mode === m.id} onclick={() => setMode(m.id)}>{m.label}</button>
 			{/each}
 		</div>
+		<NamespaceSwitcher active={activeNamespace} {namespaces} onSelect={setActiveNamespace} />
 	</div>
 
 	{#if mode === "agenda"}

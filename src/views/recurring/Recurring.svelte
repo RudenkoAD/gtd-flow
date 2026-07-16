@@ -1,5 +1,13 @@
 <script lang="ts">
 	import { Menu, Notice, type App } from "obsidian";
+	import { derived, get, type Readable } from "svelte/store";
+	import {
+		DEFAULT_NS,
+		NS_CONVENTION,
+		nsTargetPath,
+		type NamespaceDef,
+		type NamespaceFilter,
+	} from "../../core/namespace/namespace";
 	import { isParseError } from "../../core/recurrence/grammar";
 	import type { CardPort } from "../../services/CardService";
 	import type { RecurrencePort, SpawnReport } from "../../services/RecurrenceService";
@@ -9,8 +17,10 @@
 	import type { TaskStore } from "../../stores/taskStore";
 	import { segmentDescription } from "../common/cardFormat";
 	import { confirm } from "../common/ConfirmModal";
+	import NamespaceSwitcher from "../common/NamespaceSwitcher.svelte";
+	import { namespaceLabel } from "../common/namespaceSwitcher";
 	import { openTaskInFile } from "../common/openTask";
-	import { recurringFilePaths } from "../common/taskActions";
+	import { recurringFilePathsInNamespace } from "../common/taskActions";
 	import { RuleEditModal } from "./RuleEditModal";
 	import { TemplateCreateModal } from "./TemplateCreateModal";
 	import {
@@ -31,6 +41,9 @@
 		recurrence = null,
 		cards = null,
 		vault,
+		activeNamespace,
+		namespaces,
+		setActiveNamespace,
 	}: {
 		taskStore: TaskStore;
 		/** Удаление строки-шаблона идёт штатным delete-line, а не RecurrencePort. */
@@ -43,16 +56,32 @@
 		cards?: CardPort | null;
 		/** Структурный порт файла шаблонов (создание шаблона с нуля); ~ VaultAdapter. */
 		vault: TemplateVaultPort;
+		/** Реактивное активное пространство (plugin.activeNamespace$). */
+		activeNamespace: Readable<string>;
+		/** Снимок списка пространств (settings.namespaces). */
+		namespaces: readonly NamespaceDef[];
+		/** Глобальная смена активного пространства (plugin.setActiveNamespace). */
+		setActiveNamespace: (name: string) => void;
 	} = $props();
+
+	// Фильтр пространства для templatesStore: смена активного пере-рендерит вид
+	// подпиской стора (эпоху индекса не бампает, см. память проекта).
+	// svelte-ignore state_referenced_locally
+	const namespace$: Readable<NamespaceFilter> = derived(activeNamespace, (a) => ({
+		active: a,
+		defs: namespaces,
+	}));
 
 	// props фиксированы на время монтирования (вид пересоздаётся с leaf) —
 	// одноразовый снимок при инициализации намеренный
 	// svelte-ignore state_referenced_locally
-	const templates = templatesStore(taskStore, settings.debounceMs.queryRecompute);
+	const templates = templatesStore(taskStore, settings.debounceMs.queryRecompute, namespace$);
 	// svelte-ignore state_referenced_locally
 	const today = taskStore.today;
 	// svelte-ignore state_referenced_locally
 	const epoch = taskStore.epoch;
+	/** Метка активного пространства для шапки/пустого состояния — только когда настроено. */
+	const nsLabel = $derived(namespaces.length === 0 ? null : namespaceLabel($activeNamespace));
 
 	const groups = $derived(
 		groupByFileAndHeading($templates.map((t) => buildTemplateVM(t, $today))),
@@ -95,10 +124,18 @@
 		new TemplateCreateModal(app, (name, ruleText) => {
 			void (async () => {
 				try {
+					// цель ＋ Шаблон — в АКТИВНОМ пространстве: первый его gtd-recurring
+					// файл, иначе <root>/Регулярные.md (именованное) / логика spawnTarget
+					// («Общее»). Значение активного берём в момент подтверждения модала.
+					const active = get(activeNamespace);
 					const res = await createTemplate({
 						vault,
-						recurringFiles: recurringFilePaths(taskStore.index().all()),
+						recurringFiles: recurringFilePathsInNamespace(taskStore.index().all(), active, namespaces),
 						spawnTarget: settings.recurring.spawnTarget,
+						recurringFallback:
+							active === DEFAULT_NS
+								? undefined
+								: nsTargetPath(active, namespaces, NS_CONVENTION.recurring, ""),
 						name,
 						ruleText,
 					});
@@ -246,6 +283,8 @@
 				создано {lastReport.spawned} · курсоров {lastReport.advanced} · дедуп {lastReport.deduped}
 			</span>
 		{/if}
+		<span class="gtd-rec-spacer"></span>
+		<NamespaceSwitcher active={activeNamespace} {namespaces} onSelect={setActiveNamespace} />
 	</div>
 
 	{#if recurrence === null}
@@ -353,7 +392,7 @@
 		</section>
 	{:else}
 		<div class="gtd-rec-empty">
-			<p>Пока нет ни одного шаблона.</p>
+			<p>Пока нет ни одного шаблона{nsLabel !== null ? ` · ${nsLabel}` : ""}.</p>
 			<button class="mod-cta" onclick={createTemplateNow}>＋ Создать шаблон</button>
 		</div>
 	{/each}
@@ -375,6 +414,9 @@
 	.gtd-rec-report {
 		color: var(--text-muted);
 		font-size: var(--font-ui-smaller, 0.85em);
+	}
+	.gtd-rec-spacer {
+		flex: 1 1 auto;
 	}
 	.gtd-rec-hint {
 		padding: 6px 10px;

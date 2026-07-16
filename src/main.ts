@@ -1,6 +1,14 @@
 import { Notice, Plugin, WorkspaceLeaf } from "obsidian";
+import { writable, type Writable } from "svelte/store";
 import { VIEW_META, VIEW_TYPES, type GtdViewKind } from "./views/registry";
 import { DEFAULT_SETTINGS, type GtdFlowSettings } from "./settings/Settings";
+import {
+	NS_CONVENTION,
+	type NamespaceFilter,
+	normalizeActiveNamespace,
+	nsTargetPath,
+	resolveNamespace,
+} from "./core/namespace/namespace";
 import { mergeSettings } from "./settings/mergeSettings";
 import { GtdSettingsTab } from "./settings/SettingsTab";
 import { MetadataAdapter } from "./adapters/MetadataAdapter";
@@ -33,10 +41,19 @@ export default class GtdFlowPlugin extends Plugin {
 	projects!: ProjectService;
 	cards!: CardService;
 	dayStatus!: DayStatusService;
+	/**
+	 * Реактивный источник активного пространства для видов (per-namespace виды
+	 * подписываются на него). Отдельный store, а НЕ epoch индекса: смена активного
+	 * пространства настроек эпоху не бампает (см. память проекта), поэтому виды
+	 * пере-рендерятся именно этой подпиской. Инициализируется в onload из настроек.
+	 */
+	activeNamespace$!: Writable<string>;
 	private indexReadyFlag = false;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
+		// нормализованное активное пространство → реактивный store (см. поле выше)
+		this.activeNamespace$ = writable(this.settings.activeNamespace);
 
 		const metadata = new MetadataAdapter(this);
 		// Гейт ленивого frontmatter-индекса: до резолва metadataCache он построился
@@ -74,6 +91,7 @@ export default class GtdFlowPlugin extends Plugin {
 			containerPaths: () =>
 				fmIndexReady ? metadata.pathsByFrontmatterValue("gtd-board", true) : [],
 			knownTaskId: (key) => this.dispatcher.knownTaskId(key),
+			namespaceFilter: () => this.namespaceFilter(),
 		});
 		this.dnd = new DndService(this);
 		this.recurrence = new RecurrenceService({
@@ -89,6 +107,21 @@ export default class GtdFlowPlugin extends Plugin {
 			ensureFile: async (path) => {
 				await ensureCaptureFile(this.vaultAdapter, path);
 			},
+			// копия регулярного идёт во входящие ПРОСТРАНСТВА ШАБЛОНА (не активного):
+			// именованное — <root>/Входящие.md, «Общее» — глобальный spawnTarget.
+			spawnTargetFor: (template) => {
+				const ns = resolveNamespace(
+					template.filePath,
+					template.nsOverride ?? null,
+					this.settings.namespaces,
+				);
+				return nsTargetPath(
+					ns,
+					this.settings.namespaces,
+					NS_CONVENTION.inbox,
+					this.settings.recurring.spawnTarget,
+				);
+			},
 		});
 		clock.onDayRollover(() => void this.recurrence.runPass());
 		this.projects = new ProjectService({
@@ -101,6 +134,7 @@ export default class GtdFlowPlugin extends Plugin {
 			ensureFile: (path) => this.vaultAdapter.ensureFile(path),
 			containerPaths: () =>
 				fmIndexReady ? metadata.pathsByFrontmatterValue("gtd-project", true) : [],
+			namespaceFilter: () => this.namespaceFilter(),
 			dispatcher: this.dispatcher,
 			todayIso: () => clock.todayIso(),
 		});
@@ -281,9 +315,46 @@ export default class GtdFlowPlugin extends Plugin {
 		// поключевое слияние вложенных объектов — плоский assign терял бы
 		// вложенные дефолты при частичном data.json (см. mergeSettings)
 		this.settings = mergeSettings(DEFAULT_SETTINGS, (await this.loadData()) as unknown);
+		// активное пространство могло указывать на удалённое из namespaces — откат
+		// к «Общему», иначе фильтр резал бы все виды в пустоту
+		this.settings.activeNamespace = normalizeActiveNamespace(
+			this.settings.activeNamespace,
+			this.settings.namespaces,
+		);
 	}
 
 	async saveSettings(): Promise<void> {
 		await this.saveData(this.settings);
+	}
+
+	/** Текущий фильтр пространства для сервисов (discovery, цели) — читает из
+	 *  настроек (всегда актуальны, синхронны с activeNamespace$). */
+	namespaceFilter(): NamespaceFilter {
+		return { active: this.settings.activeNamespace, defs: this.settings.namespaces };
+	}
+
+	/**
+	 * Переключить активное пространство: персист в настройках + толчок реактивного
+	 * store (виды пере-рендерятся своей подпиской, не через epoch). Неизвестное имя
+	 * нормализуется к «Общему». Команда палитры и селекторы шапок зовут это.
+	 */
+	setActiveNamespace(name: string): void {
+		const next = normalizeActiveNamespace(name, this.settings.namespaces);
+		if (next === this.settings.activeNamespace) return;
+		this.settings.activeNamespace = next;
+		this.activeNamespace$.set(next);
+		void this.saveSettings();
+	}
+
+	/**
+	 * Форс-пере-рендер подписчиков activeNamespace$ после правки СПИСКА пространств
+	 * при неизменном активном имени: writable не публикует равные строки
+	 * (safe_not_equal), поэтому синхронный проход «сентинел → назад». DOM Svelte
+	 * обновляет после microtask — пользователь видит только финальное состояние.
+	 */
+	pokeNamespaceViews(): void {
+		const cur = this.settings.activeNamespace;
+		this.activeNamespace$.set(" __ns_poke__");
+		this.activeNamespace$.set(cur);
 	}
 }

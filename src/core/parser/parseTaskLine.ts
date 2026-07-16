@@ -32,6 +32,10 @@ export interface ParseContext {
 	heading: string | null;
 	container: ContainerKind;
 	projectActive: boolean;
+	/** Сырой frontmatter gtd-namespace файла (override пространства). Опционально:
+	 *  отсутствие ⇒ Task.nsOverride = null. Индексатор прокидывает сюда
+	 *  snap.context.nsOverride; синтетические парсы (write-back) его не задают. */
+	nsOverride?: string | null;
 }
 
 export type DatePayload =
@@ -252,5 +256,6 @@ export function parseTaskLine(rawLine: string, ctx: ParseContext): Task | null {
 		tags,
 		container: ctx.container,
 		projectActive: ctx.projectActive,
+		nsOverride: ctx.nsOverride ?? null,
 	};
 }

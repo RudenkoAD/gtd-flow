@@ -19,6 +19,8 @@ import { applyOrder, patchOrder } from "../core/board/ordering";
 import type { MoveColumn } from "../core/intents/Intent";
 import { isDeferred } from "../core/model/gtdState";
 import type { Task } from "../core/model/Task";
+import { inNamespace, type NamespaceFilter } from "../core/namespace/namespace";
+import { frontmatterNamespace } from "./snapshotHelpers";
 import type { IndexFeed } from "./types";
 import type { IntentDispatcher, IntentResult } from "./WritebackService";
 
@@ -35,6 +37,15 @@ export interface BoardServiceDeps {
 	containerPaths: () => string[];
 	/** 🆔 с учётом памяти вписанных в окне дебаунса (WritebackService.knownTaskId). */
 	knownTaskId?: (key: string) => string | null;
+	/**
+	 * Активное пространство + defs для фильтрации ПУБЛИЧНОГО discovery (пикеры и
+	 * список досок вида показывают только активное пространство, дизайн). Прозрачен
+	 * (defs пуст) ⇒ фильтра нет. Опционален: без него discovery глобальна (обратная
+	 * совместимость). ВАЖНО: уникальность board.id (createBoard) остаётся ГЛОБАЛЬНОЙ —
+	 * #kanban/<id> тег общий для хранилища, совпавший id слил бы карточки досок из
+	 * разных пространств; поэтому createBoard перечисляет доски БЕЗ этого фильтра.
+	 */
+	namespaceFilter?: () => NamespaceFilter;
 }
 
 export interface DiscoveredBoard {
@@ -84,7 +95,19 @@ export class BoardService {
 
 	// --- discovery ---
 
+	/** Публичный discovery: доски АКТИВНОГО пространства (пикеры/список вида). */
 	discoverBoards(): BoardDiscovery {
+		return this.enumerateBoards(this.deps.namespaceFilter?.());
+	}
+
+	/**
+	 * Перечислить доски хранилища; при переданном непрозрачном nsFilter оставить
+	 * только доски активного пространства (по пути + frontmatter-override
+	 * gtd-namespace). Без фильтра — все доски (createBoard использует это для
+	 * ГЛОБАЛЬНОЙ уникальности board.id).
+	 */
+	private enumerateBoards(nsFilter?: NamespaceFilter): BoardDiscovery {
+		const filtering = nsFilter !== undefined && nsFilter.defs.length > 0;
 		const paths = new Set<string>();
 		for (const t of this.deps.feed.getIndex().all()) {
 			if (t.container === "board") paths.add(t.filePath);
@@ -96,6 +119,10 @@ export class BoardService {
 		const errors: BoardDiscoveryError[] = [];
 		for (const path of [...paths].sort()) {
 			const fm = this.deps.readFrontmatter(path);
+			// пространство считаем по пути + override (fm может быть null в гонке —
+			// тогда override null, членство решает папка); чужие пространства — мимо,
+			// включая их ошибки (в активном пространстве их не показываем)
+			if (filtering && !inNamespace(path, frontmatterNamespace(fm), nsFilter)) continue;
 			if (fm === null) {
 				// гонка: файл только что удалён/переименован, а индекс ещё не догнал
 				errors.push({ path, error: "frontmatter unavailable" });
@@ -341,7 +368,9 @@ export class BoardService {
 		const trimmed = name.trim();
 		if (trimmed === "") return { ok: false, reason: "empty-name" };
 		// id, занятые существующими досками, — ДО правки файла; суффиксы -2, -3…
-		const takenIds = new Set(this.discoverBoards().boards.map((b) => b.def.id));
+		// перечисление ГЛОБАЛЬНОЕ (enumerateBoards без фильтра): #kanban/<id> тег
+		// общий для хранилища, id обязан быть уникален по ВСЕМ пространствам.
+		const takenIds = new Set(this.enumerateBoards().boards.map((b) => b.def.id));
 		const base = slugifyColumnName(trimmed) || "board";
 		let id = base;
 		for (let n = 2; takenIds.has(id); n++) id = `${base}-${n}`;

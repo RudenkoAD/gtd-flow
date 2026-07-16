@@ -32,6 +32,10 @@ export class TicklerView extends GtdView {
 			app: plugin.app,
 			dnd: plugin.dnd ?? null,
 			menuPorts: taskMenuPortsFromPlugin(plugin),
+			// реактивный источник активного пространства + переключатель (глобально)
+			activeNamespace: plugin.activeNamespace$,
+			namespaces: plugin.settings.namespaces,
+			setActiveNamespace: (name: string) => plugin.setActiveNamespace(name),
 		};
 	}
 }

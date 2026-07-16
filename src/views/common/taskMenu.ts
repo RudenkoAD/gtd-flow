@@ -21,10 +21,11 @@ import { localTodayIso } from "../../services/snapshotHelpers";
 import { confirm } from "./ConfirmModal";
 import { openTaskInFile } from "./openTask";
 import { pickBoardColumn, pickDate, pickProject } from "./pickers";
+import { NS_CONVENTION, nsTargetPath, resolveNamespace } from "../../core/namespace/namespace";
 import {
 	ensureArchiveFile,
 	moveTaskToTemplates,
-	recurringFilePaths,
+	recurringFilePathsInNamespace,
 	type FrontmatterVaultPort,
 } from "./taskActions";
 import {
@@ -59,10 +60,12 @@ export interface ProjectMenuPort {
 	discoverProjects(): ProjectSummary[];
 }
 
-/** Порты «Сделать шаблоном…»: где лежат шаблоны и чем создать файл. */
+/** Порты «Сделать шаблоном…»: где лежат шаблоны и чем создать файл.
+ *  Методы принимают задачу: цели считаются в ЕЁ пространстве (не активном) —
+ *  иначе шаблон утекал бы в первый глобальный файл регулярных (ревью). */
 export interface TemplateMenuPort {
-	recurringFiles(): string[];
-	spawnTarget(): string;
+	recurringFiles(task: Task): string[];
+	spawnTarget(task: Task): string;
 	vault: FrontmatterVaultPort;
 }
 
@@ -93,8 +96,21 @@ export function taskMenuPortsFromPlugin(plugin: GtdFlowPlugin): TaskMenuPorts {
 			processFrontmatter: (path, fn) => plugin.vaultAdapter.processFrontmatter(path, fn),
 		},
 		template: {
-			recurringFiles: () => recurringFilePaths(plugin.taskStore.index().all()),
-			spawnTarget: () => plugin.settings.recurring.spawnTarget,
+			// пространство ЗАДАЧИ (не активное): шаблон уходит в регулярные своего
+			// пространства; «Общее» с пустым defs — прежнее глобальное поведение
+			recurringFiles: (task) =>
+				recurringFilePathsInNamespace(
+					plugin.taskStore.index().all(),
+					resolveNamespace(task.filePath, task.nsOverride ?? null, plugin.settings.namespaces),
+					plugin.settings.namespaces,
+				),
+			spawnTarget: (task) =>
+				nsTargetPath(
+					resolveNamespace(task.filePath, task.nsOverride ?? null, plugin.settings.namespaces),
+					plugin.settings.namespaces,
+					NS_CONVENTION.inbox,
+					plugin.settings.recurring.spawnTarget,
+				),
 			vault: {
 				ensureFile: (path) => plugin.vaultAdapter.ensureFile(path),
 				processFrontmatter: (path, fn) => plugin.vaultAdapter.processFrontmatter(path, fn),
@@ -263,7 +279,13 @@ async function archiveTask(ctx: TaskMenuCtx): Promise<void> {
 		new Notice("GTD Flow: архивирование недоступно");
 		return;
 	}
-	const archiveFile = ctx.settings.archiveFile;
+	// архив ПРОСТРАНСТВА задачи: именованное — <root>/Архив.md, «Общее» — настройка
+	const archiveFile = nsTargetPath(
+		resolveNamespace(ctx.task.filePath, ctx.task.nsOverride ?? null, ctx.settings.namespaces),
+		ctx.settings.namespaces,
+		NS_CONVENTION.archive,
+		ctx.settings.archiveFile,
+	);
 	if (!(await ensureArchiveFile(archive, archiveFile))) {
 		new Notice("GTD Flow: не удалось создать файл архива");
 		return;
@@ -392,8 +414,8 @@ async function runMenuAction(ctx: TaskMenuCtx, action: MenuAction): Promise<void
 			if (tpl == null) return;
 			const res = await moveTaskToTemplates({
 				taskKey: ctx.task.key,
-				recurringFiles: tpl.recurringFiles(),
-				spawnTarget: tpl.spawnTarget(),
+				recurringFiles: tpl.recurringFiles(ctx.task),
+				spawnTarget: tpl.spawnTarget(ctx.task),
 				vault: tpl.vault,
 				dispatcher: ctx.dispatcher,
 			});

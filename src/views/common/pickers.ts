@@ -6,9 +6,11 @@
 import { FuzzySuggestModal, type App } from "obsidian";
 import type { BoardDef } from "../../core/board/boardFile";
 import type { IsoDate } from "../../core/model/Task";
+import { DEFAULT_NS, type NamespaceDef } from "../../core/namespace/namespace";
 import type { DiscoveredBoard } from "../../services/BoardService";
 import type { ProjectSummary } from "../../services/ProjectService";
 import { DatePromptModal } from "./DatePromptModal";
+import { namespaceLabel } from "./namespaceSwitcher";
 
 interface PickItem<T> {
 	label: string;
@@ -93,6 +95,27 @@ export function pickProject(
 	}));
 	return new Promise((resolve) => {
 		new PickModal(app, items, "Проект…", resolve).open();
+	});
+}
+
+/**
+ * Пикер активного пространства GTD (команда «Переключить пространство GTD»):
+ * «Общее» (sentinel DEFAULT_NS) + именованные; текущее активное помечено «✓».
+ * value — имя/sentinel для plugin.setActiveNamespace. null — закрыт без выбора.
+ * Пустой список — caller не открывает (команда скрыта при отсутствии пространств).
+ */
+export function pickNamespace(
+	app: App,
+	namespaces: readonly NamespaceDef[],
+	active: string,
+): Promise<string | null> {
+	const mark = (value: string, label: string): string => (value === active ? `${label} ✓` : label);
+	const items: PickItem<string>[] = [
+		{ label: mark(DEFAULT_NS, namespaceLabel(DEFAULT_NS)), value: DEFAULT_NS },
+		...namespaces.map((d) => ({ label: mark(d.name, d.name), value: d.name })),
+	];
+	return new Promise((resolve) => {
+		new PickModal(app, items, "Пространство GTD…", resolve).open();
 	});
 }
 

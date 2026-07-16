@@ -172,6 +172,9 @@ export class IndexerService implements IndexFeed {
 				heading: item.heading,
 				container: snap.context.container,
 				projectActive,
+				// перебивка пространства (frontmatter gtd-namespace) — без прокидки
+				// override не доехал бы до Task и фича была бы мертва (ревью)
+				nsOverride: snap.context.nsOverride ?? null,
 			});
 			if (task === null) continue;
 			parsed.push(task.lineEnd === item.lineEnd ? task : { ...task, lineEnd: item.lineEnd });

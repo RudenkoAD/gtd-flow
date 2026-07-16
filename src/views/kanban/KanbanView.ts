@@ -39,6 +39,13 @@ export class KanbanView extends GtdView {
 			dispatcher: plugin.dispatcher,
 			settings: plugin.settings,
 			app: plugin.app,
+			// Пространства (namespaces): реактивный источник активного, список
+			// определений и сеттер — для NamespaceSwitcher в шапке и ns-цели новой
+			// доски. Смена активного не бампает эпоху индекса — вид пере-рендерится
+			// подпиской на activeNamespace$ (см. память проекта), как на epoch.
+			activeNamespace$: plugin.activeNamespace$,
+			namespaces: plugin.settings.namespaces,
+			setActiveNamespace: (name: string) => plugin.setActiveNamespace(name),
 			boards: plugin.boards ?? null,
 			dnd: plugin.dnd ?? null,
 			menuPorts: taskMenuPortsFromPlugin(plugin),

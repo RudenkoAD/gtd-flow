@@ -170,6 +170,44 @@ describe("fileContextFromFrontmatter", () => {
 	});
 });
 
+describe("fileContextFromFrontmatter — gtd-namespace (override пространства)", () => {
+	it("непустая строка → nsOverride (обрезанный)", () => {
+		expect(fileContextFromFrontmatter("x.md", { "gtd-namespace": "Работа" }).nsOverride).toBe(
+			"Работа",
+		);
+		expect(fileContextFromFrontmatter("x.md", { "gtd-namespace": "  Жизнь  " }).nsOverride).toBe(
+			"Жизнь",
+		);
+	});
+
+	it("отсутствие / пусто / пробелы / не-строка → ключ nsOverride опущен", () => {
+		// омичен, а не null: снапшот без override не отличается от «до пространств»
+		expect(fileContextFromFrontmatter("x.md", {})).not.toHaveProperty("nsOverride");
+		expect(fileContextFromFrontmatter("x.md", { "gtd-namespace": "" })).not.toHaveProperty(
+			"nsOverride",
+		);
+		expect(fileContextFromFrontmatter("x.md", { "gtd-namespace": "   " })).not.toHaveProperty(
+			"nsOverride",
+		);
+		expect(fileContextFromFrontmatter("x.md", { "gtd-namespace": 42 })).not.toHaveProperty(
+			"nsOverride",
+		);
+		expect(fileContextFromFrontmatter("x.md", { "gtd-namespace": true })).not.toHaveProperty(
+			"nsOverride",
+		);
+		expect(fileContextFromFrontmatter("x.md", undefined)).not.toHaveProperty("nsOverride");
+	});
+
+	it("override сосуществует с флагами контейнера (не влияет на container)", () => {
+		const ctx = fileContextFromFrontmatter("b.md", {
+			"gtd-board": true,
+			"gtd-namespace": "Работа",
+		});
+		expect(ctx.container).toBe("board");
+		expect(ctx.nsOverride).toBe("Работа");
+	});
+});
+
 describe("localTodayIso", () => {
 	it("форматирует локальную дату с ведущими нулями", () => {
 		expect(localTodayIso(new Date(2026, 0, 5))).toBe("2026-01-05");

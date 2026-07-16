@@ -1,6 +1,7 @@
-import { get } from "svelte/store";
+import { get, writable } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Task } from "../../core/model/Task";
+import type { NamespaceFilter } from "../../core/namespace/namespace";
 import { evaluate } from "../../core/query/QueryEngine";
 import { defaultInboxConfig } from "../../core/query/querySpec";
 import { createTaskStore, type TaskStore } from "../taskStore";
@@ -236,6 +237,102 @@ describe("готовые фабрики: реальный evaluate поверх 
 		const items = get(store);
 		expect(items.length).toBe(1);
 		expect(items[0]?.filePath).toBe("R/monthly.md");
+		ts.dispose();
+	});
+});
+
+describe("per-namespace фильтр запросов и реактивность", () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	const DEFS = [
+		{ name: "Работа", root: "Work" },
+		{ name: "Жизнь", root: "Личное" },
+	];
+
+	function seedTwoInboxes(feed: FakeFeed): void {
+		feed.replaceFile("Work/Входящие.md", [
+			makeTask({ filePath: "Work/Входящие.md", lineStart: 1, container: "inbox" }),
+		]);
+		feed.replaceFile("Личное/Входящие.md", [
+			makeTask({ filePath: "Личное/Входящие.md", lineStart: 1, container: "inbox" }),
+		]);
+	}
+
+	it("inboxStore режет по активному пространству; смена ns пере-считывает без bump epoch", () => {
+		const feed = new FakeFeed("2026-07-15");
+		const ts = createTaskStore(feed);
+		seedTwoInboxes(feed);
+		const ns$ = writable<NamespaceFilter>({ active: "Работа", defs: DEFS });
+		const store = inboxStore(ts, defaultInboxConfig([]), 50, ns$);
+		let value: Task[] = [];
+		const un = store.subscribe((v) => {
+			value = v;
+		});
+		expect(value.map((t) => t.filePath)).toEqual(["Work/Входящие.md"]);
+
+		// переключение активного пространства — только через store, epoch не бампается
+		ns$.set({ active: "Жизнь", defs: DEFS });
+		vi.advanceTimersByTime(50);
+		expect(value.map((t) => t.filePath)).toEqual(["Личное/Входящие.md"]);
+
+		// «Общее» (DEFAULT_NS-подобное именованное отсутствие) — ни одного файла из корней
+		ns$.set({ active: "Работа", defs: DEFS });
+		vi.advanceTimersByTime(50);
+		expect(value.map((t) => t.filePath)).toEqual(["Work/Входящие.md"]);
+		un();
+		ts.dispose();
+	});
+
+	it("пустой defs ⇒ фильтр прозрачен (все inbox-файлы, обратная совместимость)", () => {
+		const feed = new FakeFeed("2026-07-15");
+		const ts = createTaskStore(feed);
+		seedTwoInboxes(feed);
+		const ns$ = writable<NamespaceFilter>({ active: "Работа", defs: [] });
+		const store = inboxStore(ts, defaultInboxConfig([]), 50, ns$);
+		expect(get(store).map((t) => t.filePath).sort()).toEqual([
+			"Work/Входящие.md",
+			"Личное/Входящие.md",
+		]);
+		ts.dispose();
+	});
+
+	it("без namespace$ фильтра нет (существующие виды не меняются)", () => {
+		const feed = new FakeFeed("2026-07-15");
+		const ts = createTaskStore(feed);
+		seedTwoInboxes(feed);
+		const store = inboxStore(ts, defaultInboxConfig([]));
+		expect(get(store).length).toBe(2);
+		ts.dispose();
+	});
+
+	it("смена ns инвалидирует мемо-ключ (пересчёт), несмотря на равные epoch/today", () => {
+		const feed = new FakeFeed("2026-07-15");
+		const ts = createTaskStore(feed);
+		seedTwoInboxes(feed);
+		const ns$ = writable<NamespaceFilter>({ active: "Работа", defs: DEFS });
+		const spy = vi.fn(evaluate);
+		const store = createQueryStore(
+			ts,
+			{ kind: "inbox" },
+			{ settingsBits: defaultInboxConfig([]), namespace$: ns$, evaluate: spy },
+			50,
+		);
+		const un = store.subscribe(() => {});
+		expect(spy).toHaveBeenCalledTimes(1);
+
+		ns$.set({ active: "Жизнь", defs: DEFS });
+		vi.advanceTimersByTime(50);
+		expect(spy).toHaveBeenCalledTimes(2);
+		// тот же active повторно — ключ не изменился, пересчёта нет
+		ns$.set({ active: "Жизнь", defs: DEFS });
+		vi.advanceTimersByTime(50);
+		expect(spy).toHaveBeenCalledTimes(2);
+		un();
 		ts.dispose();
 	});
 });

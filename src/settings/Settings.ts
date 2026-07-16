@@ -1,5 +1,7 @@
 /** Модель настроек (ТЗ §9). Персистится через loadData/saveData. */
 
+import { DEFAULT_NS, type NamespaceDef } from "../core/namespace/namespace";
+
 export type PromoteTo = "origin" | "inbox";
 export type CatchUpPolicy = "latest" | "all" | "none";
 export type CalendarField = "due" | "scheduled" | "start";
@@ -55,6 +57,16 @@ export interface GtdFlowSettings {
 	/** Пройден ли онбординг: приветственный диалог показывается один раз на чистом
 	 *  хранилище (см. src/onboarding). Существующему пользователю выставляется молча. */
 	onboarded: boolean;
+	/** Пользовательские пространства (гибрид «пространство = папка»): имя → корневая
+	 *  папка. Пустой список (по умолчанию) ⇒ пространств не настроено, поведение и UI
+	 *  прежние (обратная совместимость без единой настройки). Массив заменяется целиком
+	 *  при слиянии (см. mergeSettings). Резолвинг/членство — src/core/namespace. */
+	namespaces: NamespaceDef[];
+	/** Активное пространство — ОДНО на всё приложение, персистится. Sentinel DEFAULT_NS
+	 *  («Общее») по умолчанию: всё вне пользовательских корней и без frontmatter-override.
+	 *  При загрузке нормализуется (см. normalizeActiveNamespace): удалённое из namespaces
+	 *  пространство откатывается к DEFAULT_NS. */
+	activeNamespace: string;
 }
 
 export const DEFAULT_SETTINGS: GtdFlowSettings = {
@@ -86,4 +98,6 @@ export const DEFAULT_SETTINGS: GtdFlowSettings = {
 	archiveFile: "GTD/Archive.md",
 	dayStatusFile: "GTD/DayStatus.md",
 	onboarded: false,
+	namespaces: [],
+	activeNamespace: DEFAULT_NS,
 };

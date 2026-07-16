@@ -39,6 +39,13 @@ export class ProjectView extends GtdView {
 			app: plugin.app,
 			projects: plugin.projects ?? null,
 			settings: plugin.settings,
+			// Пространства (namespaces): реактивный источник активного, список
+			// определений и сеттер — для NamespaceSwitcher в шапке и ns-цели нового
+			// проекта. Смена активного не бампает эпоху индекса — вид пере-рендерится
+			// подпиской на activeNamespace$ (см. память проекта), как на epoch.
+			activeNamespace$: plugin.activeNamespace$,
+			namespaces: plugin.settings.namespaces,
+			setActiveNamespace: (name: string) => plugin.setActiveNamespace(name),
 			menuPorts: taskMenuPortsFromPlugin(plugin),
 			// Выход из графа проекта в обзор «Проекты» (симметрично openProject там).
 			openOverview: () => void plugin.activateView("projects"),

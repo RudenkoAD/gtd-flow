@@ -8,6 +8,15 @@
 	import type { TaskMenuPorts } from "../common/taskMenu";
 	import type { DndPort } from "../dnd/types";
 	import Column from "./Column.svelte";
+	// Общий переключатель пространств из views/common (создаётся параллельной зоной;
+	// гейт-фаза срастит реальный компонент). Контракт props — см. использование ниже.
+	import NamespaceSwitcher from "../common/NamespaceSwitcher.svelte";
+	import { namespaceLabel } from "../common/namespaceSwitcher";
+	import {
+		NS_CONVENTION,
+		nsTargetPath,
+		type NamespaceDef,
+	} from "../../core/namespace/namespace";
 	import {
 		boardDirFromInbox,
 		buildColumnVMs,
@@ -22,6 +31,9 @@
 		dispatcher,
 		settings,
 		app,
+		activeNamespace$,
+		namespaces,
+		setActiveNamespace,
 		boards,
 		dnd,
 		menuPorts = null,
@@ -33,6 +45,12 @@
 		dispatcher: IntentDispatcher;
 		settings: GtdFlowSettings;
 		app: App;
+		/** Реактивный источник активного пространства (plugin.activeNamespace$). */
+		activeNamespace$: Readable<string>;
+		/** Определения пространств (settings.namespaces); пусто ⇒ switcher скрыт. */
+		namespaces: readonly NamespaceDef[];
+		/** Переключатель активного пространства (plugin.setActiveNamespace). */
+		setActiveNamespace: (name: string) => void;
 		/** null до интеграции этапа 4 в main.ts (plugin.boards). */
 		boards: BoardService | null;
 		/** null — drag выключен (plugin.dnd ещё не подключён / телефон). */
@@ -52,6 +70,14 @@
 	const epoch = taskStore.epoch;
 	// svelte-ignore state_referenced_locally
 	const today = taskStore.today;
+	// Активное пространство — как epoch: одноразовый снимок стора; подписка ($activeNs)
+	// пере-запускает discovery на переключение (смена активного эпоху НЕ бампает).
+	// svelte-ignore state_referenced_locally
+	const activeNs = activeNamespace$;
+	// switcher виден только при настроенных пространствах (ТЗ, обратная совместимость);
+	// метка активного для пустых состояний (DEFAULT_NS → «Общее»).
+	const hasNamespaces = $derived(namespaces.length >= 1);
+	const activeLabel = $derived(namespaceLabel($activeNs));
 
 	// настройка появится в SettingsTab позже; поле читаем опционально
 	// svelte-ignore state_referenced_locally
@@ -69,6 +95,7 @@
 
 	const discovery = $derived.by(() => {
 		void $epoch; // доски живут в индексе — пересканируем на каждую его смену
+		void $activeNs; // и на смену активного: discoverBoards фильтрует по пространству
 		return boards === null ? { boards: [], errors: [] } : boards.discoverBoards();
 	});
 	const shownPath = $derived(pickBoardPath(discovery.boards, defaultBoardPath, selectedPath));
@@ -174,7 +201,14 @@
 		if (boards === null) return;
 		const svc = boards;
 		new TextPromptModal(app, "Новая доска", "", "Название доски", (name) => {
-			const dir = boardDirFromInbox(settings.inboxSources);
+			// Каталог новой доски — активного пространства: <root>/Доски для именованного,
+			// иначе (Общее / без пространств) прежний каталог из настроек входящих.
+			const dir = nsTargetPath(
+				$activeNs,
+				namespaces,
+				NS_CONVENTION.boardsDir,
+				boardDirFromInbox(settings.inboxSources),
+			);
 			// уникализуем путь по реальным файлам хранилища: createBoard не должен
 			// дописать флаг доски в чужую заметку с тем же именем
 			const path = uniqueBoardPath(dir, name, (p) => app.vault.getFileByPath(p) !== null);
@@ -213,6 +247,10 @@
 
 <div class="gtd-kanban">
 	<div class="gtd-kanban-header">
+		{#if hasNamespaces}
+			<!-- Глобальный переключатель пространства; виден только при настроенных пространствах -->
+			<NamespaceSwitcher active={activeNamespace$} {namespaces} setActive={setActiveNamespace} />
+		{/if}
 		<select
 			class="dropdown gtd-kanban-select"
 			aria-label="Доска"
@@ -248,7 +286,7 @@
 		<div class="gtd-kanban-empty">Kanban не подключён (сервис досок недоступен)</div>
 	{:else if model === null}
 		<div class="gtd-kanban-empty">
-			<p>Досок пока нет.</p>
+			<p>{hasNamespaces ? `В пространстве «${activeLabel}» досок нет.` : "Досок пока нет."}</p>
 			<button class="mod-cta gtd-kanban-create-board" onclick={promptCreateBoard}>
 				＋ Создать доску
 			</button>

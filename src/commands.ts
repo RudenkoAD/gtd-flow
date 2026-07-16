@@ -13,10 +13,11 @@ import type GtdFlowPlugin from "./main";
 import type { CardPort } from "./services/CardService";
 import type { Task } from "./core/model/Task";
 import { appendLine } from "./views/calendar/calendarLogic";
-import { pickBoardColumn, pickDate } from "./views/common/pickers";
+import { NS_CONVENTION, nsTargetPath } from "./core/namespace/namespace";
+import { pickBoardColumn, pickDate, pickNamespace } from "./views/common/pickers";
 import {
-	captureTarget,
-	ensureCaptureFile,
+	captureTargetInNamespace,
+	ensureCaptureFileNs,
 	findTaskAtLine,
 	quickCaptureLine,
 } from "./views/common/taskActions";
@@ -53,6 +54,30 @@ export function registerCommands(plugin: GtdFlowPlugin): void {
 		name: "Задачу под курсором — в колонку…",
 		editorCallback: (editor, ctx) => void columnAtCursor(plugin, editor, ctx.file?.path ?? null),
 	});
+
+	// Переключатель активного пространства виден в палитре ТОЛЬКО когда настроено
+	// ≥1 пространство (checkCallback вернёт false → команда скрыта): иначе поведение
+	// и палитра прежние — обратная совместимость без единой настройки.
+	plugin.addCommand({
+		id: "switch-namespace",
+		name: "Переключить пространство GTD",
+		checkCallback: (checking) => {
+			if (plugin.settings.namespaces.length === 0) return false;
+			if (!checking) void switchNamespace(plugin);
+			return true;
+		},
+	});
+}
+
+/** Пикер пространства → глобальное переключение (нормализация/персист — в setActiveNamespace). */
+async function switchNamespace(plugin: GtdFlowPlugin): Promise<void> {
+	const name = await pickNamespace(
+		plugin.app,
+		plugin.settings.namespaces,
+		plugin.settings.activeNamespace,
+	);
+	if (name === null) return;
+	plugin.setActiveNamespace(name);
 }
 
 // ---------------------------------------------------------------------------
@@ -99,15 +124,20 @@ class QuickCaptureModal extends Modal {
 async function capture(plugin: GtdFlowPlugin, text: string): Promise<void> {
 	const line = quickCaptureLine(text);
 	if (line === null) return; // пустой ввод — молча ничего
-	// цель захвата вычисляется В МОМЕНТ ввода: первый gtd-inbox файл, иначе фолбэк
-	const target = captureTarget(plugin.taskStore.index().all(), plugin.settings.inboxSources);
-	if (target === undefined) {
+	// цель захвата — в АКТИВНОМ пространстве, В МОМЕНТ ввода: первый gtd-inbox файл
+	// этого пространства, иначе <root>/Входящие.md (именованное) / inboxSources[0]
+	const active = plugin.settings.activeNamespace;
+	const defs = plugin.settings.namespaces;
+	const fallback = nsTargetPath(active, defs, NS_CONVENTION.inbox, plugin.settings.inboxSources[0] ?? "");
+	const target = captureTargetInNamespace(plugin.taskStore.index().all(), active, defs, fallback);
+	if (target === "") {
 		new Notice("GTD Flow: не задан файл входящих (inboxSources)");
 		return;
 	}
 	try {
-		// файл входящих создаётся и помечается gtd-inbox: true СТРОГО до записи строки
-		if (!(await ensureCaptureFile(plugin.vaultAdapter, target))) {
+		// файл входящих создаётся и помечается gtd-inbox: true (+ gtd-namespace для
+		// файла-исключения вне корня пространства) СТРОГО до записи строки
+		if (!(await ensureCaptureFileNs(plugin.vaultAdapter, target, active, defs))) {
 			new Notice(`GTD Flow: не удалось подготовить файл входящих ${target}\nТекст: ${text}`, 0);
 			return;
 		}

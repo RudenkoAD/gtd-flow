@@ -55,7 +55,35 @@ export function snapshotListItems(
 const PROJECT_STATUSES: ReadonlySet<string> = new Set(["active", "on-hold", "done", "archived"]);
 
 /**
- * FileContext из frontmatter-объекта. Приоритет флагов (по убыванию):
+ * FileContext из frontmatter-объекта: контейнер (resolveContainer) + override
+ * пространства (frontmatterNamespace). nsOverride добавляется в результат ТОЛЬКО
+ * когда задан (непустая строка) — иначе ключ опущен (обратная совместимость с
+ * потребителями, сравнивающими контекст целиком, и минимум шума в снапшоте).
+ */
+export function fileContextFromFrontmatter(
+	path: string,
+	fm: Record<string, unknown> | null | undefined,
+): FileContext {
+	const base = resolveContainer(path, fm);
+	const nsOverride = frontmatterNamespace(fm);
+	return nsOverride === null ? base : { ...base, nsOverride };
+}
+
+/** frontmatter gtd-namespace → override пространства (перебивает папку). Только
+ *  НЕПУСТАЯ строка (после trim) даёт override; число/boolean/пусто/отсутствие ⇒
+ *  null (мусор игнорируется, файл остаётся в пространстве своей папки). Экспорт —
+ *  для discovery сервисов (Board/Project), фильтрующих по пространству напрямую
+ *  из сырого frontmatter, минуя индекс. */
+export function frontmatterNamespace(fm: Record<string, unknown> | null | undefined): string | null {
+	if (fm === null || fm === undefined) return null;
+	const raw = fm["gtd-namespace"];
+	if (typeof raw !== "string") return null;
+	const s = raw.trim();
+	return s === "" ? null : s;
+}
+
+/**
+ * Контейнер файла из frontmatter. Приоритет флагов (по убыванию):
  * recurring (gtd-recurring) > events (gtd-events) > card (gtd-card-of) >
  * project (gtd-project) > board (gtd-board) > archive (gtd-archive) >
  * inbox (gtd-inbox) > plain.
@@ -66,7 +94,7 @@ const PROJECT_STATUSES: ReadonlySet<string> = new Set(["active", "on-hold", "don
  * ведёт себя как plain. Оба стоят НИЖЕ содержательных флагов: если файл — доска
  * или проект, эта роль важнее, чем «архив»/«входящие».
  */
-export function fileContextFromFrontmatter(
+function resolveContainer(
 	path: string,
 	fm: Record<string, unknown> | null | undefined,
 ): FileContext {

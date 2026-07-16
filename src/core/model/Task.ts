@@ -51,6 +51,10 @@ export interface FileContext {
 	container: ContainerKind;
 	/** Только для container === "project"; отсутствие в frontmatter ⇒ "active". */
 	projectStatus?: ProjectStatus;
+	/** Сырой frontmatter gtd-namespace: непустая строка ПЕРЕБИВАЕТ папку при
+	 *  вычислении пространства (см. core/namespace/resolveNamespace). Отсутствует
+	 *  (ключ опущен), когда override не задан или его значение — не строка/пусто. */
+	nsOverride?: string | null;
 }
 
 export interface Task {
@@ -125,6 +129,12 @@ export interface Task {
 	container: ContainerKind;
 	/** Проект задачи активен (для container === "project"; иначе true). */
 	projectActive: boolean;
+	/** Сырой frontmatter gtd-namespace файла: непустая строка — override
+	 *  пространства (перебивает папку), иначе null. Эффективное пространство
+	 *  НЕ хранится: считается лениво resolveNamespace(filePath, nsOverride, defs)
+	 *  на границе фильтрации (зависит от списка корней-настройки). Опционально —
+	 *  фикстуры/синтетические задачи без контекста файла его не задают. */
+	nsOverride?: string | null;
 }
 
 /** Дата-офсет вида "-3d"/"+14d" в шаблонах регулярного ящика (ТЗ §6). */

@@ -27,6 +27,12 @@ export interface BoardServiceDeps {
 	readFrontmatter: (path: string) => Record<string, unknown> | null;
 	patchFrontmatter: (path: string, fn: (fm: Record<string, unknown>) => void) => Promise<void>;
 	dispatcher: IntentDispatcher;
+	/** Создать пустой файл при отсутствии (для createBoard); совместим с VaultAdapter.ensureFile. */
+	ensureFile: (path: string) => Promise<void>;
+	/** ВСЕ пути файлов с флагом gtd-board — доска без единой задачи видна discovery
+	 *  только через этот деп (индекс задач её не хранит). Метадата-порт зовёт его
+	 *  лениво: строго из discovery, никогда синхронно в onload (см. main.ts). */
+	containerPaths: () => string[];
 	/** 🆔 с учётом памяти вписанных в окне дебаунса (WritebackService.knownTaskId). */
 	knownTaskId?: (key: string) => string | null;
 }
@@ -53,10 +59,17 @@ export interface BoardColumnModel {
 	tasks: Task[];
 }
 
-/** Результат операций над колонками (создание/переименование). */
+/** Результат операций над колонками (создание/переименование/удаление/перестановка). */
 export interface ColumnOpResult {
 	ok: boolean;
 	colId?: string;
+	reason?: string;
+}
+
+/** Результат создания доски: путь созданного/существующего файла либо причина отказа. */
+export interface BoardCreateResult {
+	ok: boolean;
+	path?: string;
 	reason?: string;
 }
 
@@ -76,6 +89,9 @@ export class BoardService {
 		for (const t of this.deps.feed.getIndex().all()) {
 			if (t.container === "board") paths.add(t.filePath);
 		}
+		// NUX: файл-доска с флагом, но без единой строки-задачи, в индексе задач
+		// отсутствует — добавляем его по frontmatter-флагу (dedupe через Set).
+		for (const p of this.deps.containerPaths()) paths.add(p);
 		const boards: DiscoveredBoard[] = [];
 		const errors: BoardDiscoveryError[] = [];
 		for (const path of [...paths].sort()) {
@@ -255,6 +271,104 @@ export class BoardService {
 			}
 		});
 		return { ok: true, colId };
+	}
+
+	/**
+	 * Убрать колонку из доски: элемент из columns[] и ключ из order{}. Карточки
+	 * с тегом колонки НЕ трогаем — осиротевший тег остаётся заботой пользователя
+	 * (массовая правка строк была бы разрушительнее самой ошибки; UI предупредит).
+	 */
+	async deleteColumn(boardPath: string, colId: string): Promise<ColumnOpResult> {
+		const fm = this.deps.readFrontmatter(boardPath);
+		if (fm === null) return { ok: false, reason: "board-not-found" };
+		const rawCols = fm["columns"];
+		const exists =
+			Array.isArray(rawCols) && rawCols.some((c) => isPlainRecord(c) && c["id"] === colId);
+		if (!exists) return { ok: false, reason: "column-not-found" };
+
+		await this.deps.patchFrontmatter(boardPath, (live) => {
+			const cols = live["columns"];
+			if (Array.isArray(cols)) {
+				// точечно: чужие ключи колонок и их формы не трогаем
+				live["columns"] = cols.filter((c) => !(isPlainRecord(c) && c["id"] === colId));
+			}
+			const order = live["order"];
+			if (isPlainRecord(order)) delete order[colId];
+		});
+		return { ok: true, colId };
+	}
+
+	/**
+	 * Переставить колонку в массиве columns на одну позицию (dir: -1 влево,
+	 * +1 вправо). Кламп на краях: выход за границы — no-op {ok:true} без записи.
+	 * Позиция ищется заново по живому frontmatter (устойчивость к гонке).
+	 */
+	async moveColumn(boardPath: string, colId: string, dir: -1 | 1): Promise<ColumnOpResult> {
+		const fm = this.deps.readFrontmatter(boardPath);
+		if (fm === null) return { ok: false, reason: "board-not-found" };
+		const rawCols = fm["columns"];
+		if (!Array.isArray(rawCols)) return { ok: false, reason: "column-not-found" };
+		const idx = rawCols.findIndex((c) => isPlainRecord(c) && c["id"] === colId);
+		if (idx === -1) return { ok: false, reason: "column-not-found" };
+		// кламп: колонка уже с краю в сторону движения — переставлять нечего
+		if (idx + dir < 0 || idx + dir >= rawCols.length) return { ok: true, colId };
+
+		await this.deps.patchFrontmatter(boardPath, (live) => {
+			const cols = live["columns"];
+			if (!Array.isArray(cols)) return; // гонка: frontmatter переписан между чтением и patch
+			const i = cols.findIndex((c) => isPlainRecord(c) && c["id"] === colId);
+			if (i === -1) return;
+			const j = i + dir;
+			if (j < 0 || j >= cols.length) return;
+			const [moved] = cols.splice(i, 1);
+			cols.splice(j, 0, moved);
+		});
+		return { ok: true, colId };
+	}
+
+	// --- доска: создание и переименование ---
+
+	/**
+	 * Скаффолд новой доски (NUX): ensureFile + frontmatter gtd-board с тремя
+	 * дефолтными тег-колонками. id — slug имени (fallback 'board' для эмодзи/CJK),
+	 * уникализированный против id существующих досок: членство карточек ключуется
+	 * тегом #kanban/<id>/… , и совпавший id слил бы карточки двух досок воедино.
+	 *
+	 * Идемпотентно: файл, УЖЕ помеченный gtd-board, не перезаписывается — иначе
+	 * повторный вызов затёр бы пользовательские колонки/порядок. Возврат — путь.
+	 */
+	async createBoard(path: string, name: string): Promise<BoardCreateResult> {
+		const trimmed = name.trim();
+		if (trimmed === "") return { ok: false, reason: "empty-name" };
+		// id, занятые существующими досками, — ДО правки файла; суффиксы -2, -3…
+		const takenIds = new Set(this.discoverBoards().boards.map((b) => b.def.id));
+		const base = slugifyColumnName(trimmed) || "board";
+		let id = base;
+		for (let n = 2; takenIds.has(id); n++) id = `${base}-${n}`;
+		await this.deps.ensureFile(path);
+		await this.deps.patchFrontmatter(path, (fm) => {
+			if (fm["gtd-board"] === true) return; // уже доска — не портим существующую
+			fm["gtd-board"] = true;
+			fm["id"] = id;
+			fm["name"] = trimmed;
+			fm["columns"] = [
+				{ id: "todo", name: "Очередь", match: `#kanban/${id}/todo` },
+				{ id: "doing", name: "В работе", match: `#kanban/${id}/doing` },
+				{ id: "done", name: "Готово", match: `#kanban/${id}/done` },
+			];
+		});
+		return { ok: true, path };
+	}
+
+	/** Переименование доски — только display-имя (frontmatter name); id и колонки не трогаем. */
+	async renameBoard(path: string, name: string): Promise<{ ok: boolean; reason?: string }> {
+		const trimmed = name.trim();
+		if (trimmed === "") return { ok: false, reason: "empty-name" };
+		if (this.deps.readFrontmatter(path) === null) return { ok: false, reason: "board-not-found" };
+		await this.deps.patchFrontmatter(path, (live) => {
+			live["name"] = trimmed;
+		});
+		return { ok: true };
 	}
 }
 

@@ -24,6 +24,7 @@ export class ProjectsOverviewView extends GtdView {
 		return {
 			taskStore: plugin.taskStore,
 			projects: plugin.projects ?? null,
+			app: plugin.app,
 			openProject: (projectPath: string) => void this.openProjectGraph(projectPath),
 		};
 	}

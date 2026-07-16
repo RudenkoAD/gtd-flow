@@ -20,6 +20,7 @@ export type MenuSection = "status" | "priority" | "schedule" | "defer" | "move" 
 export type MenuAction =
 	| { kind: "intent"; intent: Intent }
 	| { kind: "pick-due" } // «Запланировать…»: пикер даты → set-date due
+	| { kind: "pick-scheduled" } // «Запланировать (⏳)…»: пикер даты → set-date scheduled
 	| { kind: "pick-defer" } // «Отложить: дата…»: пикер даты → defer
 	| { kind: "pick-column" } // «Переместить в колонку…»: доски × колонки → moveCard в конец
 	| { kind: "pick-project" } // «В проект…»: пикер проектов → move-line
@@ -157,6 +158,16 @@ export function buildMenuModel(input: MenuModelInput): MenuNode[] {
 		title: "Запланировать…",
 		icon: "calendar-check",
 		action: { kind: "pick-due" },
+	});
+
+	// --- запланировать по ⏳ scheduled (альтернатива due; интент set-date уже умеет
+	// field:"scheduled", а calendarPlacement допускает scheduled основным полем) ---
+	items.push({
+		id: "schedule-scheduled",
+		section: "schedule",
+		title: "Запланировать (⏳)…",
+		icon: "calendar-clock",
+		action: { kind: "pick-scheduled" },
 	});
 
 	// --- отложить (🛫): подменю «Отложить…» — пресеты + произвольная дата ---

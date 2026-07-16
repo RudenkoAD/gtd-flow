@@ -14,7 +14,12 @@ import type { CardPort } from "./services/CardService";
 import type { Task } from "./core/model/Task";
 import { appendLine } from "./views/calendar/calendarLogic";
 import { pickBoardColumn, pickDate } from "./views/common/pickers";
-import { captureTarget, findTaskAtLine, quickCaptureLine } from "./views/common/taskActions";
+import {
+	captureTarget,
+	ensureCaptureFile,
+	findTaskAtLine,
+	quickCaptureLine,
+} from "./views/common/taskActions";
 
 export function registerCommands(plugin: GtdFlowPlugin): void {
 	plugin.addCommand({
@@ -101,7 +106,11 @@ async function capture(plugin: GtdFlowPlugin, text: string): Promise<void> {
 		return;
 	}
 	try {
-		await plugin.vaultAdapter.ensureFile(target);
+		// файл входящих создаётся и помечается gtd-inbox: true СТРОГО до записи строки
+		if (!(await ensureCaptureFile(plugin.vaultAdapter, target))) {
+			new Notice(`GTD Flow: не удалось подготовить файл входящих ${target}\nТекст: ${text}`, 0);
+			return;
+		}
 		const ok = await plugin.vaultAdapter.processFile(target, (content) => appendLine(content, line));
 		if (!ok) new Notice(`GTD Flow: не удалось записать в ${target}`);
 	} catch (e) {

@@ -34,6 +34,8 @@ export class RecurringView extends GtdView {
 			app: plugin.app,
 			recurrence: plugin.recurrence ?? null,
 			cards: plugin.cards ?? null,
+			// структурный порт TemplateVaultPort — совместим с VaultAdapter
+			vault: plugin.vaultAdapter,
 		};
 	}
 }

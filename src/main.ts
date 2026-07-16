@@ -1,4 +1,4 @@
-import { Plugin, WorkspaceLeaf } from "obsidian";
+import { Notice, Plugin, WorkspaceLeaf } from "obsidian";
 import { VIEW_META, VIEW_TYPES, type GtdViewKind } from "./views/registry";
 import { DEFAULT_SETTINGS, type GtdFlowSettings } from "./settings/Settings";
 import { mergeSettings } from "./settings/mergeSettings";
@@ -17,6 +17,8 @@ import { registerCommands } from "./commands";
 import { createTaskStore, type TaskStore } from "./stores/taskStore";
 import { createGtdView } from "./views/createView";
 import { DndService } from "./views/dnd/DndService";
+import { createDemoVault, demoVaultNotice } from "./onboarding/demoVault";
+import { WelcomeModal } from "./onboarding/WelcomeModal";
 
 export default class GtdFlowPlugin extends Plugin {
 	settings: GtdFlowSettings = DEFAULT_SETTINGS;
@@ -36,6 +38,11 @@ export default class GtdFlowPlugin extends Plugin {
 		await this.loadSettings();
 
 		const metadata = new MetadataAdapter(this);
+		// Гейт ленивого frontmatter-индекса: до резолва metadataCache он построился
+		// бы ПУСТЫМ и закэшировался навсегда (см. память проекта). Восстановленная
+		// раскладка монтирует виды на layout-ready — их discovery может обогнать
+		// resolve, поэтому containerPaths до готовности отдаёт [] без побочек.
+		let fmIndexReady = false;
 		const clock = new ObsidianClock(this);
 		this.vaultAdapter = new VaultAdapter(this.app);
 		this.indexer = new IndexerService({
@@ -62,6 +69,9 @@ export default class GtdFlowPlugin extends Plugin {
 				await this.vaultAdapter.processFrontmatter(path, fn);
 			},
 			dispatcher: this.dispatcher,
+			ensureFile: (path) => this.vaultAdapter.ensureFile(path),
+			containerPaths: () =>
+				fmIndexReady ? metadata.pathsByFrontmatterValue("gtd-board", true) : [],
 			knownTaskId: (key) => this.dispatcher.knownTaskId(key),
 		});
 		this.dnd = new DndService(this);
@@ -82,6 +92,9 @@ export default class GtdFlowPlugin extends Plugin {
 			patchFrontmatter: async (path, fn) => {
 				await this.vaultAdapter.processFrontmatter(path, fn);
 			},
+			ensureFile: (path) => this.vaultAdapter.ensureFile(path),
+			containerPaths: () =>
+				fmIndexReady ? metadata.pathsByFrontmatterValue("gtd-project", true) : [],
 			dispatcher: this.dispatcher,
 			todayIso: () => clock.todayIso(),
 		});
@@ -141,9 +154,14 @@ export default class GtdFlowPlugin extends Plugin {
 		const layoutReady = new Promise<void>((res) => this.app.workspace.onLayoutReady(res));
 		const cacheResolved = new Promise<void>((res) => metadata.onResolved(res));
 		void Promise.all([layoutReady, cacheResolved]).then(() => {
+			// с этого момента ленивому fm-индексу можно доверять (кэш зарезолвлен)
+			fmIndexReady = true;
 			// первичный refresh статусов дней — строго после резолва кэша (иначе
 			// findByFrontmatterValue закэширует пустой обратный индекс, см. start())
 			void this.dayStatus.refresh();
+			// онбординг — тоже строго после резолва кэша: обратный fm-индекс уже полон,
+			// иначе «чистое хранилище» ложно определилось бы на пустом кэше
+			this.maybeOnboard(metadata);
 			// .catch: rejection скана не должен пропадать беззвучно
 			return this.indexer.start().catch((e: unknown) => console.error("GTD Flow: сбой первичной сборки индекса", e));
 		});
@@ -164,6 +182,14 @@ export default class GtdFlowPlugin extends Plugin {
 			id: "open-workspace",
 			name: "Открыть рабочее пространство GTD",
 			callback: () => void this.openGtdWorkspace(),
+		});
+
+		// Демо-файлы доступны всегда (не только на первом запуске): удобно, если
+		// пользователь пропустил приветственный диалог или хочет пересоздать пример.
+		this.addCommand({
+			id: "create-demo-vault",
+			name: "Создать демо-файлы GTD",
+			callback: () => void this.runCreateDemoVault(),
 		});
 
 		// Ярлыки всех видов в ленте; порядок — как в VIEW_META (регистрация задаёт
@@ -204,6 +230,45 @@ export default class GtdFlowPlugin extends Plugin {
 		await this.activateView("inbox", "tab");
 		await this.activateView("kanban", "split");
 		await this.activateView("tickler", "split");
+	}
+
+	/**
+	 * Онбординг первого запуска. Приветственный диалог — ТОЛЬКО на хранилище без
+	 * единого GTD-файла (проверка по frontmatter-флагам, дёшево после резолва
+	 * кэша). Хранилище с GTD-файлами — существующий пользователь: помечаем
+	 * пройденным молча, без диалога. Строго после резолва кэша (вызыватель).
+	 */
+	private maybeOnboard(metadata: MetadataAdapter): void {
+		if (this.settings.onboarded) return;
+		const flags = ["gtd-inbox", "gtd-board", "gtd-project", "gtd-recurring", "gtd-events"];
+		const clean = flags.every((f) => metadata.findByFrontmatterValue(f, true) === null);
+		if (!clean) {
+			// уже есть GTD-файлы — не новичок: помечаем пройденным без диалога
+			this.settings.onboarded = true;
+			void this.saveSettings();
+			return;
+		}
+		new WelcomeModal(this.app, {
+			vault: this.vaultAdapter,
+			markOnboarded: async () => {
+				this.settings.onboarded = true;
+				await this.saveSettings();
+			},
+			openWorkspace: async () => {
+				await this.openGtdWorkspace();
+				await this.activateView("calendar", "split");
+			},
+		}).open();
+	}
+
+	/** Команда палитры «Создать демо-файлы GTD»: засеять демо + уведомление. */
+	private async runCreateDemoVault(): Promise<void> {
+		try {
+			const report = await createDemoVault(this.vaultAdapter);
+			new Notice(demoVaultNotice(report));
+		} catch (e) {
+			new Notice(`GTD Flow: не удалось создать демо-файлы: ${String(e)}`);
+		}
 	}
 
 	async loadSettings(): Promise<void> {

@@ -42,6 +42,8 @@ export class KanbanView extends GtdView {
 			boards: plugin.boards ?? null,
 			dnd: plugin.dnd ?? null,
 			menuPorts: taskMenuPortsFromPlugin(plugin),
+			// структурный порт BoardWritePort — совместим с VaultAdapter (запись задачи в файл доски)
+			vault: plugin.vaultAdapter,
 			persisted: { subscribe: this.persisted.subscribe },
 			persist: (s: KanbanPersistedState) => {
 				this.lastState = s;

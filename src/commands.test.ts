@@ -94,20 +94,24 @@ interface Cmd {
 function makePlugin(over?: {
 	ensureFile?: (path: string) => Promise<void>;
 	processFile?: (path: string, t: (c: string) => string | null) => Promise<boolean>;
+	processFrontmatter?: (path: string, fn: (fm: Record<string, unknown>) => void) => Promise<unknown>;
 }) {
 	const commands = new Map<string, Cmd>();
 	const ensureFile = vi.fn(over?.ensureFile ?? (() => Promise.resolve()));
 	const processFile = vi.fn(over?.processFile ?? (() => Promise.resolve(true)));
+	// capture() помечает файл входящих gtd-inbox: true через processFrontmatter
+	// СТРОГО до записи строки — двойник vault обязан удовлетворять FrontmatterVaultPort
+	const processFrontmatter = vi.fn(over?.processFrontmatter ?? (() => Promise.resolve(true)));
 	const plugin = {
 		app: {},
 		settings: { inboxSources: ["GTD/Inbox.md"] },
-		vaultAdapter: { ensureFile, processFile },
+		vaultAdapter: { ensureFile, processFile, processFrontmatter },
 		// цель захвата теперь ищет gtd-inbox файлы в индексе; пустой индекс ⇒ фолбэк inboxSources[0]
 		taskStore: { index: () => ({ all: () => [] as never[] }) },
 		addCommand: (cmd: Cmd) => commands.set(cmd.id, cmd),
 	};
 	registerCommands(plugin as unknown as GtdFlowPlugin);
-	return { commands, ensureFile, processFile };
+	return { commands, ensureFile, processFile, processFrontmatter };
 }
 
 /** Открывает модал быстрого ввода; структура onOpen: contentEl → wrap → input. */

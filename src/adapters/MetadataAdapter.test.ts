@@ -79,7 +79,11 @@ function makeApp(files: Record<string, FakeEntry>) {
 		},
 	};
 	const app = { vault, metadataCache };
-	const plugin = { app, registerEvent: () => undefined } as unknown as Plugin;
+	const plugin = {
+		app,
+		registerEvent: () => undefined,
+		registerInterval: (id: number) => id,
+	} as unknown as Plugin;
 	return { app, plugin, store, vaultBus, cacheBus, cacheCalls: () => cacheCalls };
 }
 
@@ -248,6 +252,64 @@ describe("findByFrontmatterValue", () => {
 
 		expect(adapter.findByFrontmatterValue("gtd-card-of", "t1")).toBe("cards/new.md");
 		expect(adapter.findByFrontmatterValue("gtd-card-of", "t1")).not.toBe("cards/old.md");
+	});
+});
+
+// --- обратная карта frontmatter: все пути ---
+
+describe("pathsByFrontmatterValue", () => {
+	it("все носители значения, отсортированы лексикографически", () => {
+		const h = makeApp({
+			"z.md": { fm: { "gtd-board": true } },
+			"a.md": { fm: { "gtd-board": true } },
+			"m.md": { fm: { "gtd-board": true } },
+			"other.md": { fm: { "gtd-board": false } },
+			"plain.md": {},
+		});
+		const adapter = new MetadataAdapter(h.plugin);
+		expect(adapter.pathsByFrontmatterValue("gtd-board", true)).toEqual(["a.md", "m.md", "z.md"]);
+	});
+
+	it("нет носителей — пустой массив", () => {
+		const h = makeApp({ "a.md": { fm: { title: "x" } } });
+		const adapter = new MetadataAdapter(h.plugin);
+		expect(adapter.pathsByFrontmatterValue("gtd-board", true)).toEqual([]);
+	});
+
+	it("делит ленивый индекс с findByFrontmatterValue: первый запрос строит, дальше O(1)", () => {
+		const h = makeApp({
+			"a.md": { fm: { "gtd-project": true } },
+			"b.md": { fm: { "gtd-project": true } },
+			"c.md": {},
+		});
+		const adapter = new MetadataAdapter(h.plugin);
+		adapter.pathsByFrontmatterValue("gtd-project", true); // первый — полный обход
+		const after = h.cacheCalls();
+		for (let i = 0; i < 50; i++) adapter.pathsByFrontmatterValue("gtd-project", true);
+		expect(h.cacheCalls()).toBe(after);
+		// find и paths делят одну карту — find тоже без нового обхода
+		expect(adapter.findByFrontmatterValue("gtd-project", true)).toBe("a.md");
+		expect(h.cacheCalls()).toBe(after);
+	});
+
+	it("инкрементальность: changed / delete добавляют и убирают пути", () => {
+		const h = makeApp({
+			"a.md": { fm: { "gtd-board": true } },
+			"b.md": { fm: { "gtd-board": true } },
+		});
+		const adapter = new MetadataAdapter(h.plugin);
+		const paths = (): string[] => adapter.pathsByFrontmatterValue("gtd-board", true);
+		expect(paths()).toEqual(["a.md", "b.md"]);
+
+		// новый файл-контейнер появился правкой
+		h.store.set("c.md", { fm: { "gtd-board": true } });
+		h.cacheBus.emit("changed", md("c.md"), "", { frontmatter: { "gtd-board": true } });
+		expect(paths()).toEqual(["a.md", "b.md", "c.md"]);
+
+		// удаление носителя
+		h.store.delete("a.md");
+		h.vaultBus.emit("delete", md("a.md"));
+		expect(paths()).toEqual(["b.md", "c.md"]);
 	});
 });
 

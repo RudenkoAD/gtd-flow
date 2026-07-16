@@ -22,6 +22,8 @@ export function filterTasks(tasks: readonly Task[], query: string): readonly Tas
 export interface InboxWritePort {
 	ensureFile(path: string): Promise<void>;
 	processFile(path: string, transform: (content: string) => string | null): Promise<boolean>;
+	/** Создание/правка frontmatter файла входящих (gtd-inbox: true) — для ensureCaptureFile. */
+	processFrontmatter(path: string, fn: (fm: Record<string, unknown>) => void): Promise<unknown>;
 }
 
 /**

@@ -12,6 +12,7 @@
 import { Menu, type App } from "obsidian";
 import type { IsoDate } from "../../core/model/Task";
 import type { DayStatusPort } from "../../services/DayStatusService";
+import { DayStatusPaletteModal } from "./DayStatusPaletteModal";
 
 export interface PaintPreview {
 	from: IsoDate;
@@ -69,6 +70,13 @@ export function openDayStatusMenu(
 			mi.setTitle("Убрать статус").setIcon("eraser").onClick(() => void port.clearDay(from)),
 		);
 	}
+	menu.addSeparator();
+	menu.addItem((mi) =>
+		mi
+			.setTitle("Палитра…")
+			.setIcon("palette")
+			.onClick(() => new DayStatusPaletteModal(app, port).open()),
+	);
 	menu.showAtMouseEvent(ev);
 }
 

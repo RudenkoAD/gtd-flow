@@ -46,6 +46,9 @@ export interface GtdFlowSettings {
 	/** Файл статусов дней для покраски календаря (frontmatter gtd-day-status: true);
 	 *  используется при первом создании, обнаружение — по флагу. */
 	dayStatusFile: string;
+	/** Пройден ли онбординг: приветственный диалог показывается один раз на чистом
+	 *  хранилище (см. src/onboarding). Существующему пользователю выставляется молча. */
+	onboarded: boolean;
 }
 
 export const DEFAULT_SETTINGS: GtdFlowSettings = {
@@ -75,4 +78,5 @@ export const DEFAULT_SETTINGS: GtdFlowSettings = {
 	eventsFile: "GTD/Events.md",
 	archiveFile: "GTD/Archive.md",
 	dayStatusFile: "GTD/DayStatus.md",
+	onboarded: false,
 };

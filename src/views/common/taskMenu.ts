@@ -320,6 +320,27 @@ async function runMenuAction(ctx: TaskMenuCtx, action: MenuAction): Promise<void
 			}));
 		}
 
+		case "pick-scheduled": {
+			// как pick-due, но пишет ⏳ scheduled; time: null (поле пусто) снимает
+			// существующее время, строка — ставит. Взаимоисключение с 🛫 — только у
+			// 📅 due (см. Intent.clearStart), поэтому здесь его нет.
+			const choice = await pickDate(
+				ctx.app,
+				"Запланировать (⏳) на",
+				ctx.task.scheduled ?? undefined,
+				true,
+				ctx.task.scheduledTime,
+			);
+			if (choice === null) return;
+			return void (await dispatchNoticing(ctx.dispatcher, {
+				type: "set-date",
+				key: ctx.task.key,
+				field: "scheduled",
+				date: choice.date,
+				time: choice.time,
+			}));
+		}
+
 		case "pick-defer": {
 			const date = await pickDate(ctx.app, "Отложить до", ctx.task.start ?? undefined);
 			if (date === null) return;

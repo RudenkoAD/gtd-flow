@@ -283,6 +283,18 @@ describe("buildMenuModel: подменю «Отложить…» и «Запла
 		expect(byId(items, "schedule-due").action).toEqual({ kind: "pick-due" });
 		expect(byId(items, "defer-date").action).toEqual({ kind: "pick-defer" });
 	});
+
+	it("«Запланировать (⏳)…» — верхнеуровневый маркер pick-scheduled рядом с due", () => {
+		const items = buildMenuModel(input());
+		const scheduled = byId(items, "schedule-scheduled");
+		expect(scheduled.section).toBe("schedule");
+		expect(scheduled.title).toBe("Запланировать (⏳)…");
+		expect(scheduled.action).toEqual({ kind: "pick-scheduled" });
+		// верхний уровень (не внутри подменю) и в секции schedule рядом с due
+		expect(items.some((n) => !isSubmenuNode(n) && n.id === "schedule-scheduled")).toBe(true);
+		const leafIds = ids(items);
+		expect(leafIds.indexOf("schedule-scheduled")).toBe(leafIds.indexOf("schedule-due") + 1);
+	});
 });
 
 describe("flattenSubmenu: плоский фолбэк (мобайл / obsidian < 1.12)", () => {

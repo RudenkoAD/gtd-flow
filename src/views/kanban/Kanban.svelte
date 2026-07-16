@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Notice, type App } from "obsidian";
+	import { Menu, Modal, Notice, type App } from "obsidian";
 	import type { Readable } from "svelte/store";
 	import type { BoardService } from "../../services/BoardService";
 	import type { IntentDispatcher } from "../../services/WritebackService";
@@ -8,7 +8,14 @@
 	import type { TaskMenuPorts } from "../common/taskMenu";
 	import type { DndPort } from "../dnd/types";
 	import Column from "./Column.svelte";
-	import { buildColumnVMs, pickBoardPath, type KanbanPersistedState } from "./kanbanLogic";
+	import {
+		boardDirFromInbox,
+		buildColumnVMs,
+		pickBoardPath,
+		uniqueBoardPath,
+		type BoardWritePort,
+		type KanbanPersistedState,
+	} from "./kanbanLogic";
 
 	let {
 		taskStore,
@@ -18,6 +25,7 @@
 		boards,
 		dnd,
 		menuPorts = null,
+		vault,
 		persisted,
 		persist,
 	}: {
@@ -31,6 +39,8 @@
 		dnd: DndPort | null;
 		/** Порты паритета без drag (меню/пикеры/карточка), ТЗ §8 слой 3. */
 		menuPorts?: TaskMenuPorts | null;
+		/** Структурный порт записи задачи в файл доски; совместим с VaultAdapter. */
+		vault: BoardWritePort;
 		/** Состояние из workspace-раскладки; приходит ПОСЛЕ монтирования. */
 		persisted: Readable<KanbanPersistedState>;
 		persist: (s: KanbanPersistedState) => void;
@@ -116,6 +126,89 @@
 			cancelAddCol();
 		}
 	}
+
+	// --- создание / переименование доски ---
+
+	// Модал с одним полем «Название» (паттерн TextPromptModal, ProjectGraph.svelte).
+	class TextPromptModal extends Modal {
+		constructor(
+			modalApp: App,
+			private readonly promptTitle: string,
+			private readonly initial: string,
+			private readonly placeholder: string,
+			private readonly onSubmit: (text: string) => void,
+		) {
+			super(modalApp);
+		}
+
+		override onOpen(): void {
+			this.titleEl.setText(this.promptTitle);
+			const wrap = this.contentEl.createDiv();
+			wrap.style.display = "flex";
+			wrap.style.gap = "8px";
+			const input = wrap.createEl("input", { type: "text" });
+			input.style.flex = "1 1 auto";
+			input.placeholder = this.placeholder;
+			input.value = this.initial;
+			const submit = (): void => {
+				const value = input.value.trim();
+				if (value === "") return;
+				this.close();
+				this.onSubmit(value);
+			};
+			input.addEventListener("keydown", (e) => {
+				if (e.key === "Enter") submit();
+			});
+			const ok = wrap.createEl("button", { text: "OK", cls: "mod-cta" });
+			ok.addEventListener("click", submit);
+			input.focus();
+			input.select();
+		}
+
+		override onClose(): void {
+			this.contentEl.empty();
+		}
+	}
+
+	function promptCreateBoard(): void {
+		if (boards === null) return;
+		const svc = boards;
+		new TextPromptModal(app, "Новая доска", "", "Название доски", (name) => {
+			const dir = boardDirFromInbox(settings.inboxSources);
+			// уникализуем путь по реальным файлам хранилища: createBoard не должен
+			// дописать флаг доски в чужую заметку с тем же именем
+			const path = uniqueBoardPath(dir, name, (p) => app.vault.getFileByPath(p) !== null);
+			void svc.createBoard(path, name).then((res) => {
+				if (!res.ok || res.path === undefined) {
+					new Notice(`GTD Flow: не удалось создать доску (${res.reason ?? "unknown"})`);
+					return;
+				}
+				// выбрать созданную доску; она появится в списке после реиндекса
+				// (файл виден discovery по frontmatter-флагу даже без задач)
+				selectedPath = res.path;
+				persist({ boardPath: res.path });
+			});
+		}).open();
+	}
+
+	function promptRenameBoard(): void {
+		if (boards === null || shownPath === null) return;
+		const svc = boards;
+		const path = shownPath;
+		const current = discovery.boards.find((b) => b.path === path)?.def.name ?? "";
+		new TextPromptModal(app, "Переименовать доску", current, "Название доски", (name) => {
+			void svc.renameBoard(path, name).then((res) => {
+				if (!res.ok) new Notice(`GTD Flow: не удалось переименовать доску (${res.reason ?? "unknown"})`);
+			});
+		}).open();
+	}
+
+	function openBoardMenu(e: MouseEvent): void {
+		if (boards === null || shownPath === null) return;
+		const menu = new Menu();
+		menu.addItem((i) => i.setTitle("Переименовать доску…").setIcon("pencil").onClick(promptRenameBoard));
+		menu.showAtMouseEvent(e);
+	}
 </script>
 
 <div class="gtd-kanban">
@@ -131,6 +224,16 @@
 				<option value={b.path}>{b.def.name}</option>
 			{/each}
 		</select>
+		{#if boards !== null}
+			<button class="gtd-kanban-new-board" title="Создать доску" onclick={promptCreateBoard}>
+				＋ Доска
+			</button>
+		{/if}
+		{#if boards !== null && shownPath !== null}
+			<button class="gtd-kanban-board-menu" title="Меню доски" aria-label="Меню доски" onclick={openBoardMenu}>
+				⋯
+			</button>
+		{/if}
 		{#if discovery.errors.length > 0}
 			<span
 				class="gtd-kanban-errors"
@@ -145,8 +248,10 @@
 		<div class="gtd-kanban-empty">Kanban не подключён (сервис досок недоступен)</div>
 	{:else if model === null}
 		<div class="gtd-kanban-empty">
-			Досок не найдено. Создайте заметку с frontmatter <code>gtd-board: true</code>,
-			полями <code>id</code> и <code>columns</code> — и хотя бы одной задачей в файле.
+			<p>Досок пока нет.</p>
+			<button class="mod-cta gtd-kanban-create-board" onclick={promptCreateBoard}>
+				＋ Создать доску
+			</button>
 		</div>
 	{:else}
 		<div class="gtd-kanban-board">
@@ -160,6 +265,7 @@
 					{dispatcher}
 					{app}
 					{settings}
+					{vault}
 					today={$today}
 					{menuPorts}
 				/>
@@ -206,7 +312,25 @@
 		border-bottom: 1px solid var(--background-modifier-border);
 	}
 	.gtd-kanban-select {
-		max-width: 60%;
+		max-width: 50%;
+	}
+	.gtd-kanban-new-board {
+		flex: none;
+		font-size: var(--font-ui-smaller, 0.85em);
+	}
+	.gtd-kanban-board-menu {
+		flex: none;
+		padding: 4px 8px;
+		background: transparent;
+		box-shadow: none;
+		color: var(--text-muted);
+		cursor: pointer;
+		font-weight: 700;
+		line-height: 1;
+	}
+	.gtd-kanban-board-menu:hover {
+		background: var(--background-modifier-hover);
+		color: var(--text-normal);
 	}
 	.gtd-kanban-errors {
 		color: var(--text-warning, var(--text-muted));
@@ -217,6 +341,13 @@
 		padding: 24px 12px;
 		text-align: center;
 		color: var(--text-muted);
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 12px;
+	}
+	.gtd-kanban-create-board {
+		cursor: pointer;
 	}
 	.gtd-kanban-board {
 		flex: 1 1 auto;

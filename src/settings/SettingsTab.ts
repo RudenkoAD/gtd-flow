@@ -151,6 +151,30 @@ export class GtdSettingsTab extends PluginSettingTab {
 					await this.save();
 				});
 			});
+
+		new Setting(el)
+			.setName("Файл повторяющихся событий")
+			.setDesc("Куда сохраняются серии календаря (frontmatter gtd-events: true). Создаётся при первом сохранении серии.")
+			.addText((text) => {
+				text.setPlaceholder("GTD/Events.md");
+				text.setValue(this.plugin.settings.eventsFile);
+				text.onChange(async (value) => {
+					this.plugin.settings.eventsFile = value.trim();
+					await this.save();
+				});
+			});
+
+		new Setting(el)
+			.setName("Файл статусов дней")
+			.setDesc("Файл для покраски дней календаря (frontmatter gtd-day-status: true). Создаётся при первой покраске.")
+			.addText((text) => {
+				text.setPlaceholder("GTD/DayStatus.md");
+				text.setValue(this.plugin.settings.dayStatusFile);
+				text.onChange(async (value) => {
+					this.plugin.settings.dayStatusFile = value.trim();
+					await this.save();
+				});
+			});
 	}
 
 	// ── Отложенные ──────────────────────────────────────────────────────────
@@ -270,6 +294,18 @@ export class GtdSettingsTab extends PluginSettingTab {
 				text.setValue(this.plugin.settings.defaultBoardPath);
 				text.onChange(async (value) => {
 					this.plugin.settings.defaultBoardPath = value.trim();
+					await this.save();
+				});
+			});
+
+		new Setting(el)
+			.setName("Файл архива")
+			.setDesc("Куда переносятся выполненные/отменённые карточки при «Архивировать» (frontmatter gtd-archive: true).")
+			.addText((text) => {
+				text.setPlaceholder("GTD/Archive.md");
+				text.setValue(this.plugin.settings.archiveFile);
+				text.onChange(async (value) => {
+					this.plugin.settings.archiveFile = value.trim();
 					await this.save();
 				});
 			});

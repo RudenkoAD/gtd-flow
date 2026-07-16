@@ -8,7 +8,7 @@
 	import type { TaskStore } from "../../stores/taskStore";
 	import { addDaysIso } from "../common/dates";
 	import { confirm } from "../common/ConfirmModal";
-	import { captureTarget } from "../common/taskActions";
+	import { captureTarget, ensureCaptureFile } from "../common/taskActions";
 	import type { TaskMenuPorts } from "../common/taskMenu";
 	import type { DndPort, OccurrenceDrag } from "../dnd/types";
 	import DayCell from "./DayCell.svelte";
@@ -301,7 +301,11 @@
 			new Notice("GTD Flow: не задан файл входящих (inboxSources)");
 			return;
 		}
-		await vault.ensureFile(target);
+		// файл входящих создаётся и помечается gtd-inbox: true СТРОГО до записи строки
+		if (!(await ensureCaptureFile(vault, target))) {
+			new Notice(`GTD Flow: не удалось подготовить файл входящих ${target}`);
+			return;
+		}
 		const ok = await vault.processFile(target, (content) => appendLine(content, line));
 		if (!ok) new Notice(`GTD Flow: не удалось записать в ${target}`);
 	}

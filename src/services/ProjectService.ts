@@ -40,6 +40,7 @@ export interface ProjectSummary { path: string; name: string; status: ProjectSta
 export interface ProjectModel { nodes: NodeInfo[]; edges: { from: string; to: string }[]; issues: GraphIssue[]; layout: LayoutMap }
 export interface ProjectPort {
 	discoverProjects(): ProjectSummary[];
+	createProject(path: string, name: string): Promise<{ ok: boolean; path?: string; reason?: string }>;
 	model(path: string): ProjectModel | null;
 	connect(path: string, fromId: string, toId: string): Promise<{ ok: boolean; reason?: string; cyclePath?: string[] }>;
 	disconnect(path: string, fromId: string, toId: string): Promise<{ ok: boolean; reason?: string }>;
@@ -55,6 +56,11 @@ export interface ProjectServiceDeps {
 	write: WritePort;
 	readFrontmatter: (path: string) => Record<string, unknown> | null;
 	patchFrontmatter: (path: string, fn: (fm: Record<string, unknown>) => void) => Promise<void>;
+	/** Создать пустой файл при отсутствии (для createProject); совместим с VaultAdapter.ensureFile. */
+	ensureFile: (path: string) => Promise<void>;
+	/** ВСЕ пути файлов с флагом gtd-project — проект без единой задачи виден discovery
+	 *  только через этот деп (индекс задач его не хранит). Зовётся лениво из discovery. */
+	containerPaths: () => string[];
 	/** Не используется графовыми транзакциями (см. шапку) — маршрут строчных intents с полотна. */
 	dispatcher: IntentDispatcher;
 	/** Сегодняшняя дата для buildGraph (deferred/ready зависят от today). */
@@ -146,13 +152,31 @@ export class ProjectService implements ProjectPort {
 	// --- discovery ---
 
 	discoverProjects(): ProjectSummary[] {
-		// Как и у досок: файл-проект без единой задачи индексом не виден
-		// (byFile хранит только задачи) — появится после первого addNode.
+		// Файл-проект без единой задачи индексом задач не виден (byFile хранит
+		// только задачи) — добавляем его по frontmatter-флагу (NUX, dedupe через Set).
 		const paths = new Set<string>();
 		for (const t of this.deps.feed.getIndex().all()) {
 			if (t.container === "project") paths.add(t.filePath);
 		}
+		for (const p of this.deps.containerPaths()) paths.add(p);
 		return [...paths].sort().map((path) => this.summarize(path));
+	}
+
+	/**
+	 * Скаффолд нового проекта (NUX): ensureFile + frontmatter gtd-project + name.
+	 * Идемпотентно: уже помеченный gtd-project файл не перезаписывается. Узлы
+	 * добавит addNode в уже существующий файл. Возврат — путь созданного файла.
+	 */
+	async createProject(path: string, name: string): Promise<{ ok: boolean; path?: string; reason?: string }> {
+		const trimmed = name.trim();
+		if (trimmed === "") return { ok: false, reason: "empty-name" };
+		await this.deps.ensureFile(path);
+		await this.deps.patchFrontmatter(path, (fm) => {
+			if (fm["gtd-project"] === true) return; // уже проект — не портим существующий
+			fm["gtd-project"] = true;
+			fm["name"] = trimmed;
+		});
+		return { ok: true, path };
 	}
 
 	private summarize(path: string): ProjectSummary {

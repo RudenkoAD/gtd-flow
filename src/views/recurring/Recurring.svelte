@@ -10,12 +10,16 @@
 	import { segmentDescription } from "../common/cardFormat";
 	import { confirm } from "../common/ConfirmModal";
 	import { openTaskInFile } from "../common/openTask";
+	import { recurringFilePaths } from "../common/taskActions";
 	import { RuleEditModal } from "./RuleEditModal";
+	import { TemplateCreateModal } from "./TemplateCreateModal";
 	import {
 		buildTemplateVM,
+		createTemplate,
 		deleteTemplateBody,
 		groupByFileAndHeading,
 		historyOf,
+		type TemplateVaultPort,
 		type TemplateVM,
 	} from "./recurringLogic";
 
@@ -26,6 +30,7 @@
 		app,
 		recurrence = null,
 		cards = null,
+		vault,
 	}: {
 		taskStore: TaskStore;
 		/** Удаление строки-шаблона идёт штатным delete-line, а не RecurrencePort. */
@@ -36,6 +41,8 @@
 		recurrence?: RecurrencePort | null;
 		/** null — сервис карточек не подключён: пункт «Открыть карточку» скрыт. */
 		cards?: CardPort | null;
+		/** Структурный порт файла шаблонов (создание шаблона с нуля); ~ VaultAdapter. */
+		vault: TemplateVaultPort;
 	} = $props();
 
 	// props фиксированы на время монтирования (вид пересоздаётся с leaf) —
@@ -79,6 +86,32 @@
 		} finally {
 			running = false;
 		}
+	}
+
+	/** «＋ Шаблон»: имя+правило → append строки `- [ ] <имя> 🔁 <правило>` в файл
+	 *  шаблонов (создаётся с gtd-recurring при отсутствии). Движок повторов для
+	 *  записи не нужен — строка появится в виде на ближайший bump индекса. */
+	function createTemplateNow(): void {
+		new TemplateCreateModal(app, (name, ruleText) => {
+			void (async () => {
+				try {
+					const res = await createTemplate({
+						vault,
+						recurringFiles: recurringFilePaths(taskStore.index().all()),
+						spawnTarget: settings.recurring.spawnTarget,
+						name,
+						ruleText,
+					});
+					new Notice(
+						res.ok
+							? `GTD Flow: шаблон создан → ${res.path}`
+							: `GTD Flow: шаблон не создан: ${res.reason}`,
+					);
+				} catch (e) {
+					new Notice(`GTD Flow: шаблон не создан: ${String(e)}`);
+				}
+			})();
+		}).open();
 	}
 
 	async function togglePause(port: RecurrencePort, vm: TemplateVM): Promise<void> {
@@ -199,8 +232,10 @@
 
 <div class="gtd-recurring">
 	<div class="gtd-rec-header">
+		<button class="mod-cta" onclick={createTemplateNow} title="Создать шаблон регулярной задачи">
+			＋ Шаблон
+		</button>
 		<button
-			class="mod-cta"
 			disabled={recurrence === null || running}
 			onclick={() => void checkNow()}
 		>
@@ -318,8 +353,8 @@
 		</section>
 	{:else}
 		<div class="gtd-rec-empty">
-			Шаблонов не найдено. Создайте заметку с frontmatter
-			<code>gtd-recurring: true</code> и задачами с правилом <code>🔁</code>.
+			<p>Пока нет ни одного шаблона.</p>
+			<button class="mod-cta" onclick={createTemplateNow}>＋ Создать шаблон</button>
 		</div>
 	{/each}
 </div>
@@ -486,5 +521,8 @@
 		padding: 24px 12px;
 		text-align: center;
 		color: var(--text-muted);
+	}
+	.gtd-rec-empty p {
+		margin: 0 0 12px;
 	}
 </style>

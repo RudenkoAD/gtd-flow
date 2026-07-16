@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 import type { Task } from "../../core/model/Task";
 import type { ProjectSummary } from "../../services/ProjectService";
 import { makeTask } from "../../stores/testSupport";
-import { buildProjectRows } from "./projectsOverviewLogic";
+import {
+	buildProjectRows,
+	newProjectPath,
+	projectDir,
+	sanitizeProjectName,
+} from "./projectsOverviewLogic";
 
 function summary(over: Partial<ProjectSummary> & { path: string }): ProjectSummary {
 	return {
@@ -60,5 +65,70 @@ describe("buildProjectRows", () => {
 		];
 		const rows = buildProjectRows(summaries, () => []);
 		expect(rows.map((r) => r.name)).toEqual(["Beta", "Gamma", "Delta", "Alpha", "Zeta"]);
+	});
+});
+
+describe("projectDir", () => {
+	it("нет проектов — дефолт Projects", () => {
+		expect(projectDir([])).toBe("Projects");
+	});
+
+	it("папка первого (лексикографически) проекта", () => {
+		expect(projectDir(["Work/Beta.md", "Areas/Alpha.md"])).toBe("Areas");
+	});
+
+	it("проект в корне — папка пустая", () => {
+		expect(projectDir(["Alpha.md"])).toBe("");
+	});
+
+	it("вложенная папка сохраняется целиком", () => {
+		expect(projectDir(["GTD/Projects/Alpha.md"])).toBe("GTD/Projects");
+	});
+});
+
+describe("sanitizeProjectName", () => {
+	it("схлопывает пробелы и триммит", () => {
+		expect(sanitizeProjectName("  Ремонт   кухни ")).toBe("Ремонт кухни");
+	});
+
+	it("вырезает символы, ломающие путь", () => {
+		expect(sanitizeProjectName("a/b:c*d?e")).toBe("a b c d e");
+	});
+
+	it("срезает ведущие точки (иначе скрытый файл)", () => {
+		expect(sanitizeProjectName("...секрет")).toBe("секрет");
+	});
+
+	it("пусто после чистки — null", () => {
+		expect(sanitizeProjectName("   ")).toBeNull();
+		expect(sanitizeProjectName("///")).toBeNull();
+	});
+});
+
+describe("newProjectPath", () => {
+	it("кладёт новый проект в папку существующих", () => {
+		expect(newProjectPath(["Work/Beta.md"], "Гамма")).toBe("Work/Гамма.md");
+	});
+
+	it("нет проектов — Projects/<имя>.md", () => {
+		expect(newProjectPath([], "Альфа")).toBe("Projects/Альфа.md");
+	});
+
+	it("проекты в корне — новый тоже в корне", () => {
+		expect(newProjectPath(["Alpha.md"], "Бета")).toBe("Бета.md");
+	});
+
+	it("санитация имени применяется к пути", () => {
+		expect(newProjectPath([], "a/b")).toBe("Projects/a b.md");
+	});
+
+	it("пустое имя — null (не создаём)", () => {
+		expect(newProjectPath([], "   ")).toBeNull();
+	});
+
+	it("занятый путь в хранилище — суффикс « 2», « 3» (не портим чужую заметку)", () => {
+		const taken = new Set(["Projects/Альфа.md", "Projects/Альфа 2.md"]);
+		expect(newProjectPath([], "Альфа", (p) => taken.has(p))).toBe("Projects/Альфа 3.md");
+		expect(newProjectPath([], "Бета", (p) => taken.has(p))).toBe("Projects/Бета.md");
 	});
 });

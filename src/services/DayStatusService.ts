@@ -55,6 +55,21 @@ export interface DayStatusPort {
 	setDay: (date: IsoDate, status: string) => Promise<void>;
 	clearDay: (date: IsoDate) => Promise<void>;
 	setRange: (from: IsoDate, to: IsoDate, status: string) => Promise<void>;
+	/** Upsert определения статуса (имя→цвет) во frontmatter-карте statuses. */
+	setStatusDef: (name: string, color: string) => Promise<void>;
+	/** Удалить определение статуса из frontmatter-карты statuses. */
+	removeStatusDef: (name: string) => Promise<void>;
+}
+
+/** Привести значение frontmatter.statuses к простой карте имя→строка-цвет. */
+function coerceStatusMap(raw: unknown): Record<string, string> {
+	const out: Record<string, string> = {};
+	if (raw !== null && typeof raw === "object" && !Array.isArray(raw)) {
+		for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+			if (typeof v === "string") out[k] = v;
+		}
+	}
+	return out;
 }
 
 export class DayStatusService implements DayStatusPort {
@@ -126,6 +141,30 @@ export class DayStatusService implements DayStatusPort {
 	async setRange(from: IsoDate, to: IsoDate, status: string): Promise<void> {
 		const path = await this.ensureTargetFile();
 		await this.deps.processFile(path, (c) => withEditedBody(c, (b) => setRangeBody(b, from, to, status)));
+		await this.refresh();
+	}
+
+	async setStatusDef(name: string, color: string): Promise<void> {
+		const key = name.trim();
+		if (key === "") return;
+		const path = await this.ensureTargetFile();
+		await this.deps.processFrontmatter(path, (fm) => {
+			const statuses = coerceStatusMap(fm["statuses"]);
+			statuses[key] = color;
+			fm["statuses"] = statuses;
+		});
+		await this.refresh();
+	}
+
+	async removeStatusDef(name: string): Promise<void> {
+		const key = name.trim();
+		if (key === "") return;
+		const path = await this.ensureTargetFile();
+		await this.deps.processFrontmatter(path, (fm) => {
+			const statuses = coerceStatusMap(fm["statuses"]);
+			delete statuses[key];
+			fm["statuses"] = statuses;
+		});
 		await this.refresh();
 	}
 

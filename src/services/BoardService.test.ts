@@ -37,6 +37,10 @@ interface Harness {
 	queue: string[];
 	frontmatters: Map<string, Record<string, unknown>>;
 	patched: Array<{ path: string; fm: Record<string, unknown> }>;
+	/** Пути файлов с флагом gtd-board (деп containerPaths); тест наполняет вручную. */
+	containers: Set<string>;
+	/** Пути, для которых звался ensureFile. */
+	ensured: string[];
 	service: BoardService;
 }
 
@@ -46,6 +50,8 @@ function makeHarness(): Harness {
 	const dispatcher = new FakeDispatcher(queue);
 	const frontmatters = new Map<string, Record<string, unknown>>();
 	const patched: Array<{ path: string; fm: Record<string, unknown> }> = [];
+	const containers = new Set<string>();
+	const ensured: string[] = [];
 	const service = new BoardService({
 		feed,
 		dispatcher,
@@ -58,8 +64,13 @@ function makeHarness(): Harness {
 			frontmatters.set(path, fm);
 			patched.push({ path, fm });
 		},
+		ensureFile: async (path) => {
+			queue.push("ensure");
+			ensured.push(path);
+		},
+		containerPaths: () => [...containers],
 	});
-	return { feed, dispatcher, queue, frontmatters, patched, service };
+	return { feed, dispatcher, queue, frontmatters, patched, containers, ensured, service };
 }
 
 const TAG_BOARD: BoardDef = {
@@ -148,6 +159,46 @@ describe("BoardService.discoverBoards", () => {
 		}
 		const { boards } = h.service.discoverBoards();
 		expect(boards.map((b) => b.path)).toEqual(["a.md", "b.md"]);
+	});
+
+	it("пустой контейнер (флаг есть, задач ноль) виден discovery через containerPaths", () => {
+		// NUX: файла нет в индексе задач, но он помечен gtd-board — приходит из containerPaths
+		h.containers.add("GTD/Empty.md");
+		h.frontmatters.set("GTD/Empty.md", {
+			"gtd-board": true,
+			id: "empty",
+			columns: [{ id: "todo", match: "#kanban/empty/todo" }],
+		});
+
+		const { boards, errors } = h.service.discoverBoards();
+		expect(errors).toEqual([]);
+		expect(boards).toHaveLength(1);
+		expect(boards[0]!.path).toBe("GTD/Empty.md");
+	});
+
+	it("dedupe: файл и в индексе задач, и в containerPaths — одна доска", () => {
+		h.feed.replaceFile("GTD/Board.md", [
+			boardTask({ filePath: "GTD/Board.md", container: "board" }),
+		]);
+		h.containers.add("GTD/Board.md");
+		h.frontmatters.set("GTD/Board.md", {
+			"gtd-board": true,
+			id: "dev",
+			columns: [{ id: "todo", match: "#kanban/dev/todo" }],
+		});
+
+		const { boards } = h.service.discoverBoards();
+		expect(boards).toHaveLength(1);
+	});
+
+	it("пустой контейнер с битым frontmatter по-прежнему уходит в errors", () => {
+		h.containers.add("bad.md");
+		h.frontmatters.set("bad.md", { "gtd-board": true }); // нет id и columns
+
+		const { boards, errors } = h.service.discoverBoards();
+		expect(boards).toEqual([]);
+		expect(errors).toHaveLength(1);
+		expect(errors[0]!.error).toMatch(/columns/);
 	});
 });
 
@@ -378,6 +429,8 @@ describe("BoardService.moveCard", () => {
 				fn(fm);
 				h.patched.push({ path, fm });
 			},
+			ensureFile: async () => undefined,
+			containerPaths: () => [],
 			knownTaskId: (key) => (key === "x.md#L0" ? "sb9khe" : null),
 		});
 
@@ -533,6 +586,205 @@ describe("BoardService.renameColumn", () => {
 			reason: "empty-name",
 		});
 		expect(await h.service.renameColumn("gone.md", "todo", "X")).toEqual({
+			ok: false,
+			reason: "board-not-found",
+		});
+		expect(h.patched).toEqual([]);
+	});
+});
+
+describe("BoardService.deleteColumn", () => {
+	let h: Harness;
+	beforeEach(() => {
+		h = makeHarness();
+		h.frontmatters.set("Board.md", {
+			"gtd-board": true,
+			id: "dev",
+			columns: [
+				{ id: "todo", name: "Todo", match: "#kanban/dev/todo" },
+				{ id: "doing", name: "Doing", match: "#kanban/dev/doing" },
+				{ id: "done", name: "Done", match: "#kanban/dev/done" },
+			],
+			order: { todo: ["a"], doing: ["b"], done: ["c"] },
+		});
+	});
+
+	it("убирает колонку из columns[] и ключ из order{}; прочее не тронуто", async () => {
+		const res = await h.service.deleteColumn("Board.md", "doing");
+		expect(res).toEqual({ ok: true, colId: "doing" });
+		const fm = h.frontmatters.get("Board.md")!;
+		expect(fm["columns"]).toEqual([
+			{ id: "todo", name: "Todo", match: "#kanban/dev/todo" },
+			{ id: "done", name: "Done", match: "#kanban/dev/done" },
+		]);
+		expect(fm["order"]).toEqual({ todo: ["a"], done: ["c"] });
+	});
+
+	it("несуществующая колонка / нет доски — отказ без записей", async () => {
+		expect(await h.service.deleteColumn("Board.md", "ghost")).toEqual({
+			ok: false,
+			reason: "column-not-found",
+		});
+		expect(await h.service.deleteColumn("gone.md", "todo")).toEqual({
+			ok: false,
+			reason: "board-not-found",
+		});
+		expect(h.patched).toEqual([]);
+	});
+});
+
+describe("BoardService.moveColumn", () => {
+	let h: Harness;
+	beforeEach(() => {
+		h = makeHarness();
+		h.frontmatters.set("Board.md", {
+			"gtd-board": true,
+			id: "dev",
+			columns: [
+				{ id: "todo", name: "Todo", match: "#kanban/dev/todo" },
+				{ id: "doing", name: "Doing", match: "#kanban/dev/doing" },
+				{ id: "done", name: "Done", match: "#kanban/dev/done" },
+			],
+		});
+	});
+
+	const ids = (): string[] =>
+		(h.frontmatters.get("Board.md")!["columns"] as Array<Record<string, unknown>>).map(
+			(c) => c["id"] as string,
+		);
+
+	it("двигает вправо (+1)", async () => {
+		const res = await h.service.moveColumn("Board.md", "todo", 1);
+		expect(res).toEqual({ ok: true, colId: "todo" });
+		expect(ids()).toEqual(["doing", "todo", "done"]);
+	});
+
+	it("двигает влево (-1)", async () => {
+		await h.service.moveColumn("Board.md", "done", -1);
+		expect(ids()).toEqual(["todo", "done", "doing"]);
+	});
+
+	it("кламп на левом краю — no-op {ok:true} без записи", async () => {
+		const res = await h.service.moveColumn("Board.md", "todo", -1);
+		expect(res).toEqual({ ok: true, colId: "todo" });
+		expect(h.patched).toEqual([]);
+		expect(ids()).toEqual(["todo", "doing", "done"]);
+	});
+
+	it("кламп на правом краю — no-op {ok:true} без записи", async () => {
+		const res = await h.service.moveColumn("Board.md", "done", 1);
+		expect(res).toEqual({ ok: true, colId: "done" });
+		expect(h.patched).toEqual([]);
+	});
+
+	it("несуществующая колонка / нет доски — отказ", async () => {
+		expect(await h.service.moveColumn("Board.md", "ghost", 1)).toEqual({
+			ok: false,
+			reason: "column-not-found",
+		});
+		expect(await h.service.moveColumn("gone.md", "todo", 1)).toEqual({
+			ok: false,
+			reason: "board-not-found",
+		});
+		expect(h.patched).toEqual([]);
+	});
+});
+
+describe("BoardService.createBoard", () => {
+	let h: Harness;
+	beforeEach(() => {
+		h = makeHarness();
+	});
+
+	it("ensureFile + frontmatter gtd-board с тремя дефолтными тег-колонками", async () => {
+		const res = await h.service.createBoard("GTD/Моя доска.md", "Моя доска");
+		expect(res).toEqual({ ok: true, path: "GTD/Моя доска.md" });
+		expect(h.ensured).toEqual(["GTD/Моя доска.md"]);
+		// ensureFile строго до записи frontmatter
+		expect(h.queue).toEqual(["ensure", "patch"]);
+		const fm = h.frontmatters.get("GTD/Моя доска.md")!;
+		expect(fm["gtd-board"]).toBe(true);
+		expect(fm["id"]).toBe("moya-doska");
+		expect(fm["name"]).toBe("Моя доска");
+		expect(fm["columns"]).toEqual([
+			{ id: "todo", name: "Очередь", match: "#kanban/moya-doska/todo" },
+			{ id: "doing", name: "В работе", match: "#kanban/moya-doska/doing" },
+			{ id: "done", name: "Готово", match: "#kanban/moya-doska/done" },
+		]);
+	});
+
+	it("созданная доска сразу парсится parseBoardFrontmatter без ошибок", async () => {
+		await h.service.createBoard("B.md", "Dev");
+		h.containers.add("B.md");
+		const { boards, errors } = h.service.discoverBoards();
+		expect(errors).toEqual([]);
+		expect(boards).toHaveLength(1);
+		expect(boards[0]!.def.columns.map((c) => c.id)).toEqual(["todo", "doing", "done"]);
+	});
+
+	it("id-fallback 'board' при имени без ASCII/кириллицы (эмодзи)", async () => {
+		await h.service.createBoard("B.md", "🔥🔥");
+		const fm = h.frontmatters.get("B.md")!;
+		expect(fm["id"]).toBe("board");
+		expect(fm["name"]).toBe("🔥🔥");
+	});
+
+	it("идемпотентно: существующий gtd-board файл не перезаписывается", async () => {
+		h.frontmatters.set("B.md", {
+			"gtd-board": true,
+			id: "custom",
+			name: "Кастом",
+			columns: [{ id: "x", name: "X", match: "#kanban/custom/x" }],
+			order: { x: ["z"] },
+		});
+		const res = await h.service.createBoard("B.md", "Новое имя");
+		expect(res).toEqual({ ok: true, path: "B.md" });
+		// пользовательские колонки/порядок/имя целы
+		expect(h.frontmatters.get("B.md")).toEqual({
+			"gtd-board": true,
+			id: "custom",
+			name: "Кастом",
+			columns: [{ id: "x", name: "X", match: "#kanban/custom/x" }],
+			order: { x: ["z"] },
+		});
+	});
+
+	it("пустое имя — отказ без ensureFile/записи", async () => {
+		expect(await h.service.createBoard("B.md", "   ")).toEqual({ ok: false, reason: "empty-name" });
+		expect(h.ensured).toEqual([]);
+		expect(h.patched).toEqual([]);
+	});
+});
+
+describe("BoardService.renameBoard", () => {
+	let h: Harness;
+	beforeEach(() => {
+		h = makeHarness();
+		h.frontmatters.set("Board.md", {
+			"gtd-board": true,
+			id: "dev",
+			name: "Dev",
+			columns: [{ id: "todo", name: "Todo", match: "#kanban/dev/todo" }],
+		});
+	});
+
+	it("меняет только name; id и колонки не тронуты", async () => {
+		const res = await h.service.renameBoard("Board.md", "Разработка");
+		expect(res).toEqual({ ok: true });
+		expect(h.frontmatters.get("Board.md")).toEqual({
+			"gtd-board": true,
+			id: "dev",
+			name: "Разработка",
+			columns: [{ id: "todo", name: "Todo", match: "#kanban/dev/todo" }],
+		});
+	});
+
+	it("пустое имя / нет доски — отказ без записи", async () => {
+		expect(await h.service.renameBoard("Board.md", "  ")).toEqual({
+			ok: false,
+			reason: "empty-name",
+		});
+		expect(await h.service.renameBoard("gone.md", "X")).toEqual({
 			ok: false,
 			reason: "board-not-found",
 		});

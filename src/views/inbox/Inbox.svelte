@@ -6,7 +6,7 @@
 	import { inboxStore } from "../../stores/derived/queryStore";
 	import type { TaskStore } from "../../stores/taskStore";
 	import TaskCard from "../common/TaskCard.svelte";
-	import { captureTarget } from "../common/taskActions";
+	import { captureTarget, ensureCaptureFile } from "../common/taskActions";
 	import type { TaskMenuPorts } from "../common/taskMenu";
 	import VirtualList from "../common/VirtualList.svelte";
 	import type { DndPort } from "../dnd/types";
@@ -65,7 +65,11 @@
 		const entered = newTask;
 		newTask = ""; // очистка сразу — быстрый ввод серии, фокус остаётся на input
 		try {
-			await vault.ensureFile(target);
+			// файл входящих создаётся и помечается gtd-inbox: true СТРОГО до записи строки
+			if (!(await ensureCaptureFile(vault, target))) {
+				new Notice(`GTD Flow: не удалось подготовить файл входящих ${target}\nТекст: ${entered}`, 0);
+				return;
+			}
 			const ok = await vault.processFile(target, transform);
 			// новая задача появится в списке сама после реиндекса
 			if (!ok) new Notice(`GTD Flow: не удалось записать в ${target}: ${entered}`);

@@ -6,6 +6,7 @@ import {
 	captureTarget,
 	captureTargets,
 	ensureArchiveFile,
+	ensureCaptureFile,
 	findTaskAtLine,
 	moveTaskToTemplates,
 	quickCaptureLine,
@@ -191,6 +192,55 @@ describe("ensureArchiveFile: файл архива с флагом gtd-archive",
 			ensureFile: () => Promise.reject(new Error("disk full")),
 		});
 		const ok = await ensureArchiveFile(f.vault, "GTD/Archive.md");
+		expect(ok).toBe(false);
+		expect(f.fm).toEqual({});
+	});
+});
+
+describe("ensureCaptureFile: файл входящих с флагом gtd-inbox", () => {
+	function fakeVault(over?: { ensureFile?: () => Promise<void> }) {
+		const calls: string[] = [];
+		const fm: Record<string, unknown> = {};
+		return {
+			calls,
+			fm,
+			vault: {
+				ensureFile: async (path: string): Promise<void> => {
+					if (over?.ensureFile) return over.ensureFile();
+					calls.push(`ensure:${path}`);
+				},
+				processFrontmatter: async (
+					path: string,
+					fn: (fm: Record<string, unknown>) => void,
+				): Promise<void> => {
+					calls.push(`frontmatter:${path}`);
+					fn(fm);
+				},
+			},
+		};
+	}
+
+	it("ensureFile → processFrontmatter ставит gtd-inbox: true (порядок сохранён)", async () => {
+		const f = fakeVault();
+		const ok = await ensureCaptureFile(f.vault, "GTD/Inbox.md");
+		expect(ok).toBe(true);
+		expect(f.calls).toEqual(["ensure:GTD/Inbox.md", "frontmatter:GTD/Inbox.md"]);
+		expect(f.fm).toEqual({ "gtd-inbox": true });
+	});
+
+	it("идемпотентно: у файла с уже стоящим флагом флаг остаётся true", async () => {
+		const f = fakeVault();
+		f.fm["gtd-inbox"] = true;
+		const ok = await ensureCaptureFile(f.vault, "GTD/Inbox.md");
+		expect(ok).toBe(true);
+		expect(f.fm).toEqual({ "gtd-inbox": true });
+	});
+
+	it("ensureFile упал → false, флаг не ставится", async () => {
+		const f = fakeVault({
+			ensureFile: () => Promise.reject(new Error("disk full")),
+		});
+		const ok = await ensureCaptureFile(f.vault, "GTD/Inbox.md");
 		expect(ok).toBe(false);
 		expect(f.fm).toEqual({});
 	});

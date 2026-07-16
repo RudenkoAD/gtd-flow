@@ -11,6 +11,8 @@
 	import { buildTaskMenu, type TaskMenuPorts } from "../common/taskMenu";
 	import ProjectGraph from "./ProjectGraph.svelte";
 	import type { ProjectPort } from "../../services/ProjectService";
+	import { NamePromptModal } from "../projects/NamePromptModal";
+	import { newProjectPath } from "../projects/projectsOverviewLogic";
 	import {
 		depthList,
 		pickProjectPath,
@@ -78,6 +80,37 @@
 	function onSelectProject(e: Event): void {
 		selectedPath = (e.currentTarget as HTMLSelectElement).value;
 		persist({ ...(selectedPath !== null ? { projectPath: selectedPath } : {}) });
+	}
+
+	/** «＋ Создать проект» из пустого состояния: имя → скаффолд → выбрать новый
+	 *  путь (граф появится, как только discovery увидит файл по флагу — на epoch). */
+	function createProject(): void {
+		const port = projects;
+		if (port === null) return;
+		new NamePromptModal(app, "Новый проект", "Создать", (name) => {
+			const path = newProjectPath(
+				summaries.map((s) => s.path),
+				name,
+				(p) => app.vault.getFileByPath(p) !== null,
+			);
+			if (path === null) {
+				new Notice("GTD Flow: недопустимое имя проекта");
+				return;
+			}
+			void (async () => {
+				try {
+					const res = await port.createProject(path, name);
+					if (!res.ok) {
+						new Notice(`GTD Flow: проект не создан: ${res.reason ?? "ошибка"}`);
+						return;
+					}
+					selectedPath = res.path ?? path;
+					persist({ projectPath: selectedPath });
+				} catch (err) {
+					new Notice(`GTD Flow: проект не создан: ${String(err)}`);
+				}
+			})();
+		}).open();
 	}
 
 	function openStatusMenu(e: MouseEvent): void {
@@ -164,8 +197,8 @@
 		<div class="gtd-project-empty">Вид проектов не подключён (сервис недоступен)</div>
 	{:else if shownPath === null}
 		<div class="gtd-project-empty">
-			Проектов не найдено. Создайте заметку с frontmatter <code>gtd-project: true</code>
-			и задачами-строками — зависимости задаются полем ⛔.
+			<p>Проектов не найдено.</p>
+			<button class="mod-cta" onclick={createProject}>＋ Создать проект</button>
 		</div>
 	{:else if isPhone}
 		<!-- read-only список по глубине зависимостей; рисование рёбер — только десктоп -->
@@ -255,6 +288,9 @@
 		padding: 24px 12px;
 		text-align: center;
 		color: var(--text-muted);
+	}
+	.gtd-project-empty p {
+		margin: 0 0 12px;
 	}
 	/* мобильный список */
 	.gtd-project-mlist {

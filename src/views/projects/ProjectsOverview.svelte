@@ -1,18 +1,21 @@
 <script lang="ts">
-	import { Notice } from "obsidian";
+	import { Notice, type App } from "obsidian";
 	import type { ProjectStatus } from "../../core/model/Task";
 	import type { ProjectPort } from "../../services/ProjectService";
 	import type { TaskStore } from "../../stores/taskStore";
-	import { buildProjectRows, type ProjectRow } from "./projectsOverviewLogic";
+	import { NamePromptModal } from "./NamePromptModal";
+	import { buildProjectRows, newProjectPath, type ProjectRow } from "./projectsOverviewLogic";
 
 	let {
 		taskStore,
 		projects = null,
+		app,
 		openProject,
 	}: {
 		taskStore: TaskStore;
 		/** null до интеграции сервиса проектов в main.ts (plugin.projects). */
 		projects?: ProjectPort | null;
+		app: App;
 		/** Открыть граф проекта по пути (навигация живёт в ProjectsOverviewView). */
 		openProject: (path: string) => void;
 	} = $props();
@@ -55,17 +58,53 @@
 	function activate(row: ProjectRow): void {
 		openProject(row.path);
 	}
+
+	/** «＋ Проект»: имя → скаффолд (createProject) → сразу открыть граф. */
+	function createProject(): void {
+		const port = projects;
+		if (port === null) return;
+		new NamePromptModal(app, "Новый проект", "Создать", (name) => {
+			const path = newProjectPath(
+				rows.map((r) => r.path),
+				name,
+				(p) => app.vault.getFileByPath(p) !== null,
+			);
+			if (path === null) {
+				new Notice("GTD Flow: недопустимое имя проекта");
+				return;
+			}
+			void (async () => {
+				try {
+					const res = await port.createProject(path, name);
+					if (!res.ok) {
+						new Notice(`GTD Flow: проект не создан: ${res.reason ?? "ошибка"}`);
+						return;
+					}
+					openProject(res.path ?? path);
+				} catch (err) {
+					new Notice(`GTD Flow: проект не создан: ${String(err)}`);
+				}
+			})();
+		}).open();
+	}
 </script>
 
 <div class="gtd-po">
-	<div class="gtd-po-header">Проекты</div>
+	<div class="gtd-po-header">
+		<span class="gtd-po-title">Проекты</span>
+		{#if projects !== null}
+			<button class="mod-cta gtd-po-new" onclick={createProject} title="Создать новый проект">
+				＋ Проект
+			</button>
+		{/if}
+	</div>
 
 	{#if projects === null}
 		<div class="gtd-po-empty">Вид проектов не подключён (сервис недоступен)</div>
 	{:else if rows.length === 0}
 		<div class="gtd-po-empty">
-			Проектов не найдено. Создайте заметку с frontmatter <code>gtd-project: true</code>
-			и задачами-строками — зависимости задаются полем ⛔.
+			<p>Пока нет ни одного проекта.</p>
+			<button class="mod-cta" onclick={createProject}>＋ Создать проект</button>
 		</div>
 	{:else}
 		{#each rows as row (row.path)}
@@ -135,9 +174,21 @@
 		overflow-y: auto;
 	}
 	.gtd-po-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 10px;
 		padding: 8px 10px;
 		font-weight: 600;
 		border-bottom: 1px solid var(--background-modifier-border);
+	}
+	.gtd-po-new {
+		flex: none;
+		font-size: var(--font-ui-smaller, 0.85em);
+		padding: 2px 10px;
+	}
+	.gtd-po-empty p {
+		margin: 0 0 12px;
 	}
 	.gtd-po-empty {
 		padding: 24px 12px;

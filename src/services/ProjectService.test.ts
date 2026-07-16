@@ -39,6 +39,10 @@ interface Harness {
 	port: FakePort;
 	frontmatters: Map<string, Record<string, unknown>>;
 	queue: string[];
+	/** Пути файлов с флагом gtd-project (деп containerPaths); тест наполняет вручную. */
+	containers: Set<string>;
+	/** Пути, для которых звался ensureFile. */
+	ensured: string[];
 	svc: ProjectService;
 	patchCount: () => number;
 }
@@ -48,6 +52,8 @@ function makeHarness(opts: { today?: string; genId?: () => string } = {}): Harne
 	const feed = new FakeFeed(opts.today ?? "2026-07-15");
 	const port = new FakePort(queue);
 	const frontmatters = new Map<string, Record<string, unknown>>();
+	const containers = new Set<string>();
+	const ensured: string[] = [];
 	// dispatcher графовыми транзакциями не используется — заглушка
 	const dispatcher: IntentDispatcher = { dispatch: () => Promise.resolve({ ok: true }) };
 	const svc = new ProjectService({
@@ -61,11 +67,25 @@ function makeHarness(opts: { today?: string; genId?: () => string } = {}): Harne
 			fn(fm);
 			frontmatters.set(p, fm);
 		},
+		ensureFile: async (p) => {
+			queue.push("ensure");
+			ensured.push(p);
+		},
+		containerPaths: () => [...containers],
 		dispatcher,
 		todayIso: () => feed.today(),
 		genId: opts.genId,
 	});
-	return { feed, port, frontmatters, queue, svc, patchCount: () => queue.filter((q) => q === "patch").length };
+	return {
+		feed,
+		port,
+		frontmatters,
+		queue,
+		containers,
+		ensured,
+		svc,
+		patchCount: () => queue.filter((q) => q === "patch").length,
+	};
 }
 
 /** Файл проекта: строки → задачи (container 'project') в индекс + текст в порт. */
@@ -152,6 +172,67 @@ describe("ProjectService.discoverProjects", () => {
 		loadProject(h, "b.md", ["- [ ] б"]);
 		loadProject(h, "a.md", ["- [ ] а"]);
 		expect(h.svc.discoverProjects().map((s) => s.path)).toEqual(["a.md", "b.md"]);
+	});
+
+	it("пустой контейнер (флаг есть, задач ноль) виден через containerPaths", () => {
+		// NUX: файла нет в индексе задач, приходит из containerPaths; summarize устойчив к 0 задач
+		const h = makeHarness();
+		h.containers.add("GTD/Пусто.md");
+		h.frontmatters.set("GTD/Пусто.md", { "gtd-project": true, name: "Пустой" });
+
+		const list = h.svc.discoverProjects();
+		expect(list).toHaveLength(1);
+		expect(list[0]).toMatchObject({ path: "GTD/Пусто.md", name: "Пустой", status: "active", complete: false });
+	});
+
+	it("dedupe: файл и в индексе задач, и в containerPaths — один проект", () => {
+		const h = makeHarness();
+		loadProject(h, P, ["- [ ] задача 🆔 aa1"], { name: "Ремонт" });
+		h.containers.add(P);
+		expect(h.svc.discoverProjects()).toHaveLength(1);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// createProject
+// ---------------------------------------------------------------------------
+
+describe("ProjectService.createProject", () => {
+	it("ensureFile + frontmatter gtd-project и name; строго ensure→patch", async () => {
+		const h = makeHarness();
+
+		const res = await h.svc.createProject("GTD/Ремонт.md", "Ремонт кухни");
+
+		expect(res).toEqual({ ok: true, path: "GTD/Ремонт.md" });
+		expect(h.ensured).toEqual(["GTD/Ремонт.md"]);
+		expect(h.queue).toEqual(["ensure", "patch"]);
+		expect(h.frontmatters.get("GTD/Ремонт.md")).toEqual({ "gtd-project": true, name: "Ремонт кухни" });
+	});
+
+	it("созданный проект сразу виден discovery через containerPaths", async () => {
+		const h = makeHarness();
+		await h.svc.createProject("P.md", "Проект");
+		h.containers.add("P.md");
+		const list = h.svc.discoverProjects();
+		expect(list).toHaveLength(1);
+		expect(list[0]).toMatchObject({ path: "P.md", name: "Проект", status: "active" });
+	});
+
+	it("идемпотентно: существующий gtd-project файл не перезаписывается", async () => {
+		const h = makeHarness();
+		h.frontmatters.set("P.md", { "gtd-project": true, name: "Старое", status: "on-hold" });
+
+		const res = await h.svc.createProject("P.md", "Новое");
+
+		expect(res).toEqual({ ok: true, path: "P.md" });
+		expect(h.frontmatters.get("P.md")).toEqual({ "gtd-project": true, name: "Старое", status: "on-hold" });
+	});
+
+	it("пустое имя — отказ без ensureFile/записи", async () => {
+		const h = makeHarness();
+		expect(await h.svc.createProject("P.md", "   ")).toEqual({ ok: false, reason: "empty-name" });
+		expect(h.ensured).toEqual([]);
+		expect(h.patchCount()).toBe(0);
 	});
 });
 

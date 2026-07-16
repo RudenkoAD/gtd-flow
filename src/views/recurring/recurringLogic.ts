@@ -1,11 +1,13 @@
 /**
  * Чистая логика вида «Регулярные» (без DOM и obsidian): вью-модель шаблона,
- * группировка по файлу/заголовку и история копий. Всё проверяемое в node —
- * здесь; Recurring.svelte остаётся тонкой обвязкой.
+ * группировка по файлу/заголовку, история копий и создание нового шаблона
+ * с нуля. Всё проверяемое в node — здесь; Recurring.svelte остаётся тонкой
+ * обвязкой.
  */
 import type { IsoDate, Task } from "../../core/model/Task";
 import { isParseError, parseRule, type ParseError, type Rule } from "../../core/recurrence/grammar";
 import { nextOccurrence } from "../../core/recurrence/nextOccurrence";
+import { recurringTemplateTarget } from "../common/taskActions";
 
 export type TemplateBadge = "paused" | "error" | "expired";
 
@@ -90,6 +92,70 @@ export function groupByFileAndHeading(templates: readonly TemplateVM[]): Templat
 		current.templates.push(vm);
 	}
 	return out;
+}
+
+// ---------------------------------------------------------------------------
+// Создание нового шаблона с нуля (NUX: кнопка «＋ Шаблон»)
+// ---------------------------------------------------------------------------
+
+/**
+ * Строка нового шаблона: `- [ ] <название> 🔁 <правило>` (та же форма, что
+ * buildEventLine для серий событий). Схлопывает пробелы в названии. Пустое
+ * название — null (не пишем).
+ */
+export function buildTemplateLine(name: string, ruleText: string): string | null {
+	const n = name.replace(/\s+/g, " ").trim();
+	if (n === "") return null;
+	return `- [ ] ${n} 🔁 ${ruleText.trim()}`;
+}
+
+/** Структурный порт файла шаблонов; совместим с VaultAdapter (ensure+process+fm). */
+export interface TemplateVaultPort {
+	ensureFile(path: string): Promise<void>;
+	processFile(path: string, transform: (content: string) => string | null): Promise<boolean>;
+	processFrontmatter(path: string, fn: (fm: Record<string, unknown>) => void): Promise<unknown>;
+}
+
+export type TemplateWriteResult = { ok: true; path: string } | { ok: false; reason: string };
+
+/** append строки в конец файла (форма '\n' — как WritebackService.moveLine / eventSeries). */
+function appendLine(content: string, line: string): string {
+	return content.trimEnd() !== ""
+		? content + (content.endsWith("\n") ? "" : "\n") + line + "\n"
+		: line + "\n";
+}
+
+/**
+ * Создать шаблон регулярной задачи с нуля: цель — первый существующий
+ * gtd-recurring файл, иначе `<папка GTD>/Recurring.md` (recurringTemplateTarget).
+ * Файл гарантируется с флагом `gtd-recurring: true` СТРОГО до append (иначе
+ * строка успела бы прожить как обычная задача и протечь во входящие — тот же
+ * инвариант, что createEventSeries). Правило валидируется parseRule до записи.
+ * Возврат — путь файла, куда добавлена строка (для Notice/навигации).
+ */
+export async function createTemplate(deps: {
+	vault: TemplateVaultPort;
+	/** Пути существующих gtd-recurring файлов (recurringFilePaths из индекса). */
+	recurringFiles: readonly string[];
+	/** settings.recurring.spawnTarget — из него берём «домашнюю» папку GTD. */
+	spawnTarget: string;
+	name: string;
+	ruleText: string;
+}): Promise<TemplateWriteResult> {
+	if (isParseError(parseRule(deps.ruleText))) return { ok: false, reason: "invalid-rule" };
+	const line = buildTemplateLine(deps.name, deps.ruleText);
+	if (line === null) return { ok: false, reason: "empty-name" };
+	const target = recurringTemplateTarget(deps.recurringFiles, deps.spawnTarget);
+	try {
+		await deps.vault.ensureFile(target.path);
+		await deps.vault.processFrontmatter(target.path, (fm) => {
+			fm["gtd-recurring"] = true;
+		});
+	} catch {
+		return { ok: false, reason: "template-file-create-failed" };
+	}
+	const ok = await deps.vault.processFile(target.path, (content) => appendLine(content, line));
+	return ok ? { ok: true, path: target.path } : { ok: false, reason: "write-failed" };
 }
 
 /**

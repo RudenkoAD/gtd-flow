@@ -66,3 +66,57 @@ export function buildProjectRows(
 	});
 	return rows;
 }
+
+// ---------------------------------------------------------------------------
+// Путь нового файла-проекта (NUX: кнопка «＋ Проект»)
+// ---------------------------------------------------------------------------
+
+/**
+ * Папка для новых проектов: каталог первого (лексикографически) существующего
+ * проекта — новые проекты ложатся рядом с уже заведёнными; при отсутствии
+ * проектов — дефолт "Projects". Путь без "/" ⇒ проект в корне (dir === "").
+ */
+export function projectDir(existingPaths: readonly string[]): string {
+	const first = [...existingPaths].sort()[0];
+	if (first === undefined) return "Projects";
+	const slash = first.lastIndexOf("/");
+	return slash === -1 ? "" : first.slice(0, slash);
+}
+
+/**
+ * Санитация имени проекта в безопасное имя файла: символы, ломающие путь
+ * (разделители и зарезервированные в файловых системах), заменяются пробелом,
+ * пробелы схлопываются, ведущие точки срезаются (иначе скрытый файл). Пусто
+ * после чистки — null (вызывающий не создаёт файл).
+ */
+export function sanitizeProjectName(name: string): string | null {
+	const cleaned = name
+		.replace(/[\\/:*?"<>|]/g, " ")
+		.replace(/\s+/g, " ")
+		.trim()
+		.replace(/^\.+/, "")
+		.trim();
+	return cleaned === "" ? null : cleaned;
+}
+
+/**
+ * Путь нового файла-проекта `<projectDir>/<имя>.md` (ТЗ NUX §6/§7). null — имя
+ * пустое после санитации: вызывающий показывает Notice и не создаёт проект.
+ *
+ * exists — проверка занятости пути в ХРАНИЛИЩЕ (vault.getFileByPath), а не только
+ * среди известных проектов: createProject иначе дописал бы gtd-project в чужую
+ * обычную заметку с совпавшим именем. Занято → суффикс « 2», « 3»…
+ */
+export function newProjectPath(
+	existingPaths: readonly string[],
+	name: string,
+	exists: (path: string) => boolean = () => false,
+): string | null {
+	const safe = sanitizeProjectName(name);
+	if (safe === null) return null;
+	const dir = projectDir(existingPaths);
+	const pathOf = (base: string): string => (dir === "" ? `${base}.md` : `${dir}/${base}.md`);
+	let path = pathOf(safe);
+	for (let n = 2; exists(path); n++) path = pathOf(`${safe} ${n}`);
+	return path;
+}

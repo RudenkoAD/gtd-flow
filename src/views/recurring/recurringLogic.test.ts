@@ -3,10 +3,13 @@ import type { Task } from "../../core/model/Task";
 import { isParseError } from "../../core/recurrence/grammar";
 import { makeTask } from "../../stores/testSupport";
 import {
+	buildTemplateLine,
 	buildTemplateVM,
+	createTemplate,
 	deleteTemplateBody,
 	groupByFileAndHeading,
 	historyOf,
+	type TemplateVaultPort,
 } from "./recurringLogic";
 
 const TODAY = "2026-07-15";
@@ -141,5 +144,145 @@ describe("deleteTemplateBody", () => {
 		expect(deleteTemplateBody("Ревью недели")).toBe(
 			"Удалить шаблон «Ревью недели»? Уже созданные копии останутся.",
 		);
+	});
+});
+
+describe("buildTemplateLine", () => {
+	it("собирает `- [ ] <имя> 🔁 <правило>`", () => {
+		expect(buildTemplateLine("Полить цветы", "every day")).toBe("- [ ] Полить цветы 🔁 every day");
+	});
+
+	it("схлопывает пробелы в названии и триммит правило", () => {
+		expect(buildTemplateLine("  Ревью   недели ", "  every week  ")).toBe(
+			"- [ ] Ревью недели 🔁 every week",
+		);
+	});
+
+	it("пустое имя — null", () => {
+		expect(buildTemplateLine("   ", "every day")).toBeNull();
+	});
+});
+
+/** In-memory порт файла шаблонов (образец фейков eventSeries.test). */
+class FakeVault implements TemplateVaultPort {
+	readonly files = new Map<string, string>();
+	readonly fm = new Map<string, Record<string, unknown>>();
+	readonly ensured: string[] = [];
+
+	constructor(seed: Record<string, string> = {}) {
+		for (const [p, c] of Object.entries(seed)) this.files.set(p, c);
+	}
+
+	async ensureFile(path: string): Promise<void> {
+		this.ensured.push(path);
+		if (!this.files.has(path)) this.files.set(path, "");
+	}
+
+	async processFile(
+		path: string,
+		transform: (content: string) => string | null,
+	): Promise<boolean> {
+		const cur = this.files.get(path);
+		if (cur === undefined) return false;
+		const next = transform(cur);
+		if (next === null || next === cur) return false;
+		this.files.set(path, next);
+		return true;
+	}
+
+	async processFrontmatter(
+		path: string,
+		fn: (fm: Record<string, unknown>) => void,
+	): Promise<unknown> {
+		const cur = this.fm.get(path) ?? {};
+		fn(cur);
+		this.fm.set(path, cur);
+		return true;
+	}
+}
+
+describe("createTemplate", () => {
+	const base = {
+		spawnTarget: "GTD/Inbox.md",
+		name: "Полить цветы",
+		ruleText: "every day",
+	};
+
+	it("нет файлов шаблонов — создаёт <папка GTD>/Recurring.md с флагом и строкой", async () => {
+		const vault = new FakeVault();
+		const res = await createTemplate({ vault, recurringFiles: [], ...base });
+		expect(res).toEqual({ ok: true, path: "GTD/Recurring.md" });
+		expect(vault.files.get("GTD/Recurring.md")).toBe("- [ ] Полить цветы 🔁 every day\n");
+		expect(vault.fm.get("GTD/Recurring.md")).toEqual({ "gtd-recurring": true });
+	});
+
+	it("флаг gtd-recurring ставится СТРОГО до записи строки (ensureFile до processFile)", async () => {
+		const vault = new FakeVault();
+		await createTemplate({ vault, recurringFiles: [], ...base });
+		// файл гарантирован до append — ensureFile звался на тот же путь
+		expect(vault.ensured).toContain("GTD/Recurring.md");
+	});
+
+	it("существующий файл шаблонов — append туда, без нового файла", async () => {
+		const vault = new FakeVault({ "GTD/Recurring.md": "- [ ] старый 🔁 every week" });
+		const res = await createTemplate({
+			vault,
+			recurringFiles: ["GTD/Recurring.md"],
+			...base,
+		});
+		expect(res).toEqual({ ok: true, path: "GTD/Recurring.md" });
+		expect(vault.files.get("GTD/Recurring.md")).toBe(
+			"- [ ] старый 🔁 every week\n- [ ] Полить цветы 🔁 every day\n",
+		);
+	});
+
+	it("первый (по сортировке) существующий файл — цель append", async () => {
+		const vault = new FakeVault({ "A/Rec.md": "", "B/Rec.md": "" });
+		const res = await createTemplate({
+			vault,
+			recurringFiles: ["B/Rec.md", "A/Rec.md"],
+			...base,
+		});
+		// recurringTemplateTarget берёт recurringFiles[0] как есть (вид сортирует их заранее)
+		expect(res.ok && res.path).toBe("B/Rec.md");
+	});
+
+	it("невалидное правило — отказ без записи", async () => {
+		const vault = new FakeVault();
+		const res = await createTemplate({
+			vault,
+			recurringFiles: [],
+			spawnTarget: "GTD/Inbox.md",
+			name: "Полить цветы",
+			ruleText: "каждый вторник",
+		});
+		expect(res).toEqual({ ok: false, reason: "invalid-rule" });
+		expect(vault.files.size).toBe(0);
+		expect(vault.ensured).toEqual([]);
+	});
+
+	it("пустое имя — отказ без записи", async () => {
+		const vault = new FakeVault();
+		const res = await createTemplate({
+			vault,
+			recurringFiles: [],
+			spawnTarget: "GTD/Inbox.md",
+			name: "   ",
+			ruleText: "every day",
+		});
+		expect(res).toEqual({ ok: false, reason: "empty-name" });
+		expect(vault.ensured).toEqual([]);
+	});
+
+	it("spawnTarget без папки — файл шаблонов в корне", async () => {
+		const vault = new FakeVault();
+		const res = await createTemplate({
+			vault,
+			recurringFiles: [],
+			spawnTarget: "Inbox.md",
+			name: "Полить цветы",
+			ruleText: "every day",
+		});
+		expect(res).toEqual({ ok: true, path: "Recurring.md" });
 	});
 });

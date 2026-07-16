@@ -24,6 +24,9 @@ interface FmKeyIndex {
 	byPath: Map<string, string>;
 }
 
+/** Пустой результат fmPaths без аллокации нового Set на каждый промах. */
+const EMPTY_PATH_SET: ReadonlySet<string> = new Set<string>();
+
 export class MetadataAdapter implements VaultEvents {
 	/** Ленивая обратная карта frontmatter (ключ → индекс); null — ещё не
 	 *  строилась, и события её поддержки не подключены. */
@@ -47,19 +50,39 @@ export class MetadataAdapter implements VaultEvents {
 
 	/** Однократный колбэк по полному resolve кэша метаданных (ТЗ §2:
 	 *  первичная сборка — после onLayoutReady + resolved). Если кэш уже
-	 *  готов — колбэк зовётся синхронно. */
+	 *  готов — колбэк зовётся синхронно.
+	 *
+	 *  Поллинг-фолбэк: на хранилище БЕЗ единого md-файла (первый запуск нового
+	 *  пользователя) событие 'resolved' может не прийти вовсе, при этом флаг
+	 *  `initialized` позже становится true — без фолбэка вся инициализация
+	 *  (индекс, онбординг) зависала бы навсегда. Интервал гасится после
+	 *  срабатывания любого из путей. */
 	onResolved(cb: () => void): () => void {
 		if (this.isResolved()) {
 			cb();
 			return () => undefined;
 		}
-		const ref = this.app.metadataCache.on("resolved", () => {
+		let fired = false;
+		const fire = (): void => {
+			if (fired) return;
+			fired = true;
 			this.resolvedSeen = true;
 			this.app.metadataCache.offref(ref);
+			clearInterval(pollId);
 			cb();
-		});
+		};
+		const ref = this.app.metadataCache.on("resolved", fire);
 		this.plugin.registerEvent(ref);
-		return () => this.app.metadataCache.offref(ref);
+		// голый setInterval (не window.*): в Obsidian это то же самое, а node-тесты
+		// стаба без window; registerInterval снимет его при выгрузке плагина
+		const pollId = setInterval(() => {
+			if (this.isResolved()) fire();
+		}, 250) as unknown as number;
+		this.plugin.registerInterval(pollId);
+		return () => {
+			this.app.metadataCache.offref(ref);
+			clearInterval(pollId);
+		};
 	}
 
 	onChanged(cb: (snap: FileSnapshot) => void): () => void {
@@ -146,17 +169,35 @@ export class MetadataAdapter implements VaultEvents {
 	 * инкрементально по событиям metadataCache/vault, см. ensureFmTracking.
 	 */
 	findByFrontmatterValue(key: string, value: unknown): string | null {
+		const paths = this.fmPaths(key, value);
+		let best: string | null = null;
+		for (const p of paths) if (best === null || p < best) best = p;
+		return best;
+	}
+
+	/**
+	 * ВСЕ пути с frontmatter[key] === value, отсортированные лексикографически
+	 * (NUX: пустой файл-контейнер с флагом, но без единой строки-задачи, невидим
+	 * для discovery по индексу задач — этот метод отдаёт его напрямую по флагу).
+	 *
+	 * Делит ленивый обратный индекс с findByFrontmatterValue: полный обход
+	 * только при ПЕРВОМ запросе ключа, дальше инкрементально по событиям
+	 * metadataCache/vault (ensureFmTracking). Как и findByFrontmatterValue,
+	 * НЕ звать до resolve кэша — иначе обратная карта закэшируется пустой.
+	 */
+	pathsByFrontmatterValue(key: string, value: unknown): string[] {
+		return [...this.fmPaths(key, value)].sort();
+	}
+
+	/** Живой набор путей-носителей значения (общий для find/paths); строит карту при первом запросе ключа. */
+	private fmPaths(key: string, value: unknown): ReadonlySet<string> {
 		const indexes = this.ensureFmTracking();
 		let idx = indexes.get(key);
 		if (idx === undefined) {
 			idx = this.buildFmIndex(key);
 			indexes.set(key, idx);
 		}
-		const paths = idx.byValue.get(String(value));
-		if (paths === undefined) return null;
-		let best: string | null = null;
-		for (const p of paths) if (best === null || p < best) best = p;
-		return best;
+		return idx.byValue.get(String(value)) ?? EMPTY_PATH_SET;
 	}
 
 	/** Подключает поддержание обратных карт к событиям (однократно).

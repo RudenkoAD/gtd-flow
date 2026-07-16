@@ -15,10 +15,13 @@
  * - weekly с byDay при n>1: чётность недель детерминирует ЯКОРЬ (anchor) —
  *   rule.from либо базовая дата серии события. При известном якоре членами
  *   считаются перечисленные дни ТОЛЬКО в неделях, отстоящих от недели якоря
- *   (недели от понедельника) на кратное n. Якоря нет (anchor === undefined) —
- *   прежняя семантика ЦЕПОЧКИ КУРСОРОВ: n-недельный шаг действует лишь от
- *   after-члена (курсоры — всегда члены); от не-члена (bootstrap after=today−1,
- *   снап) — ближайший перечисленный день следующей недели.
+ *   (недели от понедельника) на кратное n. ФАЗА ОТ ПЕРВОГО ВХОЖДЕНИЯ: неделя
+ *   якоря берётся как неделя ПЕРВОГО перечисленного (byDay) дня ≥ якоря, а не
+ *   как неделя самой даты якоря (см. snapWeekAnchor) — иначе, когда якорь не на
+ *   дне byDay, первый член серии выпадал бы из фазы и пропускался. Якоря нет
+ *   (anchor === undefined) — прежняя семантика ЦЕПОЧКИ КУРСОРОВ: n-недельный шаг
+ *   действует лишь от after-члена (курсоры — всегда члены); от не-члена (bootstrap
+ *   after=today−1, снап) — ближайший перечисленный день следующей недели.
  */
 import type { IsoDate } from "../model/Task";
 import type { Rule } from "./grammar";
@@ -35,6 +38,33 @@ import {
 
 /** Жёсткий предел итераций для любых сканирующих циклов повторов. */
 export const MAX_ITERATIONS = 1000;
+
+/**
+ * Нормализация якоря чётности недель к «фазе от первого вхождения» (ТЗ §6).
+ *
+ * Чётность недель weekly-правил с n>1 отсчитывается от недели ПЕРВОГО
+ * перечисленного (byDay) дня ≥ якоря, а НЕ от недели самой даты якоря. Когда
+ * якорь (from / базовая дата серии) не попадает на день из byDay, ближайшее
+ * вхождение лежит уже в следующей неделе — именно она задаёт фазу; иначе первый
+ * член серии выпадал бы из фазы и пропускался (`every 2 weeks on tue from <среда>`
+ * без снапа дал бы вторник ЧЕРЕЗ неделю вместо ближайшего).
+ *
+ * Снап дешёвый, без циклов по датам: день недели якоря и byDay известны — чистая
+ * арифметика недели. Идемпотентен: якорь уже на дне byDay → возвращается он сам
+ * (снап внутри той же недели её понедельник — а с ним и фазу — не меняет). days
+ * предполагается непустым и отсортированным по возрастанию (гарантия грамматики).
+ */
+export function snapWeekAnchor(anchor: IsoDate, days: readonly number[]): IsoDate {
+	const first = days[0];
+	if (first === undefined) return anchor; // недостижимо на byDay-правилах
+	const dow = dayOfWeek(anchor);
+	const weekStart = addDays(anchor, -dow); // понедельник недели якоря
+	for (const wd of days) {
+		if (wd >= dow) return addDays(weekStart, wd); // первый перечисленный день ≥ dow — здесь же
+	}
+	// перечисленных дней ≥ dow в неделе якоря нет — первый день СЛЕДУЮЩЕЙ недели
+	return addDays(weekStart, 7 + first);
+}
 
 function capUntil(cand: IsoDate, until: IsoDate | undefined): IsoDate | null {
 	if (until !== undefined && compare(cand, until) > 0) return null;
@@ -73,9 +103,11 @@ export function nextOccurrence(rule: Rule, after: IsoDate, anchor?: IsoDate): Is
 
 			// Якорь (rule.from либо базовая дата серии) закрепляет чётность недель:
 			// при n>1 члены — перечисленные дни лишь в неделях, кратно n отстоящих
-			// от недели якоря. off — смещение недели after от фазовой по модулю n.
+			// от недели якоря. Фазовая неделя — неделя первого вхождения (snapWeekAnchor),
+			// не самой даты якоря. off — смещение недели after от фазовой по модулю n.
 			if (anchor !== undefined && rule.n > 1) {
-				const off = ((weeksBetween(after, anchor) % rule.n) + rule.n) % rule.n;
+				const eff = snapWeekAnchor(anchor, days);
+				const off = ((weeksBetween(after, eff) % rule.n) + rule.n) % rule.n;
 				if (off === 0) {
 					// неделя «в фазе»: ближайший перечисленный день строго позже after —
 					// здесь же; исчерпаны — прыжок ровно на n недель вперёд
@@ -132,8 +164,10 @@ export function nextOccurrence(rule: Rule, after: IsoDate, anchor?: IsoDate): Is
  * Для правил без абсолютного якоря (daily, weekly без byDay) любая дата — член.
  * Для weekly с byDay и n>1 чётность недель проверяется ТОЛЬКО при известном
  * якоре (anchor: rule.from либо базовая дата серии): дата — член, если её неделя
- * отстоит от недели якоря на кратное n. Без якоря (anchor === undefined) —
- * лишь структурная совместимость (день недели), как в семантике цепочки курсоров.
+ * отстоит от недели якоря на кратное n. Фаза считается от недели первого
+ * вхождения (snapWeekAnchor), как и в nextOccurrence, — единая нормализация в
+ * обоих местах держит isOccurrence консистентным с nextOccurrence. Без якоря
+ * (anchor === undefined) — лишь структурная совместимость (день недели).
  */
 export function isOccurrence(rule: Rule, date: IsoDate, anchor?: IsoDate): boolean {
 	if (rule.from !== undefined && compare(date, rule.from) < 0) return false;
@@ -146,8 +180,9 @@ export function isOccurrence(rule: Rule, date: IsoDate, anchor?: IsoDate): boole
 		case "weekly":
 			if (rule.byDay.length === 0) return true;
 			if (!rule.byDay.includes(dayOfWeek(date))) return false;
-			// чётность недель — только при известном якоре и n>1
-			return anchor === undefined || rule.n <= 1 || weeksBetween(date, anchor) % rule.n === 0;
+			// чётность недель — только при известном якоре и n>1; фаза от первого вхождения
+			if (anchor === undefined || rule.n <= 1) return true;
+			return weeksBetween(date, snapWeekAnchor(anchor, rule.byDay)) % rule.n === 0;
 		case "monthly": {
 			const p = toParts(date);
 			const dom = rule.day === "last" ? daysInMonth(p.y, p.m) : clampDay(p.y, p.m, rule.day);

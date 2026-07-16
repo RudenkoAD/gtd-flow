@@ -7,7 +7,7 @@
 import type { IsoDate } from "../model/Task";
 import { addDays, compare } from "./dateMath";
 import type { Rule } from "./grammar";
-import { nextOccurrence } from "./nextOccurrence";
+import { nextOccurrence, snapWeekAnchor } from "./nextOccurrence";
 
 /** Предохранитель от неограниченного разворота (широкий диапазон / плотное правило). */
 export const DEFAULT_OCCURRENCE_CAP = 500;
@@ -24,12 +24,19 @@ export const DEFAULT_OCCURRENCE_CAP = 500;
 const WEEK_PARITY_EPOCH: IsoDate = "1970-01-05"; // понедельник
 
 /** Эффективный якорь для разворота: явный from/base серии, иначе — для weekly
- *  n>1 с byDay стабильный эпоха-фолбэк (не даёт фазе зависеть от диапазона). */
+ *  n>1 с byDay стабильный эпоха-фолбэк (не даёт фазе зависеть от диапазона).
+ *  Итог для weekly с byDay проходит через ту же нормализацию фазы, что и ядро
+ *  (snapWeekAnchor): якорь → неделя первого вхождения. Для эпоха-фолбэка снап
+ *  внутри той же недели (понедельник → первый день byDay) фазу не меняет —
+ *  нормализация здесь ради единообразия с nextOccurrence/isOccurrence. */
 function effectiveAnchor(rule: Rule, anchor: IsoDate | undefined): IsoDate | undefined {
-	if (rule.from !== undefined) return rule.from;
-	if (anchor !== undefined) return anchor;
-	if (rule.freq === "weekly" && rule.byDay.length > 0 && rule.n > 1) return WEEK_PARITY_EPOCH;
-	return undefined;
+	let anc: IsoDate | undefined;
+	if (rule.from !== undefined) anc = rule.from;
+	else if (anchor !== undefined) anc = anchor;
+	else if (rule.freq === "weekly" && rule.byDay.length > 0 && rule.n > 1) anc = WEEK_PARITY_EPOCH;
+	else return undefined;
+	if (rule.freq === "weekly" && rule.byDay.length > 0) return snapWeekAnchor(anc, rule.byDay);
+	return anc;
 }
 
 /**

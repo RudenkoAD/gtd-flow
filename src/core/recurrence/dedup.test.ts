@@ -35,6 +35,7 @@ function makeCopy(over: Partial<Task> = {}): Task {
 		priority: "highest",
 		dependsOn: [],
 		excludedDates: [],
+		location: null,
 		tags: ["#review"],
 		container: "plain",
 		projectActive: true,

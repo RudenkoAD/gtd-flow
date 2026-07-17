@@ -21,3 +21,11 @@
 	outline: 2px solid var(--interactive-accent);
 	outline-offset: -2px;
 }
+
+/* Подсказка события с местом (obsidianTooltip, classes: gtd-event-tooltip):
+   двустрочный текст «<описание>\n📍 <место>» — pre-line сохраняет перевод
+   строки, а left выравнивает «📍 …» под названием. */
+.tooltip.gtd-event-tooltip {
+	white-space: pre-line;
+	text-align: left;
+}

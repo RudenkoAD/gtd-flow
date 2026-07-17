@@ -64,6 +64,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
 		priority: "none",
 		dependsOn: [],
 		excludedDates: [],
+		location: null,
 		tags: [],
 		container: "plain",
 		projectActive: true,
@@ -515,6 +516,20 @@ describe("expandEventOccurrences (§события)", () => {
 	it("одноразовое без 📅 (и без 🔁) игнорируется", () => {
 		const noop = event({ recurrence: null, due: null });
 		expect(expandEventOccurrences([noop], "2026-07-15", "2026-07-31").size).toBe(0);
+	});
+
+	it("📍 место прокидывается в вхождение серии и одноразового", () => {
+		const series = event({ recurrence: "every day", location: "Спортзал" });
+		const so = expandEventOccurrences([series], "2026-07-15", "2026-07-15").get("2026-07-15")![0]!;
+		expect(so.location).toBe("Спортзал");
+
+		const single = event({ due: "2026-07-21", location: "Офис, 3 этаж" });
+		const oo = expandEventOccurrences([single], "2026-07-15", "2026-07-31").get("2026-07-21")![0]!;
+		expect(oo.location).toBe("Офис, 3 этаж");
+
+		const noLoc = event({ recurrence: "every day" });
+		const no = expandEventOccurrences([noLoc], "2026-07-15", "2026-07-15").get("2026-07-15")![0]!;
+		expect(no.location).toBeNull();
 	});
 });
 

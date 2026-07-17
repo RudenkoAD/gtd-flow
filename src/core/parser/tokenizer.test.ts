@@ -465,3 +465,63 @@ describe("tokenizeSegments (низкоуровневый)", () => {
 		expect(tokenizeSegments(" just text ")).toEqual([{ kind: "text", text: " just text " }]);
 	});
 });
+
+describe("📍 location: свободный текст до следующего поля (как 🔁)", () => {
+	// 📍 — поле ТОЛЬКО при { location: true } (строки-события); опция передаётся
+	// парсером лишь для container "events". По умолчанию 📍 — обычный текст.
+	it("payload идёт до конца строки, хвостовые пробелы уходят тексту", () => {
+		const t = tokenizeTaskLine("- [ ] Созвон 📍 Кафе на углу  ", { location: true })!;
+		const f = fields(t.segments);
+		expect(f[0]!.field).toBe("location");
+		expect(f[0]!.payload).toBe("Кафе на углу");
+		const last = t.segments[t.segments.length - 1]!;
+		expect(last).toEqual({ kind: "text", text: "  " });
+	});
+
+	it("payload обрезается перед следующим полем 🔁", () => {
+		const t = tokenizeTaskLine("- [ ] Тр 📍 Спортзал на Ленина 🔁 every tuesday at 19:00", {
+			location: true,
+		})!;
+		const f = fields(t.segments);
+		expect(f[0]!.field).toBe("location");
+		expect(f[0]!.payload).toBe("Спортзал на Ленина");
+		expect(f[1]!.field).toBe("recurrence");
+		expect(f[1]!.payload).toBe("every tuesday at 19:00");
+	});
+
+	it("🔁 обрезается перед 📍 и наоборот (соседство полей со свободным текстом)", () => {
+		const t = tokenizeTaskLine("- [ ] Тр 🔁 every tuesday at 19:00 📍 Зал 🆔 ev1", {
+			location: true,
+		})!;
+		const f = fields(t.segments);
+		expect(f[0]!.field).toBe("recurrence");
+		expect(f[0]!.payload).toBe("every tuesday at 19:00");
+		expect(f[1]!.field).toBe("location");
+		expect(f[1]!.payload).toBe("Зал");
+		expect(f[2]!.field).toBe("id");
+		expect(f[2]!.payload).toBe("ev1");
+	});
+
+	it("round-trip дословный со свободным текстом места (в т.ч. рядом с 🔁/🆔)", () => {
+		// round-trip лослесс НЕЗАВИСИМО от флага: 📍 либо поле, либо текст — байты те же
+		for (const line of [
+			"- [ ] Созвон 📅 2026-07-20 14:30 📍 Офис, 3 этаж",
+			"- [ ] Тр 🔁 every tuesday at 19:00 📍 Спортзал на Ленина 🆔 ev1",
+			"- [ ] X 📍 Место  с  двойными  пробелами 🚫 2026-07-21 ^blk",
+		]) {
+			for (const opts of [{}, { location: true }]) {
+				const t = tokenizeTaskLine(line, opts);
+				expect(t).not.toBeNull();
+				expect(serializeTokens(t!)).toBe(line);
+			}
+		}
+	});
+
+	it("БЕЗ флага 📍 — обычный текст, не поле (обычная задача с рукописным 📍)", () => {
+		const t = tokenizeTaskLine("- [ ] Купить билеты 📍 касса вокзала #kanban/trips/todo")!;
+		expect(fields(t.segments)).toEqual([]); // 📍 не даёт поля
+		// весь хвост, включая #тег после 📍, остаётся текстом
+		const text = t.segments.map((s) => (s.kind === "text" ? s.text : "")).join("");
+		expect(text).toBe(" Купить билеты 📍 касса вокзала #kanban/trips/todo");
+	});
+});

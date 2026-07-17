@@ -3,12 +3,15 @@
 	import type { IntentDispatcher } from "../../services/WritebackService";
 	import { confirm } from "../common/ConfirmModal";
 	import { DatePromptModal } from "../common/DatePromptModal";
+	import { TextPromptModal } from "../common/TextPromptModal";
+	import { obsidianTooltip } from "../common/tooltip";
 	import type { DndPort } from "../dnd/types";
 	import { VIEW_TYPES } from "../registry";
 	import { agendaTimeLabel, type EventOccurrence } from "./calendarLogic";
 	import {
 		editEventSeries,
 		excludeEventOccurrence,
+		setEventLocation,
 		splitEventRule,
 		transferEventOccurrence,
 		type EventVaultPort,
@@ -64,6 +67,15 @@
 			occ.title +
 			(compact && occ.time !== null ? ` (${rangeLabel ?? occ.time})` : ""),
 	);
+	/** Место события (📍): непустой текст или null. */
+	const locationText = $derived(
+		occ.location !== null && occ.location.trim() !== "" ? occ.location.trim() : null,
+	);
+	/** При наличии места — единая Obsidian-подсказка ПОД элементом (placement
+	 *  bottom): описание события + строка «📍 <место>». native title при этом
+	 *  снимается (см. разметку), чтобы не было двойной подсказки; без места —
+	 *  null, и работает прежний native title. */
+	const eventTooltip = $derived(locationText === null ? null : `${tooltip}\n📍 ${locationText}`);
 	/** Тянуть можно только блок тайм-сетки на десктопе (как чипы задач, ТЗ §8). */
 	const draggable = $derived(block !== null && dnd !== null && !Platform.isPhone);
 
@@ -71,13 +83,33 @@
 		const { rule, time } = splitEventRule(occ.task.recurrence ?? "");
 		new EventSeriesModal(
 			app,
-			{ name: occ.title, rule, time },
+			{ name: occ.title, rule, time, location: occ.location ?? "" },
 			"Изменить серию",
-			(name, ruleText) => {
-				void editEventSeries({ vault, task: occ.task, name, ruleText }).then((res) => {
+			(name, ruleText, location) => {
+				void editEventSeries({ vault, task: occ.task, name, ruleText, location }).then((res) => {
 					if (!res.ok) new Notice(`GTD Flow: ${res.reason}`);
 				});
 			},
+		).open();
+	}
+
+	/** «Место…» — промпт с текущим 📍; пустое = снять поле. Правит строку
+	 *  события (серии ИЛИ одноразового) через setEventLocation одной записью. */
+	function openLocation(): void {
+		new TextPromptModal(
+			app,
+			"Место события",
+			(value) => {
+				void setEventLocation({
+					vault,
+					task: occ.task,
+					location: value === "" ? null : value,
+				}).then((res) => {
+					if (!res.ok) new Notice(`GTD Flow: ${res.reason}`);
+				});
+			},
+			occ.location ?? "",
+			"Адрес или место (пусто — убрать)",
 		).open();
 	}
 
@@ -168,6 +200,9 @@
 				mi.setTitle("Изменить серию…").setIcon("pencil").onClick(() => openEdit()),
 			);
 			menu.addItem((mi) =>
+				mi.setTitle("Место…").setIcon("map-pin").onClick(() => openLocation()),
+			);
+			menu.addItem((mi) =>
 				mi.setTitle("Перенести вхождение…").setIcon("calendar-clock").onClick(() => openTransfer()),
 			);
 			menu.addItem((mi) =>
@@ -180,6 +215,9 @@
 				mi.setTitle("Удалить серию").setIcon("trash").onClick(() => void deleteSeries()),
 			);
 		} else {
+			menu.addItem((mi) =>
+				mi.setTitle("Место…").setIcon("map-pin").onClick(() => openLocation()),
+			);
 			menu.addItem((mi) =>
 				mi.setTitle("Перенести вхождение…").setIcon("calendar-clock").onClick(() => openTransfer()),
 			);
@@ -199,7 +237,8 @@
 	class:is-draggable={draggable}
 	bind:this={rootEl}
 	style={block !== null ? `top:${block.topPct}%; height:${block.heightPct}%; left:${leftPct}%; width:${widthPct}%` : ""}
-	title={tooltip}
+	title={locationText === null ? tooltip : null}
+	use:obsidianTooltip={{ text: eventTooltip, placement: "bottom", classes: ["gtd-event-tooltip"] }}
 	onpointerdown={onPointerDown}
 	oncontextmenu={onContextMenu}
 >

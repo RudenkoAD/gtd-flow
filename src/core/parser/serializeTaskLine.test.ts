@@ -485,6 +485,49 @@ describe("setValueField / setDependsOn", () => {
 	});
 });
 
+describe("setValueField 📍 location (свободный текст с пробелами)", () => {
+	it("вставка, замена, удаление", () => {
+		expect(setValueField("- [ ] Созвон", "location", "Кафе на углу")).toBe(
+			"- [ ] Созвон 📍 Кафе на углу",
+		);
+		expect(setValueField("- [ ] Созвон 📍 Кафе на углу", "location", "Офис, 3 этаж")).toBe(
+			"- [ ] Созвон 📍 Офис, 3 этаж",
+		);
+		expect(setValueField("- [ ] Созвон 📍 Кафе 🆔 e1", "location", null)).toBe(
+			"- [ ] Созвон 🆔 e1",
+		);
+	});
+
+	it("новое поле идёт в конец строки (после 🔁), рядом с правилом не склеивается", () => {
+		const out = setValueField("- [ ] Тр 🔁 every tuesday at 19:00", "location", "Спортзал на Ленина");
+		expect(out).toBe("- [ ] Тр 🔁 every tuesday at 19:00 📍 Спортзал на Ленина");
+		// повторный парс (как строку-событие) отдаёт и правило, и место раздельно
+		const t = parseTaskLine(out, { ...ctx(), container: "events" })!;
+		expect(t.recurrence).toBe("every tuesday at 19:00");
+		expect(t.location).toBe("Спортзал на Ленина");
+	});
+
+	it("схлопывает лишние пробелы, trim", () => {
+		expect(setValueField("- [ ] X", "location", "  Кафе   у   парка  ")).toBe(
+			"- [ ] X 📍 Кафе у парка",
+		);
+	});
+
+	it("пустое/пробельное место — throw (снятие поля только через null)", () => {
+		expect(() => setValueField("- [ ] X", "location", "")).toThrow();
+		expect(() => setValueField("- [ ] X", "location", "   ")).toThrow();
+	});
+
+	it("эмодзи поля в месте — throw (payload обрезался бы при чтении)", () => {
+		expect(() => setValueField("- [ ] X", "location", "Зал 📅 2026")).toThrow();
+		expect(() => setValueField("- [ ] X", "location", "у 🔁 повтора")).toThrow();
+	});
+
+	it("удаление отсутствующего 📍 — тождество строки", () => {
+		expect(setValueField("- [ ] X 🆔 e1", "location", null)).toBe("- [ ] X 🆔 e1");
+	});
+});
+
 describe("setExcludedDates / addExcludedDate (🚫)", () => {
 	it("setExcludedDates: установка, замена, очистка", () => {
 		expect(setExcludedDates("- [ ] Тр 🔁 every tue", ["2026-07-21"])).toBe(

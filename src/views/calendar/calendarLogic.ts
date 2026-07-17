@@ -249,6 +249,9 @@ export interface EventOccurrence {
 	time: string | null;
 	/** "HH:mm" конца интервала (rule.eventTimeEnd / dueTimeEnd) или null. */
 	timeEnd: string | null;
+	/** 📍 место/адрес строки события (task.location) или null — показывается
+	 *  подсказкой при наведении на чип/блок. Общий для серии и одноразового. */
+	location: string | null;
 }
 
 /**
@@ -285,7 +288,15 @@ export function expandEventOccurrences(
 			const exclude =
 				task.excludedDates.length > 0 ? new Set(task.excludedDates) : undefined;
 			for (const date of expandOccurrences(rule, from, to, undefined, exclude)) {
-				push({ task, kind: "series", date, title: task.description, time, timeEnd });
+				push({
+					task,
+					kind: "series",
+					date,
+					title: task.description,
+					time,
+					timeEnd,
+					location: task.location,
+				});
 			}
 		} else if (task.due !== null && task.due >= from && task.due <= to) {
 			// одноразовое событие: строка события без 🔁, но с 📅 — на своей дате
@@ -296,6 +307,7 @@ export function expandEventOccurrences(
 				title: task.description,
 				time: task.dueTime,
 				timeEnd: task.dueTimeEnd,
+				location: task.location,
 			});
 		}
 	}

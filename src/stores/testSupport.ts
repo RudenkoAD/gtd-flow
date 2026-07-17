@@ -93,6 +93,7 @@ export function makeTask(over: Partial<Task> & { filePath: string }): Task {
 		priority: "none",
 		dependsOn: [],
 		excludedDates: [],
+		location: null,
 		tags: [],
 		container: "plain",
 		projectActive: true,

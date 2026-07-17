@@ -95,6 +95,17 @@ export interface TokenizedTaskLine {
 	trailingCr: string;
 }
 
+export interface TokenizeOptions {
+	/** Распознавать 📍 как поле места. По умолчанию false: 📍 остаётся ОБЫЧНЫМ
+	 *  текстом задачи. Место — фича календаря (строки gtd-events); включать флаг
+	 *  только для них. Иначе рукописный 📍 в обычной задаче поглотил бы хвост
+	 *  описания и #теги после него — членство в доске/#waiting и content-key
+	 *  менялись бы против предсуществующих данных. Читатель (parseTaskLine на
+	 *  container==="events") и писатель поля (setValueField location) включают его
+	 *  явно; normalizeDescription/content-key — нет (📍 остаётся частью описания). */
+	location?: boolean;
+}
+
 /** Требуем пробел (любой \s) или конец строки после ']' — как Obsidian/CommonMark. */
 const HEAD_RE = /^([ \t]*)([-*+])([ \t]+)\[(.)\](?=\s|$)/u;
 
@@ -191,7 +202,8 @@ function scanCommaList(s: string, from: number): number {
  * Соседние текстовые фрагменты сливаются в один токен; конкатенация всех
  * сегментов даёт исходную строку дословно.
  */
-export function tokenizeSegments(rest: string): Segment[] {
+export function tokenizeSegments(rest: string, opts: TokenizeOptions = {}): Segment[] {
+	const parseLocation = opts.location === true;
 	const segs: Segment[] = [];
 	let textStart = 0;
 	let i = 0;
@@ -200,7 +212,12 @@ export function tokenizeSegments(rest: string): Segment[] {
 	};
 	while (i < rest.length) {
 		const m = matchFieldEmoji(rest, i);
-		if (m === null) {
+		// 📍 (место) — поле ТОЛЬКО при opts.location (строки-события); иначе это
+		// обычный текст задачи: пропускаем как любой не-полевой символ (см.
+		// TokenizeOptions.location). matchFieldEmoji по-прежнему видит 📍 как
+		// границу payload соседних полей (напр. хвост 🔁), поэтому payload правила
+		// не вбирает литеральный 📍 даже без флага.
+		if (m === null || (m.field === "location" && !parseLocation)) {
 			i++;
 			continue;
 		}
@@ -217,7 +234,7 @@ export function tokenizeSegments(rest: string): Segment[] {
 		const gap = rest.slice(i, g);
 		i = g;
 		let payloadEnd: number;
-		if (m.field === "recurrence") {
+		if (m.field === "recurrence" || m.field === "location") {
 			// 🔁: payload до следующего эмодзи поля или конца строки;
 			// хвостовые пробелы отдаём следующему текстовому сегменту
 			let j = i;
@@ -246,8 +263,12 @@ export function tokenizeSegments(rest: string): Segment[] {
 	return segs;
 }
 
-/** null, если строка — не пункт чеклиста (- [x] ...). */
-export function tokenizeTaskLine(rawLine: string): TokenizedTaskLine | null {
+/** null, если строка — не пункт чеклиста (- [x] ...). opts.location включает
+ *  распознавание поля места 📍 (по умолчанию выключено — см. TokenizeOptions). */
+export function tokenizeTaskLine(
+	rawLine: string,
+	opts: TokenizeOptions = {},
+): TokenizedTaskLine | null {
 	if (rawLine.includes("\n")) return null;
 	// хвостовой '\r' срезаем ДО разбора: он не должен утопить ^block-id
 	// и не должен попадать в текстовые сегменты (правки вставляют ПЕРЕД ним)
@@ -267,7 +288,7 @@ export function tokenizeTaskLine(rawLine: string): TokenizedTaskLine | null {
 		bullet: h[2]! as "-" | "*" | "+",
 		afterBullet: h[3]!,
 		statusChar: h[4]!,
-		segments: tokenizeSegments(rest),
+		segments: tokenizeSegments(rest, opts),
 		blockRef,
 		trailingCr,
 	};

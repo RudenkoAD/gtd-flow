@@ -10,6 +10,7 @@ import {
 	editEventSeries,
 	excludeEventOccurrence,
 	joinEventRule,
+	setEventLocation,
 	splitEventRule,
 	transferEventOccurrence,
 	type EventVaultPort,
@@ -95,6 +96,36 @@ describe("editEventLine — атомарная правка названия + �
 	it("название с эмодзи поля — null (недопустимо)", () => {
 		expect(editEventLine("- [ ] A 🔁 every day", "B 📅 x", "every day")).toBeNull();
 	});
+
+	it("проставляет 📍 место как часть той же трансформации", () => {
+		const out = editEventLine("- [ ] A 🔁 every day 🆔 ev1", "B", "every tuesday", "Спортзал на Ленина");
+		expect(out).toBe("- [ ] B 🔁 every tuesday 🆔 ev1 📍 Спортзал на Ленина");
+	});
+
+	it("снимает 📍 при пустом месте (пустое = убрать поле)", () => {
+		const out = editEventLine("- [ ] A 🔁 every day 📍 Зал 🆔 ev1", "A", "every day", "");
+		expect(out).toBe("- [ ] A 🔁 every day 🆔 ev1");
+	});
+
+	it("меняет существующее 📍 на новое", () => {
+		const out = editEventLine("- [ ] A 🔁 every day 📍 Старое место", "A", "every day", "Новое место");
+		expect(out).toBe("- [ ] A 🔁 every day 📍 Новое место");
+	});
+});
+
+describe("buildEventLine — место 📍", () => {
+	it("дописывает 📍 при непустом месте", () => {
+		expect(buildEventLine("Тренировка", "every tuesday at 19:00", "Спортзал")).toBe(
+			"- [ ] Тренировка 🔁 every tuesday at 19:00 📍 Спортзал",
+		);
+	});
+	it("без места — строка без 📍", () => {
+		expect(buildEventLine("Тр", "every day", "")).toBe("- [ ] Тр 🔁 every day");
+		expect(buildEventLine("Тр", "every day", null)).toBe("- [ ] Тр 🔁 every day");
+	});
+	it("место с эмодзи поля — null (недопустимо)", () => {
+		expect(buildEventLine("Тр", "every day", "у 📅 стены")).toBeNull();
+	});
 });
 
 describe("splitEventRule / joinEventRule", () => {
@@ -149,6 +180,21 @@ describe("createEventSeries", () => {
 			ruleText: "every day",
 		});
 		expect(res).toEqual({ ok: false, reason: "empty-name" });
+	});
+
+	it("недопустимое место (эмодзи поля) — invalid-location, НЕ empty-name", async () => {
+		// пользователь вставил «📍 Невский 1» в поле места — 📍 (эмодзи поля) внутри
+		// значения недопустим; имя заполнено, поэтому причина обязана быть про место
+		const vault = new FakeVault();
+		const res = await createEventSeries({
+			vault,
+			eventsFile: "GTD/Events.md",
+			name: "Планёрка",
+			ruleText: "every day",
+			location: "📍 Невский 1",
+		});
+		expect(res).toEqual({ ok: false, reason: "invalid-location" });
+		expect(vault.files.has("GTD/Events.md")).toBe(false);
 	});
 });
 
@@ -278,6 +324,21 @@ describe("editEventSeries", () => {
 		const task = taskFrom("- [ ] A 🔁 every day 🆔 ev1", "GTD/Events.md", 0);
 		const res = await editEventSeries({ vault, task, name: "A", ruleText: "мусор" });
 		expect(res).toEqual({ ok: false, reason: "invalid-rule" });
+		expect(vault.files.get("GTD/Events.md")).toBe("- [ ] A 🔁 every day 🆔 ev1\n");
+	});
+
+	it("недопустимое место — invalid-location (согласовано с createEventSeries)", async () => {
+		const vault = new FakeVault();
+		vault.files.set("GTD/Events.md", "- [ ] A 🔁 every day 🆔 ev1\n");
+		const task = taskFrom("- [ ] A 🔁 every day 🆔 ev1", "GTD/Events.md", 0);
+		const res = await editEventSeries({
+			vault,
+			task,
+			name: "A",
+			ruleText: "every day",
+			location: "📍 Невский 1",
+		});
+		expect(res).toEqual({ ok: false, reason: "invalid-location" });
 		expect(vault.files.get("GTD/Events.md")).toBe("- [ ] A 🔁 every day 🆔 ev1\n");
 	});
 });
@@ -435,5 +496,109 @@ describe("transferEventOccurrence — перенос одноразового", 
 		});
 		expect(res.ok).toBe(true);
 		expect(vault.files.get("GTD/Events.md")).toBe("- [ ] Событие 📅 2026-07-25 🧬 ev1\n");
+	});
+});
+
+describe("createEventSeries / editEventSeries — место 📍", () => {
+	it("createEventSeries пишет 📍 при непустом месте", async () => {
+		const vault = new FakeVault();
+		const res = await createEventSeries({
+			vault,
+			eventsFile: "GTD/Events.md",
+			name: "Планёрка",
+			ruleText: "every day at 10:00",
+			location: "Переговорная 2",
+		});
+		expect(res.ok).toBe(true);
+		expect(vault.files.get("GTD/Events.md")).toBe(
+			"- [ ] Планёрка 🔁 every day at 10:00 📍 Переговорная 2\n",
+		);
+	});
+
+	it("editEventSeries ставит и снимает 📍 атомарно с названием/правилом", async () => {
+		const vault = new FakeVault();
+		vault.files.set("GTD/Events.md", "- [ ] Тр 🔁 every day 🆔 ev1\n");
+		const task = taskFrom("- [ ] Тр 🔁 every day 🆔 ev1", "GTD/Events.md", 0);
+		const set = await editEventSeries({
+			vault,
+			task,
+			name: "Тр",
+			ruleText: "every tuesday at 19:00",
+			location: "Спортзал на Ленина",
+		});
+		expect(set.ok).toBe(true);
+		expect(vault.files.get("GTD/Events.md")).toBe(
+			"- [ ] Тр 🔁 every tuesday at 19:00 🆔 ev1 📍 Спортзал на Ленина\n",
+		);
+		// правка с пустым местом снимает поле
+		const task2 = taskFrom(vault.files.get("GTD/Events.md")!.trimEnd(), "GTD/Events.md", 0);
+		const cleared = await editEventSeries({
+			vault,
+			task: task2,
+			name: "Тр",
+			ruleText: "every tuesday at 19:00",
+			location: "",
+		});
+		expect(cleared.ok).toBe(true);
+		expect(vault.files.get("GTD/Events.md")).toBe(
+			"- [ ] Тр 🔁 every tuesday at 19:00 🆔 ev1\n",
+		);
+	});
+});
+
+describe("setEventLocation — правка только 📍 (серия или одноразовое)", () => {
+	it("проставляет 📍 на строке серии одной записью", async () => {
+		const vault = new FakeVault();
+		vault.files.set("GTD/Events.md", "- [ ] Тр 🔁 every tue at 19:00 🆔 ev1\n");
+		const task = taskFrom("- [ ] Тр 🔁 every tue at 19:00 🆔 ev1", "GTD/Events.md", 0);
+		const res = await setEventLocation({ vault, task, location: "Спортзал" });
+		expect(res.ok).toBe(true);
+		expect(vault.files.get("GTD/Events.md")).toBe(
+			"- [ ] Тр 🔁 every tue at 19:00 🆔 ev1 📍 Спортзал\n",
+		);
+	});
+
+	it("правит 📍 одноразового события", async () => {
+		const vault = new FakeVault();
+		vault.files.set("GTD/Events.md", "- [ ] Событие 📅 2026-07-21 📍 Старое\n");
+		const task = taskFrom("- [ ] Событие 📅 2026-07-21 📍 Старое", "GTD/Events.md", 0);
+		const res = await setEventLocation({ vault, task, location: "Новое место" });
+		expect(res.ok).toBe(true);
+		expect(vault.files.get("GTD/Events.md")).toBe("- [ ] Событие 📅 2026-07-21 📍 Новое место\n");
+	});
+
+	it("пустое/null место — снимает поле", async () => {
+		const vault = new FakeVault();
+		vault.files.set("GTD/Events.md", "- [ ] Событие 📅 2026-07-21 📍 Кафе 🆔 e1\n");
+		const task = taskFrom("- [ ] Событие 📅 2026-07-21 📍 Кафе 🆔 e1", "GTD/Events.md", 0);
+		const res = await setEventLocation({ vault, task, location: "" });
+		expect(res.ok).toBe(true);
+		expect(vault.files.get("GTD/Events.md")).toBe("- [ ] Событие 📅 2026-07-21 🆔 e1\n");
+	});
+
+	it("нет изменений (то же место) — успех без записи", async () => {
+		const vault = new FakeVault();
+		vault.files.set("GTD/Events.md", "- [ ] X 📅 2026-07-21 📍 Кафе\n");
+		const task = taskFrom("- [ ] X 📅 2026-07-21 📍 Кафе", "GTD/Events.md", 0);
+		const res = await setEventLocation({ vault, task, location: "Кафе" });
+		expect(res.ok).toBe(true);
+		expect(vault.files.get("GTD/Events.md")).toBe("- [ ] X 📅 2026-07-21 📍 Кафе\n");
+	});
+
+	it("строку не найти — line-not-found", async () => {
+		const vault = new FakeVault();
+		vault.files.set("GTD/Events.md", "- [ ] Другое 🔁 every day 🆔 z\n");
+		const task = taskFrom("- [ ] Тр 🔁 every tue 🆔 ev1", "GTD/Events.md", 0);
+		const res = await setEventLocation({ vault, task, location: "Зал" });
+		expect(res).toEqual({ ok: false, reason: "line-not-found" });
+	});
+
+	it("место с эмодзи поля — transform-failed без записи", async () => {
+		const vault = new FakeVault();
+		vault.files.set("GTD/Events.md", "- [ ] X 📅 2026-07-21\n");
+		const task = taskFrom("- [ ] X 📅 2026-07-21", "GTD/Events.md", 0);
+		const res = await setEventLocation({ vault, task, location: "у 📅 стены" });
+		expect(res).toEqual({ ok: false, reason: "transform-failed" });
+		expect(vault.files.get("GTD/Events.md")).toBe("- [ ] X 📅 2026-07-21\n");
 	});
 });

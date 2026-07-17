@@ -30,19 +30,43 @@ export type EventWriteResult = { ok: true } | { ok: false; reason: string };
 // Чистые преобразования строки серии
 // ---------------------------------------------------------------------------
 
-/** Строка новой серии: `- [ ] <name> 🔁 <ruleText>`. Пустое имя — null (не пишем). */
-export function buildEventLine(name: string, ruleText: string): string | null {
-	const n = name.replace(/\s+/g, " ").trim();
-	if (n === "") return null;
-	return `- [ ] ${n} 🔁 ${ruleText.trim()}`;
+/**
+ * Проставить/снять 📍 на строке через setValueField ЯДРА. location === null | ""
+ * — снять поле (или ничего не делать, если его нет). null-результат — недопустимое
+ * место (эмодзи поля в тексте: setValueField бросает — ловим, как editEventLine).
+ */
+function applyLocation(line: string, location: string | null): string | null {
+	const loc = (location ?? "").trim();
+	try {
+		return setValueField(line, "location", loc === "" ? null : loc);
+	} catch {
+		return null;
+	}
 }
 
 /**
- * Атомарная правка строки серии: название через setDescription + payload 🔁
- * через токенизатор — ОДНОЙ трансформацией (не два intent'а). null — строка не
- * задача либо название содержит эмодзи поля (setDescription бросает — ловим).
+ * Строка новой серии: `- [ ] <name> 🔁 <ruleText> [📍 <место>]`. Пустое имя —
+ * null (не пишем). Непустое место дописывается полем 📍 (setValueField ядра);
+ * недопустимое место (эмодзи поля) — тоже null.
  */
-export function editEventLine(rawLine: string, name: string, ruleText: string): string | null {
+export function buildEventLine(name: string, ruleText: string, location: string | null = null): string | null {
+	const n = name.replace(/\s+/g, " ").trim();
+	if (n === "") return null;
+	return applyLocation(`- [ ] ${n} 🔁 ${ruleText.trim()}`, location);
+}
+
+/**
+ * Атомарная правка строки серии: название через setDescription + payload 🔁 +
+ * поле 📍 (setValueField) — ОДНОЙ трансформацией (не три intent'а). null — строка
+ * не задача либо название/место содержит эмодзи поля (сеттеры бросают — ловим).
+ * location === null | "" снимает 📍 (если было); непустое — ставит/меняет.
+ */
+export function editEventLine(
+	rawLine: string,
+	name: string,
+	ruleText: string,
+	location: string | null = null,
+): string | null {
 	const n = name.replace(/\s+/g, " ").trim();
 	if (n === "") return null;
 	let line: string;
@@ -51,7 +75,9 @@ export function editEventLine(rawLine: string, name: string, ruleText: string): 
 	} catch {
 		return null; // эмодзи поля в названии — недопустимо
 	}
-	return setRecurrencePayload(line, ruleText.trim());
+	const withRule = setRecurrencePayload(line, ruleText.trim());
+	if (withRule === null) return null;
+	return applyLocation(withRule, location);
 }
 
 /**
@@ -170,10 +196,20 @@ export async function createEventSeries(deps: {
 	eventsFile: string;
 	name: string;
 	ruleText: string;
+	/** Опциональное место 📍 (пусто/undefined — без поля). */
+	location?: string | null;
 }): Promise<EventWriteResult> {
 	if (isParseError(parseRule(deps.ruleText))) return { ok: false, reason: "invalid-rule" };
-	const line = buildEventLine(deps.name, deps.ruleText);
-	if (line === null) return { ok: false, reason: "empty-name" };
+	const line = buildEventLine(deps.name, deps.ruleText, deps.location ?? null);
+	if (line === null) {
+		// buildEventLine отдаёт null по ДВУМ причинам: пустое имя ИЛИ недопустимое
+		// место (эмодзи поля в 📍). Различаем повторной сборкой без места — иначе
+		// заполненное имя ошибочно рапортовалось бы как "empty-name" (модал место
+		// не валидирует), и создание падало бы молча с неверной причиной.
+		const reason =
+			buildEventLine(deps.name, deps.ruleText) === null ? "empty-name" : "invalid-location";
+		return { ok: false, reason };
+	}
 	try {
 		await deps.vault.ensureFile(deps.eventsFile);
 		await deps.vault.processFrontmatter(deps.eventsFile, (fm) => {
@@ -226,6 +262,8 @@ export async function editEventSeries(deps: {
 	task: Task;
 	name: string;
 	ruleText: string;
+	/** Опциональное место 📍 (пусто/null — снять поле). */
+	location?: string | null;
 }): Promise<EventWriteResult> {
 	if (isParseError(parseRule(deps.ruleText))) return { ok: false, reason: "invalid-rule" };
 	if (buildEventLine(deps.name, deps.ruleText) === null) return { ok: false, reason: "empty-name" };
@@ -239,9 +277,15 @@ export async function editEventSeries(deps: {
 				failure = "line-not-found";
 				return null;
 			}
-			const next = editEventLine(lines[idx]!, deps.name, deps.ruleText);
+			const next = editEventLine(lines[idx]!, deps.name, deps.ruleText, deps.location ?? null);
 			if (next === null) {
-				failure = "transform-failed";
+				// имя (стр. выше) и правило (parseRule) уже валидны — значит null
+				// дало недопустимое место; отделяем его от прочих сбоев правкой без
+				// места (согласовано с createEventSeries: "invalid-location")
+				failure =
+					editEventLine(lines[idx]!, deps.name, deps.ruleText) === null
+						? "transform-failed"
+						: "invalid-location";
 				return null;
 			}
 			if (next === lines[idx]) return null; // без изменений — успех без записи
@@ -257,6 +301,46 @@ export async function editEventSeries(deps: {
 // ---------------------------------------------------------------------------
 // Операции над ОТДЕЛЬНЫМИ вхождениями (перенос / удаление, раунд 6)
 // ---------------------------------------------------------------------------
+
+/**
+ * Правка ТОЛЬКО поля 📍 строки события (серии или одноразового) одной атомарной
+ * записью: setValueField(line, "location", ...) на локализованной строке.
+ * location === null | "" — снять поле. Локализация — по 🆔/описанию (как
+ * editEventSeries). Работает и с чипа вхождения серии — правит строку серии.
+ * Место с эмодзи поля недопустимо (setValueField бросает) — reason transform-failed.
+ */
+export async function setEventLocation(deps: {
+	vault: EventVaultPort;
+	task: Task;
+	location: string | null;
+}): Promise<EventWriteResult> {
+	const loc = (deps.location ?? "").trim();
+	let failure: string | null = "file-not-found";
+	try {
+		await deps.vault.processFile(deps.task.filePath, (content) => {
+			failure = null;
+			const lines = content.split("\n");
+			const idx = locateTaskLine(lines, deps.task.filePath, deps.task);
+			if (idx === -1) {
+				failure = "line-not-found";
+				return null;
+			}
+			let next: string;
+			try {
+				next = setValueField(lines[idx]!, "location", loc === "" ? null : loc);
+			} catch {
+				failure = "transform-failed";
+				return null;
+			}
+			if (next === lines[idx]) return null; // без изменений — успех без записи
+			lines[idx] = next;
+			return lines.join("\n");
+		});
+	} catch {
+		return { ok: false, reason: "write-failed" };
+	}
+	return failure === null ? { ok: true } : { ok: false, reason: failure };
+}
 
 const BASE36 = "0123456789abcdefghijklmnopqrstuvwxyz";
 

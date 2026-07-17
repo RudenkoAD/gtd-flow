@@ -134,7 +134,10 @@ function stripVariationSelector(emoji: string): string {
 }
 
 export function parseTaskLine(rawLine: string, ctx: ParseContext): Task | null {
-	const tok = tokenizeTaskLine(rawLine);
+	// 📍-место распознаём как поле ТОЛЬКО в файлах-событиях (container "events").
+	// В обычных задачах 📍 — часть текста: иначе рукописный 📍 съел бы #теги и
+	// хвост описания после него (потеря членства в доске/#waiting и content-key).
+	const tok = tokenizeTaskLine(rawLine, { location: ctx.container === "events" });
 	if (tok === null) return null;
 
 	const dates: Record<DateFieldName, IsoDate | null> = {
@@ -162,6 +165,7 @@ export function parseTaskLine(rawLine: string, ctx: ParseContext): Task | null {
 	let spawnedFrom: string | null = null;
 	let dependsOn: string[] = [];
 	let excludedDates: IsoDate[] = [];
+	let location: string | null = null;
 	let priority: Priority = "none";
 	const textParts: string[] = [];
 	const tags: string[] = [];
@@ -202,6 +206,12 @@ export function parseTaskLine(rawLine: string, ctx: ParseContext): Task | null {
 			case "excludedDates": {
 				// невалидные даты в списке игнорируются (остаются в rawLine)
 				excludedDates = parseExcludedDates(seg.payload);
+				break;
+			}
+			case "location": {
+				// 📍 — свободный текст места; пустой (после trim) payload = нет поля
+				const loc = seg.payload.trim();
+				location = loc === "" ? null : loc;
 				break;
 			}
 			default: {
@@ -253,6 +263,7 @@ export function parseTaskLine(rawLine: string, ctx: ParseContext): Task | null {
 		priority,
 		dependsOn,
 		excludedDates,
+		location,
 		tags,
 		container: ctx.container,
 		projectActive: ctx.projectActive,

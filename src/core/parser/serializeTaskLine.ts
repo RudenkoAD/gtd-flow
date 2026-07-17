@@ -35,11 +35,12 @@ import {
 	type FieldName,
 	type FieldToken,
 	type Segment,
+	type TokenizeOptions,
 	type TokenizedTaskLine,
 } from "./tokenizer";
 
-function mustTokenize(rawLine: string): TokenizedTaskLine {
-	const t = tokenizeTaskLine(rawLine);
+function mustTokenize(rawLine: string, opts?: TokenizeOptions): TokenizedTaskLine {
+	const t = tokenizeTaskLine(rawLine, opts);
 	if (t === null) {
 		throw new Error(`serializeTaskLine: строка не является задачей: ${JSON.stringify(rawLine)}`);
 	}
@@ -51,6 +52,25 @@ function assertToken(value: string, what: string): void {
 	if (value === "" || /\s/.test(value) || value.includes(",")) {
 		throw new Error(`serializeTaskLine: недопустимое значение ${what}: ${JSON.stringify(value)}`);
 	}
+}
+
+/**
+ * 📍 — свободный текст места: пробелы допустимы, но НЕ эмодзи полей (payload
+ * читается до следующего поля — эмодзи внутри обрезали бы значение при чтении)
+ * и не пустой после схлопывания пробелов. Возвращает канонизированное значение
+ * (\s+ → ' ', trim) — то же, что прочитает парсер (снятие поля — value === null).
+ */
+function assertLocation(value: string): string {
+	const v = value.replace(/\s+/g, " ").trim();
+	if (v === "") {
+		throw new Error("serializeTaskLine: пустая локация 📍 (для снятия поля передайте null)");
+	}
+	for (const e of ALL_FIELD_EMOJI) {
+		if (v.includes(e)) {
+			throw new Error(`serializeTaskLine: эмодзи поля в локации 📍: ${JSON.stringify(value)}`);
+		}
+	}
+	return v;
 }
 
 function fieldIndices(segs: readonly Segment[], field: FieldName): number[] {
@@ -113,7 +133,9 @@ function setPayloadField(
 	emoji: string,
 	payload: string | null,
 ): string {
-	const t = mustTokenize(rawLine);
+	// поле места 📍 распознаём только при работе С НИМ (иначе 📍 в тексте обычной
+	// задачи невидим как поле — и его нельзя было бы найти/заменить/снять)
+	const t = mustTokenize(rawLine, { location: field === "location" });
 	const idxs = fieldIndices(t.segments, field);
 	if (payload === null) {
 		if (idxs.length === 0) return rawLine;
@@ -229,14 +251,22 @@ export function setField(
 	return setPayloadField(rawLine, field, DATE_FIELD_EMOJI[field], payload);
 }
 
-/** Вставить/заменить/удалить 🆔 или 🧬. */
+/**
+ * Вставить/заменить/удалить 🆔, 🧬 или 📍.
+ * 🆔/🧬 — одиночный токен (без пробелов); 📍 — свободный текст места (пробелы
+ * допустимы, эмодзи полей — нет; см. assertLocation). value === null — снять поле.
+ */
 export function setValueField(
 	rawLine: string,
-	field: "id" | "spawnedFrom",
+	field: "id" | "spawnedFrom" | "location",
 	value: string | null,
 ): string {
-	if (value !== null) assertToken(value, field);
-	return setPayloadField(rawLine, field, VALUE_FIELD_EMOJI[field], value);
+	let payload = value;
+	if (value !== null) {
+		if (field === "location") payload = assertLocation(value);
+		else assertToken(value, field);
+	}
+	return setPayloadField(rawLine, field, VALUE_FIELD_EMOJI[field], payload);
 }
 
 /** Полная замена списка ⛔; пустой список удаляет поле. */
@@ -415,6 +445,10 @@ function removeTagFromText(text: string, tag: string): string {
 export function setDescription(rawLine: string, text: string): string {
 	const canon = text.replace(/\s+/g, " ").trim();
 	for (const e of ALL_FIELD_EMOJI) {
+		// 📍 — валидный текст описания обычной задачи (поле места распознаётся лишь
+		// в строках-событиях), поэтому не запрещаем его: инлайн-правка карточки с
+		// рукописным 📍 иначе молча падала бы на этом гейте
+		if (e === VALUE_FIELD_EMOJI.location) continue;
 		if (canon.includes(e)) {
 			throw new Error(
 				`serializeTaskLine: эмодзи поля в тексте описания: ${JSON.stringify(text)}`,

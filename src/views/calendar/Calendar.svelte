@@ -448,9 +448,9 @@
 		const eventsFile = nsTargetPath(active, namespaces, NS_CONVENTION.events, settings.eventsFile);
 		new EventSeriesModal(
 			app,
-			{ name: "", rule: "", time: time ?? "" },
+			{ name: "", rule: "", time: time ?? "", location: "" },
 			`Новое событие · ${date}`,
-			(name, ruleText) => {
+			(name, ruleText, location) => {
 				// weekly n>1 с byDay без from → дописать 'from <дата ПКМ>': закрепляет
 				// чётность недель новой серии (иначе фаза опиралась бы на эпоха-фолбэк)
 				void createEventSeries({
@@ -458,6 +458,7 @@
 					eventsFile,
 					name,
 					ruleText: withSeriesAnchor(ruleText, date),
+					location,
 				}).then((res) => {
 					if (res.ok) new Notice("GTD Flow: событие создано");
 					else new Notice(`GTD Flow: ${res.reason}`);

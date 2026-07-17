@@ -426,3 +426,77 @@ describe("parseTaskLine: content-key", () => {
 		expect(t1.key).not.toBe(t2.key);
 	});
 });
+
+describe("parseTaskLine: 📍 location (только строки-события container 'events')", () => {
+	const ev = ctx({ container: "events" });
+
+	it("вычленяет свободный текст места; payload до следующего поля", () => {
+		const t = parseTaskLine("- [ ] Созвон 📍 Офис, 3 этаж 📅 2026-07-20 14:30", ev)!;
+		expect(t.location).toBe("Офис, 3 этаж");
+		expect(t.due).toBe("2026-07-20");
+		expect(t.dueTime).toBe("14:30");
+	});
+
+	it("пустой payload 📍 — location = null", () => {
+		expect(parseTaskLine("- [ ] X 📍", ev)!.location).toBeNull();
+		expect(parseTaskLine("- [ ] X 📍  ", ev)!.location).toBeNull();
+	});
+
+	it("нет поля — location = null", () => {
+		expect(parseTaskLine("- [ ] Просто задача", ev)!.location).toBeNull();
+	});
+
+	it("📍 не попадает в description и НЕ меняет content-key", () => {
+		const evA = ctx({ container: "events", filePath: "a.md" });
+		const withLoc = parseTaskLine("- [ ] Созвон 📍 Кафе на углу", evA)!;
+		const noLoc = parseTaskLine("- [ ] Созвон", evA)!;
+		expect(withLoc.description).toBe("Созвон"); // место вырезано из описания
+		expect(withLoc.key).toBe(noLoc.key); // content-key не меняется от 📍
+	});
+
+	it("📍 рядом с 🔁: правило и место не склеиваются", () => {
+		const t = parseTaskLine("- [ ] Тр 🔁 every tuesday at 19:00 📍 Спортзал 🆔 ev1", ev)!;
+		expect(t.recurrence).toBe("every tuesday at 19:00");
+		expect(t.location).toBe("Спортзал");
+		expect(t.taskId).toBe("ev1");
+		expect(t.description).toBe("Тр");
+	});
+});
+
+describe("parseTaskLine: 📍 в ОБЫЧНОЙ задаче — текст, не поле (регресс)", () => {
+	// Место — фича календаря. В не-событийных файлах рукописный 📍 обязан остаться
+	// текстом: иначе съедались бы #теги/описание после него (потеря членства в
+	// доске/#waiting и смена content-key против предсуществующих данных).
+	it("литеральный 📍 не становится полем location", () => {
+		const t = parseTaskLine("- [ ] Купить билеты 📍 касса вокзала #kanban/trips/todo", ctx())!;
+		expect(t.location).toBeNull();
+	});
+
+	it("#теги ПОСЛЕ 📍 сохраняются в tags и в description (членство в доске цело)", () => {
+		const t = parseTaskLine("- [ ] Купить билеты 📍 касса вокзала #kanban/trips/todo", ctx())!;
+		expect(t.tags).toEqual(["#kanban/trips/todo"]);
+		expect(t.description).toBe("Купить билеты 📍 касса вокзала #kanban/trips/todo");
+	});
+
+	it("#waiting после 📍 не теряется", () => {
+		const t = parseTaskLine("- [ ] Ответ от банка 📍 отделение №5 #waiting", ctx())!;
+		expect(t.tags).toEqual(["#waiting"]);
+	});
+
+	it("content-key совпадает с тем же текстом без реинтерпретации 📍", () => {
+		const line = "- [ ] Купить билеты 📍 касса вокзала #kanban/trips/todo";
+		const t = parseTaskLine(line, ctx({ filePath: "a.md" }))!;
+		// ключ = fnv1a(полного описания С литеральным 📍), как до появления фичи места
+		const hash = fnv1a("Купить билеты 📍 касса вокзала #kanban/trips/todo")
+			.toString(16)
+			.padStart(8, "0");
+		expect(t.key).toBe(`a.md#${hash}#0`);
+	});
+
+	it("📅-задача (не событие) с рукописным 📍 — 📍 остаётся в заголовке", () => {
+		const t = parseTaskLine("- [ ] 📍 Важная встреча 📅 2026-07-20", ctx())!;
+		expect(t.location).toBeNull();
+		expect(t.due).toBe("2026-07-20");
+		expect(t.description).toBe("📍 Важная встреча");
+	});
+});

@@ -10,7 +10,7 @@
  */
 import type { Intent } from "../core/intents/Intent";
 import { resolveLineTransform } from "../core/intents/resolveIntent";
-import type { Task } from "../core/model/Task";
+import type { ContainerKind, Task } from "../core/model/Task";
 import { parseTaskLine } from "../core/parser/parseTaskLine";
 import { setValueField } from "../core/parser/serializeTaskLine";
 import type { IndexFeed } from "./types";
@@ -49,6 +49,13 @@ export interface LineTarget {
 	 *  occurrenceIndex недоступен/протух (в файле меньше совпадений, чем ждал
 	 *  индекс). Не идентичность. */
 	lineStart: number;
+	/** Контейнер файла задачи. Нужен ЛИШЬ для распознавания поля места 📍 при
+	 *  локализации: в файлах-событиях ("events") 📍 — поле (вырезано из
+	 *  description), в обычных задачах — текст. Без него локатор парсил бы
+	 *  строку-событие как "plain" и для id-less событий с 📍 получал бы иное
+	 *  описание, чем индекс → строку не находил бы. Отсутствует ⇒ "plain".
+	 *  Task структурно совместим (передаётся напрямую). */
+	container?: ContainerKind;
 }
 
 /** Однострочные intents, адресуемые по key задачи. */
@@ -84,8 +91,15 @@ function defaultGenId(): string {
 }
 
 /** Парс строки файла вне индексатора: контекст файла для локализации не важен —
- *  нужны только taskId и нормализованное description. */
-function parseAt(lines: readonly string[], i: number, filePath: string): Task | null {
+ *  нужны только taskId и нормализованное description. Исключение — поле места 📍:
+ *  в файлах-событиях оно вырезано из description, поэтому такие строки парсим с
+ *  container "events" (parseLocation), иначе id-less событие с 📍 не нашлось бы. */
+function parseAt(
+	lines: readonly string[],
+	i: number,
+	filePath: string,
+	parseLocation = false,
+): Task | null {
 	const raw = lines[i];
 	if (raw === undefined) return null;
 	return parseTaskLine(raw, {
@@ -93,17 +107,22 @@ function parseAt(lines: readonly string[], i: number, filePath: string): Task | 
 		lineStart: i,
 		parentLine: null,
 		heading: null,
-		container: "plain",
+		container: parseLocation ? "events" : "plain",
 		projectActive: true,
 	});
 }
 
 /** Индексы строк — носителей 🆔, в порядке файла (id уникален; дубли id
  *  fail-clos'ятся выше по стеку — advance-cursor/move-line). */
-function idMatchIndices(lines: readonly string[], filePath: string, taskId: string): number[] {
+function idMatchIndices(
+	lines: readonly string[],
+	filePath: string,
+	taskId: string,
+	parseLocation = false,
+): number[] {
 	const out: number[] = [];
 	for (let i = 0; i < lines.length; i++) {
-		const t = parseAt(lines, i, filePath);
+		const t = parseAt(lines, i, filePath, parseLocation);
 		if (t !== null && t.taskId === taskId) out.push(i);
 	}
 	return out;
@@ -112,10 +131,15 @@ function idMatchIndices(lines: readonly string[], filePath: string, taskId: stri
 /** Индексы id-less строк с данным описанием, в порядке файла — популяция, по
  *  которой индексатор нумерует occurrenceIndex (та же дисциплина content-key:
  *  строка с 🆔 принадлежит id-ключу и в дубли по содержимому не входит). */
-function idlessMatchIndices(lines: readonly string[], filePath: string, description: string): number[] {
+function idlessMatchIndices(
+	lines: readonly string[],
+	filePath: string,
+	description: string,
+	parseLocation = false,
+): number[] {
 	const out: number[] = [];
 	for (let i = 0; i < lines.length; i++) {
-		const t = parseAt(lines, i, filePath);
+		const t = parseAt(lines, i, filePath, parseLocation);
 		if (t !== null && t.taskId === null && t.description === description) out.push(i);
 	}
 	return out;
@@ -158,10 +182,13 @@ function pickMatch(matches: readonly number[], occurrenceIndex: number | undefin
  * (правка 🔁 не выражается через Intent — recurrence-поле текстовое).
  */
 export function locateTaskLine(lines: readonly string[], filePath: string, target: LineTarget): number {
+	// строки-события парсим с распознаванием 📍 — иначе их description расходится
+	// с индексом (см. LineTarget.container)
+	const parseLocation = target.container === "events";
 	const matches =
 		target.taskId !== null
-			? idMatchIndices(lines, filePath, target.taskId)
-			: idlessMatchIndices(lines, filePath, target.description);
+			? idMatchIndices(lines, filePath, target.taskId, parseLocation)
+			: idlessMatchIndices(lines, filePath, target.description, parseLocation);
 	// occurrenceIndex осмыслен только для content-key (id-адресация уникальна)
 	const occ = target.taskId === null ? target.occurrenceIndex : undefined;
 	return pickMatch(matches, occ, target.lineStart);
@@ -184,6 +211,7 @@ export function locateExactTaskLine(
 	exclude?: ReadonlySet<number>,
 ): number {
 	const want = target.rawLine.trimEnd();
+	const parseLocation = target.container === "events"; // 📍-поле у строк-событий
 	// content-key двойники: сперва детерминированно выбираем occurrenceIndex-ного
 	// кандидата, ПОТОМ сверяем его текст (удаление необратимо — не бьём вслепую по
 	// изменённой пользователем строке; протухшая подсказка не подсунет чужую).
@@ -192,7 +220,7 @@ export function locateExactTaskLine(
 		target.occurrenceIndex !== undefined &&
 		target.occurrenceIndex >= 0
 	) {
-		const matches = idlessMatchIndices(lines, filePath, target.description);
+		const matches = idlessMatchIndices(lines, filePath, target.description, parseLocation);
 		if (target.occurrenceIndex >= matches.length) {
 			// в файле меньше двойников, чем ждал индекс, — не угадываем, фолбэк ниже
 		} else {
@@ -208,7 +236,7 @@ export function locateExactTaskLine(
 	for (let i = 0; i < lines.length; i++) {
 		if (exclude !== undefined && exclude.has(i)) continue;
 		if (lines[i]!.trimEnd() !== want) continue;
-		const t = parseAt(lines, i, filePath);
+		const t = parseAt(lines, i, filePath, parseLocation);
 		if (t === null) continue;
 		const hit =
 			target.taskId !== null

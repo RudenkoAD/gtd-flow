@@ -24,6 +24,8 @@ export interface EventSeriesInitial {
 	rule: string;
 	/** "HH:mm" или "HH:mm-HH:mm" или пусто. */
 	time: string;
+	/** Место/адрес события 📍 (опционально; пусто — без поля). */
+	location: string;
 }
 
 export class EventSeriesModal extends Modal {
@@ -31,7 +33,7 @@ export class EventSeriesModal extends Modal {
 		app: App,
 		private readonly initial: EventSeriesInitial,
 		private readonly titleText: string,
-		private readonly onSubmit: (name: string, ruleText: string) => void,
+		private readonly onSubmit: (name: string, ruleText: string, location: string) => void,
 	) {
 		super(app);
 	}
@@ -89,6 +91,17 @@ export class EventSeriesModal extends Modal {
 		});
 		timeInput.style.width = "100%";
 
+		const locationLabel = wrap.createDiv();
+		locationLabel.setText("Место (необязательно)");
+		locationLabel.style.fontSize = "var(--font-ui-smaller, 0.85em)";
+		locationLabel.style.color = "var(--text-muted)";
+		const locationInput = wrap.createEl("input", {
+			type: "text",
+			placeholder: "Адрес или место — покажется при наведении",
+			value: this.initial.location,
+		});
+		locationInput.style.width = "100%";
+
 		const feedback = wrap.createDiv({ cls: "gtd-rule-feedback" });
 		feedback.style.minHeight = "1.5em";
 		feedback.style.fontSize = "var(--font-ui-smaller, 0.85em)";
@@ -98,9 +111,11 @@ export class EventSeriesModal extends Modal {
 		footer.style.justifyContent = "flex-end";
 		const save = footer.createEl("button", { text: "Сохранить", cls: "mod-cta" });
 
-		/** Валидирует ИТОГОВОЕ правило (rule + время) и непустое название. */
-		const validate = (): { name: string; ruleText: string } | null => {
+		/** Валидирует ИТОГОВОЕ правило (rule + время) и непустое название.
+		 *  Место опционально и на валидность не влияет (свободный текст). */
+		const validate = (): { name: string; ruleText: string; location: string } | null => {
 			const name = nameInput.value.trim();
+			const location = locationInput.value.trim();
 			const ruleText = joinEventRule(ruleInput.value, timeInput.value);
 			const parsed = parseRule(ruleText);
 			if (name === "") {
@@ -118,17 +133,17 @@ export class EventSeriesModal extends Modal {
 			feedback.setText("✓ событие корректно");
 			feedback.style.color = "var(--text-success, var(--text-muted))";
 			save.disabled = false;
-			return { name, ruleText };
+			return { name, ruleText, location };
 		};
 
 		const submit = (): void => {
 			const res = validate();
 			if (res === null) return;
 			this.close();
-			this.onSubmit(res.name, res.ruleText);
+			this.onSubmit(res.name, res.ruleText, res.location);
 		};
 
-		for (const el of [nameInput, ruleInput, timeInput]) {
+		for (const el of [nameInput, ruleInput, timeInput, locationInput]) {
 			el.addEventListener("input", () => void validate());
 			el.addEventListener("keydown", (e) => {
 				if (e.key === "Enter") submit();

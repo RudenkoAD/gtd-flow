@@ -71,6 +71,8 @@
 	const locationText = $derived(
 		occ.location !== null && occ.location.trim() !== "" ? occ.location.trim() : null,
 	);
+	/** Подпись пункта меню места: есть 📍 → «Изменить место…», нет → «Добавить место…». */
+	const locationMenuLabel = $derived(locationText === null ? "Добавить место…" : "Изменить место…");
 	/** При наличии места — единая Obsidian-подсказка ПОД элементом (placement
 	 *  bottom): описание события + строка «📍 <место>». native title при этом
 	 *  снимается (см. разметку), чтобы не было двойной подсказки; без места —
@@ -93,8 +95,10 @@
 		).open();
 	}
 
-	/** «Место…» — промпт с текущим 📍; пустое = снять поле. Правит строку
-	 *  события (серии ИЛИ одноразового) через setEventLocation одной записью. */
+	/** «Добавить/Изменить место…» — промпт с текущим 📍. Пустой сабмит (пусто или
+	 *  пробелы, TextPromptModal триммит): места не было — no-op (setEventLocation с
+	 *  null на строке без 📍 не пишет файл), было — поле снимается. Отмена (Escape) —
+	 *  тоже no-op. Правит строку серии ИЛИ одноразового одной записью. */
 	function openLocation(): void {
 		new TextPromptModal(
 			app,
@@ -200,7 +204,7 @@
 				mi.setTitle("Изменить серию…").setIcon("pencil").onClick(() => openEdit()),
 			);
 			menu.addItem((mi) =>
-				mi.setTitle("Место…").setIcon("map-pin").onClick(() => openLocation()),
+				mi.setTitle(locationMenuLabel).setIcon("map-pin").onClick(() => openLocation()),
 			);
 			menu.addItem((mi) =>
 				mi.setTitle("Перенести вхождение…").setIcon("calendar-clock").onClick(() => openTransfer()),
@@ -216,7 +220,7 @@
 			);
 		} else {
 			menu.addItem((mi) =>
-				mi.setTitle("Место…").setIcon("map-pin").onClick(() => openLocation()),
+				mi.setTitle(locationMenuLabel).setIcon("map-pin").onClick(() => openLocation()),
 			);
 			menu.addItem((mi) =>
 				mi.setTitle("Перенести вхождение…").setIcon("calendar-clock").onClick(() => openTransfer()),

@@ -24,6 +24,8 @@ import { preservedTimeEnd } from "./timeGrid";
 class FakeVault implements EventVaultPort {
 	files = new Map<string, string>();
 	frontmatter = new Map<string, Record<string, unknown>>();
+	/** Счётчик фактических записей в файл: transform === null записи не даёт. */
+	writes = 0;
 
 	async ensureFile(path: string): Promise<void> {
 		if (!this.files.has(path)) this.files.set(path, "");
@@ -34,7 +36,10 @@ class FakeVault implements EventVaultPort {
 	): Promise<boolean> {
 		if (!this.files.has(path)) return false;
 		const next = transform(this.files.get(path)!);
-		if (next !== null) this.files.set(path, next);
+		if (next !== null) {
+			this.files.set(path, next);
+			this.writes++;
+		}
 		return true;
 	}
 	async processFrontmatter(
@@ -574,6 +579,36 @@ describe("setEventLocation — правка только 📍 (серия или
 		const res = await setEventLocation({ vault, task, location: "" });
 		expect(res.ok).toBe(true);
 		expect(vault.files.get("GTD/Events.md")).toBe("- [ ] Событие 📅 2026-07-21 🆔 e1\n");
+	});
+
+	it("пустое место на строке без 📍 — no-op без записи файла", async () => {
+		const vault = new FakeVault();
+		vault.files.set("GTD/Events.md", "- [ ] Событие 📅 2026-07-21 🆔 e1\n");
+		const task = taskFrom("- [ ] Событие 📅 2026-07-21 🆔 e1", "GTD/Events.md", 0);
+		const res = await setEventLocation({ vault, task, location: "" });
+		expect(res.ok).toBe(true);
+		// файл не переписан: transform вернул null, записи не было
+		expect(vault.writes).toBe(0);
+		expect(vault.files.get("GTD/Events.md")).toBe("- [ ] Событие 📅 2026-07-21 🆔 e1\n");
+	});
+
+	it("пробельное место — трактуется как пустое (снимает существующее 📍)", async () => {
+		const vault = new FakeVault();
+		vault.files.set("GTD/Events.md", "- [ ] X 📅 2026-07-21 📍 Кафе\n");
+		const task = taskFrom("- [ ] X 📅 2026-07-21 📍 Кафе", "GTD/Events.md", 0);
+		const res = await setEventLocation({ vault, task, location: "   " });
+		expect(res.ok).toBe(true);
+		expect(vault.files.get("GTD/Events.md")).toBe("- [ ] X 📅 2026-07-21\n");
+	});
+
+	it("пробельное место на строке без 📍 — no-op без записи файла", async () => {
+		const vault = new FakeVault();
+		vault.files.set("GTD/Events.md", "- [ ] X 📅 2026-07-21\n");
+		const task = taskFrom("- [ ] X 📅 2026-07-21", "GTD/Events.md", 0);
+		const res = await setEventLocation({ vault, task, location: "   " });
+		expect(res.ok).toBe(true);
+		expect(vault.writes).toBe(0);
+		expect(vault.files.get("GTD/Events.md")).toBe("- [ ] X 📅 2026-07-21\n");
 	});
 
 	it("нет изменений (то же место) — успех без записи", async () => {

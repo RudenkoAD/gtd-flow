@@ -2,7 +2,7 @@
 	import type { App } from "obsidian";
 	import type { IsoDate } from "../../core/model/Task";
 	import type { IntentDispatcher } from "../../services/WritebackService";
-	import type { GtdFlowSettings } from "../../settings/Settings";
+	import type { GtdFlowSettings, QuickAddKind } from "../../settings/Settings";
 	import type { TaskMenuPorts } from "../common/taskMenu";
 	import type { DndPort, OccurrenceDrag } from "../dnd/types";
 	import DayCell from "./DayCell.svelte";
@@ -37,6 +37,8 @@
 		onQuickAddEvent = null,
 		onCreateEvent = null,
 		onMoveOccurrence = null,
+		quickAddKind = "task",
+		onQuickAddKindChange = null,
 	}: {
 		/** Колонки сетки: 1 (день) или 3 (три дня), подряд. */
 		days: IsoDate[];
@@ -76,6 +78,10 @@
 		onMoveOccurrence?:
 			| ((taskKey: string, occ: OccurrenceDrag, date: IsoDate, time: string) => Promise<void>)
 			| null;
+		/** Липкое положение переключателя «Задача | Событие» (общее для всех сеток вида). */
+		quickAddKind?: QuickAddKind;
+		/** Смена переключателя — родитель сохраняет выбор в настройки (persist). */
+		onQuickAddKindChange?: ((kind: QuickAddKind) => void) | null;
 	} = $props();
 
 	/** Высота часа. Единственный источник — отсюда уходит в CSS через --gtd-tg-hour. */
@@ -172,6 +178,8 @@
 				onCreateEvent={onCreateEvent === null
 					? null
 					: (date) => onCreateEvent(date, null)}
+				{quickAddKind}
+				{onQuickAddKindChange}
 			/>
 		{/each}
 	</div>
@@ -200,6 +208,8 @@
 					{onQuickAddEvent}
 					{onCreateEvent}
 					{onMoveOccurrence}
+					{quickAddKind}
+					{onQuickAddKindChange}
 				/>
 			{/each}
 		</div>

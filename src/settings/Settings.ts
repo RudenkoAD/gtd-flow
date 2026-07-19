@@ -5,6 +5,9 @@ import { DEFAULT_NS, normalizeNsPath, type NamespaceDef } from "../core/namespac
 export type PromoteTo = "origin" | "inbox";
 export type CatchUpPolicy = "latest" | "all" | "none";
 export type CalendarField = "due" | "scheduled" | "start";
+/** Тип записи инлайн-ввода календаря (переключатель «Задача | Событие»). Канон
+ *  союза живёт здесь — настройка lastQuickAddKind его же и хранит. */
+export type QuickAddKind = "task" | "event";
 
 export interface DeferPreset {
 	label: string;
@@ -71,6 +74,10 @@ export interface GtdFlowSettings {
 	 *  При загрузке нормализуется (см. normalizeActiveNamespace): удалённое из namespaces
 	 *  пространство откатывается к DEFAULT_NS. */
 	activeNamespace: string;
+	/** Липкое положение переключателя «Задача | Событие» инлайн-ввода календаря:
+	 *  последний выбор пользователя переживает перезапуск. В UI настроек НЕ показывается —
+	 *  меняется только кликом по переключателю в сетке. Дефолт — «Задача». */
+	lastQuickAddKind: QuickAddKind;
 }
 
 export const DEFAULT_SETTINGS: GtdFlowSettings = {
@@ -107,6 +114,7 @@ export const DEFAULT_SETTINGS: GtdFlowSettings = {
 	onboarded: false,
 	namespaces: [],
 	activeNamespace: DEFAULT_NS,
+	lastQuickAddKind: "task",
 };
 
 /**

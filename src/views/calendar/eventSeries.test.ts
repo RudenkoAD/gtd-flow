@@ -4,6 +4,7 @@ import { parseTaskLine } from "../../core/parser/parseTaskLine";
 import {
 	buildEventLine,
 	buildSingleOccurrenceLine,
+	copyEventSeries,
 	createEventSeries,
 	createSingleEvent,
 	editEventLine,
@@ -295,6 +296,190 @@ describe("createSingleEvent — инлайн-создание одноразов
 		});
 		expect(res).toEqual({ ok: false, reason: "empty-name" });
 		expect(vault.files.has("GTD/События.md")).toBe(false);
+	});
+
+	it("пишет 📍 место при непустом location (копия одноразового с местом)", async () => {
+		const vault = new FakeVault();
+		const res = await createSingleEvent({
+			vault,
+			eventsFile: "GTD/События.md",
+			name: "Созвон",
+			date: "2026-07-20",
+			time: "14:30",
+			timeEnd: "16:00",
+			location: "Кафе на углу",
+		});
+		expect(res.ok).toBe(true);
+		expect(vault.files.get("GTD/События.md")).toBe(
+			"- [ ] Созвон 📅 2026-07-20 14:30-16:00 📍 Кафе на углу\n",
+		);
+	});
+
+	it("недопустимое место (эмодзи поля) — invalid-location без записи", async () => {
+		const vault = new FakeVault();
+		const res = await createSingleEvent({
+			vault,
+			eventsFile: "GTD/События.md",
+			name: "Созвон",
+			date: "2026-07-20",
+			time: null,
+			timeEnd: null,
+			location: "📍 Невский 1",
+		});
+		expect(res).toEqual({ ok: false, reason: "invalid-location" });
+		expect(vault.files.has("GTD/События.md")).toBe(false);
+	});
+});
+
+describe("copyEventSeries — копия серии со свежим 🆔 в том же файле", () => {
+	/** Детерминированный генератор 🆔: выдаёт заданную последовательность. */
+	function seqGen(ids: readonly string[]): () => string {
+		let i = 0;
+		return () => ids[i++] ?? "zzz";
+	}
+
+	it("преднаполнение из источника: новая строка серии со свежим 🆔, источник не тронут", async () => {
+		const vault = new FakeVault();
+		vault.files.set("GTD/Events.md", "- [ ] Тр 🔁 every tue at 19:00 🆔 ev1 📍 Зал\n");
+		const res = await copyEventSeries({
+			vault,
+			eventsFile: "GTD/Events.md",
+			name: "Тр",
+			ruleText: "every tue at 19:00",
+			location: "Зал",
+			genId: seqGen(["cpid"]),
+		});
+		expect(res.ok).toBe(true);
+		// источник сверху без изменений, копия — следующей строкой со свежим 🆔
+		expect(vault.files.get("GTD/Events.md")).toBe(
+			"- [ ] Тр 🔁 every tue at 19:00 🆔 ev1 📍 Зал\n" +
+				"- [ ] Тр 🔁 every tue at 19:00 🆔 cpid 📍 Зал\n",
+		);
+	});
+
+	it("копия получает НОВЫЙ 🆔, отличный от 🆔 источника (свежий id против коллизии)", async () => {
+		const vault = new FakeVault();
+		vault.files.set("GTD/Events.md", "- [ ] Тр 🔁 every tue at 19:00 🆔 ev1\n");
+		// генератор сначала «угадывает» занятый ev1 — freshEventId обязан его пропустить
+		const res = await copyEventSeries({
+			vault,
+			eventsFile: "GTD/Events.md",
+			name: "Тр",
+			ruleText: "every tue at 19:00",
+			genId: seqGen(["ev1", "ev2"]),
+		});
+		expect(res.ok).toBe(true);
+		const lines = vault.files.get("GTD/Events.md")!.trimEnd().split("\n");
+		const copy = taskFrom(lines[1]!, "GTD/Events.md", 1);
+		expect(copy.taskId).toBe("ev2");
+		expect(copy.taskId).not.toBe("ev1");
+	});
+
+	it("источник без 🆔 — копия всё равно получает свежий 🆔 (адресуемость)", async () => {
+		const vault = new FakeVault();
+		vault.files.set("GTD/Events.md", "- [ ] Планёрка 🔁 every day at 10:00\n");
+		const res = await copyEventSeries({
+			vault,
+			eventsFile: "GTD/Events.md",
+			name: "Планёрка",
+			ruleText: "every day at 10:00",
+			genId: seqGen(["newid"]),
+		});
+		expect(res.ok).toBe(true);
+		expect(vault.files.get("GTD/Events.md")).toBe(
+			"- [ ] Планёрка 🔁 every day at 10:00\n" +
+				"- [ ] Планёрка 🔁 every day at 10:00 🆔 newid\n",
+		);
+	});
+
+	it("правки пользователя в модале переносятся в копию (название/правило/место)", async () => {
+		const vault = new FakeVault();
+		vault.files.set("GTD/Events.md", "- [ ] Тр 🔁 every tue at 19:00 🆔 ev1\n");
+		const res = await copyEventSeries({
+			vault,
+			eventsFile: "GTD/Events.md",
+			name: "Тренировка 2",
+			ruleText: "every wed at 20:00",
+			location: "Другой зал",
+			genId: seqGen(["cpid"]),
+		});
+		expect(res.ok).toBe(true);
+		const copy = taskFrom(
+			vault.files.get("GTD/Events.md")!.trimEnd().split("\n")[1]!,
+			"GTD/Events.md",
+			1,
+		);
+		expect(copy.description).toBe("Тренировка 2");
+		expect(copy.recurrence).toBe("every wed at 20:00");
+		expect(copy.location).toBe("Другой зал");
+		expect(copy.taskId).toBe("cpid");
+	});
+
+	it("невалидное правило — invalid-rule без записи", async () => {
+		const vault = new FakeVault();
+		vault.files.set("GTD/Events.md", "- [ ] Тр 🔁 every tue at 19:00 🆔 ev1\n");
+		const res = await copyEventSeries({
+			vault,
+			eventsFile: "GTD/Events.md",
+			name: "Тр",
+			ruleText: "каждый вторник",
+		});
+		expect(res).toEqual({ ok: false, reason: "invalid-rule" });
+		expect(vault.writes).toBe(0);
+		expect(vault.files.get("GTD/Events.md")).toBe("- [ ] Тр 🔁 every tue at 19:00 🆔 ev1\n");
+	});
+
+	it("пустое имя — empty-name без записи", async () => {
+		const vault = new FakeVault();
+		vault.files.set("GTD/Events.md", "- [ ] Тр 🔁 every tue at 19:00 🆔 ev1\n");
+		const res = await copyEventSeries({
+			vault,
+			eventsFile: "GTD/Events.md",
+			name: "   ",
+			ruleText: "every tue at 19:00",
+		});
+		expect(res).toEqual({ ok: false, reason: "empty-name" });
+		expect(vault.writes).toBe(0);
+	});
+
+	it("недопустимое место — invalid-location без записи", async () => {
+		const vault = new FakeVault();
+		vault.files.set("GTD/Events.md", "- [ ] Тр 🔁 every tue at 19:00 🆔 ev1\n");
+		const res = await copyEventSeries({
+			vault,
+			eventsFile: "GTD/Events.md",
+			name: "Тр",
+			ruleText: "every tue at 19:00",
+			location: "📍 Невский 1",
+		});
+		expect(res).toEqual({ ok: false, reason: "invalid-location" });
+		expect(vault.writes).toBe(0);
+		expect(vault.files.get("GTD/Events.md")).toBe("- [ ] Тр 🔁 every tue at 19:00 🆔 ev1\n");
+	});
+});
+
+describe("копия вхождения серии — одноразовая строка с датой ЭТОГО вхождения", () => {
+	it("createSingleEvent из полей вхождения даёт одноразовое событие на дату вхождения (без 🧬)", async () => {
+		// имитация openCopyAsSingle для вхождения серии: occ.date — дата вхождения,
+		// occ.title/location — из серии; серия НЕ меняется, копия независима (нет 🧬)
+		const vault = new FakeVault();
+		vault.files.set("GTD/Events.md", "- [ ] Тр 🔁 every tue at 19:00 🆔 ev1 📍 Зал\n");
+		const res = await createSingleEvent({
+			vault,
+			eventsFile: "GTD/Events.md",
+			name: "Тр",
+			date: "2026-07-21", // конкретное вхождение
+			time: "19:00",
+			timeEnd: null,
+			location: "Зал",
+		});
+		expect(res.ok).toBe(true);
+		const line = vault.files.get("GTD/Events.md")!.trimEnd().split("\n")[1]!;
+		expect(line).toBe("- [ ] Тр 📅 2026-07-21 19:00 📍 Зал");
+		const copy = taskFrom(line, "GTD/Events.md", 1);
+		expect(copy.due).toBe("2026-07-21");
+		expect(copy.recurrence).toBeNull(); // одноразовое, не серия
+		expect(copy.spawnedFrom).toBeNull(); // копия, а не перенос — без 🧬-связи
 	});
 });
 

@@ -3,6 +3,7 @@ import type { Component } from "svelte";
 import { writable, type Writable } from "svelte/store";
 import type GtdFlowPlugin from "../../main";
 import { normalizeActiveNamespace } from "../../core/namespace/namespace";
+import type { QuickAddKind } from "../../settings/Settings";
 import type { IntentDispatcher } from "../../services/WritebackService";
 import { taskMenuPortsFromPlugin } from "../common/taskMenu";
 import type { DndPort } from "../dnd/types";
@@ -61,6 +62,14 @@ export class CalendarView extends GtdView {
 			persist: (s: CalendarPersistedState) => {
 				this.lastState = s;
 				this.app.workspace.requestSaveLayout();
+			},
+			// липкое положение переключателя «Задача | Событие» — снимок настройки на
+			// монтировании + сохранение в настройки плагина при каждой смене (переживает
+			// перезапуск, общее для всех вкладок календаря)
+			quickAddKind: plugin.settings.lastQuickAddKind,
+			persistQuickAddKind: (kind: QuickAddKind) => {
+				plugin.settings.lastQuickAddKind = kind;
+				void plugin.saveSettings();
 			},
 		};
 	}

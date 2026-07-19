@@ -1,15 +1,15 @@
-<script module lang="ts">
-	/** Тип создаваемой записи в инлайн-вводе календаря (экспорт из module-скрипта —
-	 *  импортируется как `import { type QuickAddKind } from "./QuickAddKindSwitch.svelte"`). */
-	export type QuickAddKind = "task" | "event";
-</script>
-
 <script lang="ts">
+	// Канон союза QuickAddKind — в настройках (там же его хранит lastQuickAddKind).
+	import type { QuickAddKind } from "../../settings/Settings";
+
 	let {
-		kind = $bindable("task"),
+		kind,
+		onChange,
 	}: {
-		/** Двусторонний: родитель читает выбор при submit. Дефолт — «Задача». */
-		kind?: QuickAddKind;
+		/** Текущий выбор (липкий, из настроек через родителя). */
+		kind: QuickAddKind;
+		/** Клик по сегменту — родитель сохраняет выбор (persist в настройки). */
+		onChange: (kind: QuickAddKind) => void;
 	} = $props();
 
 	const SEGMENTS: readonly { id: QuickAddKind; label: string }[] = [
@@ -36,7 +36,7 @@
 			class:is-active={kind === seg.id}
 			aria-pressed={kind === seg.id}
 			onmousedown={keepFocus}
-			onclick={() => (kind = seg.id)}>{seg.label}</button
+			onclick={() => onChange(seg.id)}>{seg.label}</button
 		>
 	{/each}
 </div>

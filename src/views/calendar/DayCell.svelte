@@ -2,12 +2,12 @@
 	import { Menu, type App } from "obsidian";
 	import type { IsoDate } from "../../core/model/Task";
 	import type { IntentDispatcher } from "../../services/WritebackService";
-	import type { GtdFlowSettings } from "../../settings/Settings";
+	import type { GtdFlowSettings, QuickAddKind } from "../../settings/Settings";
 	import type { TaskMenuPorts } from "../common/taskMenu";
 	import type { DndPort } from "../dnd/types";
 	import EventChip from "./EventChip.svelte";
 	import EventOccurrenceChip from "./EventOccurrenceChip.svelte";
-	import QuickAddKindSwitch, { type QuickAddKind } from "./QuickAddKindSwitch.svelte";
+	import QuickAddKindSwitch from "./QuickAddKindSwitch.svelte";
 	import type { CalendarWritePort, EventOccurrence, PlacedEvent } from "./calendarLogic";
 
 	let {
@@ -31,6 +31,8 @@
 		onQuickAdd,
 		onQuickAddEvent = null,
 		onCreateEvent = null,
+		quickAddKind = "task",
+		onQuickAddKindChange = null,
 	}: {
 		date: IsoDate;
 		today: IsoDate;
@@ -66,13 +68,15 @@
 		onQuickAddEvent?: ((date: IsoDate, text: string) => Promise<void>) | null;
 		/** ПКМ по пустому месту — создать повторяющееся событие (time=null для дня). */
 		onCreateEvent?: ((date: IsoDate, time: string | null) => void) | null;
+		/** Липкое положение переключателя «Задача | Событие» (общее для всех сеток вида). */
+		quickAddKind?: QuickAddKind;
+		/** Смена переключателя — родитель сохраняет выбор в настройки (persist). */
+		onQuickAddKindChange?: ((kind: QuickAddKind) => void) | null;
 	} = $props();
 
 	let cellEl: HTMLElement | null = $state(null);
 	let adding = $state(false);
 	let draft = $state("");
-	/** Тип создаваемой записи (переключатель «Задача | Событие»); сбрасывается на «Задача». */
-	let addKind = $state<QuickAddKind>("task");
 	/** Обёртка ввода+переключателя — для blur-guard по relatedTarget. */
 	let addWrap = $state<HTMLElement | null>(null);
 
@@ -126,7 +130,8 @@
 	function cancelDraft(): void {
 		adding = false;
 		draft = "";
-		addKind = "task"; // дефолт восстанавливается к следующему вводу
+		// тип НЕ сбрасываем: положение переключателя липкое (последний выбор
+		// живёт в настройках и переживает перезапуск, см. quickAddKind)
 	}
 
 	/** blur ввода: отмена, КРОМЕ ухода фокуса в переключатель той же обёртки —
@@ -140,7 +145,7 @@
 
 	function submitDraft(): void {
 		const text = draft;
-		const kind = addKind;
+		const kind = quickAddKind;
 		cancelDraft();
 		if (text.trim() === "") return;
 		// «Событие» → инлайн-создание события «Весь день»; иначе — задача (как прежде)
@@ -188,8 +193,8 @@
 				<input
 					class="gtd-cal-quickadd"
 					type="text"
-					placeholder={addKind === "event" ? "Новое событие…" : "Новая задача…"}
-					aria-label="{addKind === 'event' ? 'Новое событие' : 'Новая задача'} на {date}"
+					placeholder={quickAddKind === "event" ? "Новое событие…" : "Новая задача…"}
+					aria-label="{quickAddKind === 'event' ? 'Новое событие' : 'Новая задача'} на {date}"
 					bind:value={draft}
 					use:focusInput
 					onkeydown={(e) => {
@@ -198,8 +203,8 @@
 					}}
 					onblur={onDraftBlur}
 				/>
-				{#if onQuickAddEvent !== null}
-					<QuickAddKindSwitch bind:kind={addKind} />
+				{#if onQuickAddEvent !== null && onQuickAddKindChange !== null}
+					<QuickAddKindSwitch kind={quickAddKind} onChange={onQuickAddKindChange} />
 				{/if}
 			</div>
 		{/if}

@@ -12,6 +12,7 @@ import {
 	dropDateField,
 	eventTargetForNamespace,
 	expandEventOccurrences,
+	formatTimeRange,
 	monthGrid,
 	monthStart,
 	monthTitle,
@@ -19,6 +20,7 @@ import {
 	nextMonth,
 	nextWeek,
 	openTasks,
+	parseTimeRange,
 	placeEvents,
 	placedTime,
 	placedTimeEnd,
@@ -552,6 +554,62 @@ describe("agendaTimeLabel — бейдж времени агенды/чипа", 
 		expect(agendaTimeLabel(null, null)).toBeNull();
 		// конец без начала бессмыслен — тоже null
 		expect(agendaTimeLabel(null, "10:00")).toBeNull();
+	});
+});
+
+describe("parseTimeRange — поле времени модала одноразового → начало/конец", () => {
+	it("пусто — событие без времени (обе null)", () => {
+		expect(parseTimeRange("")).toEqual({ time: null, timeEnd: null });
+		expect(parseTimeRange("   ")).toEqual({ time: null, timeEnd: null });
+	});
+
+	it("только начало «HH:mm»", () => {
+		expect(parseTimeRange("09:00")).toEqual({ time: "09:00", timeEnd: null });
+		expect(parseTimeRange(" 23:59 ")).toEqual({ time: "23:59", timeEnd: null });
+	});
+
+	it("диапазон «HH:mm-HH:mm»", () => {
+		expect(parseTimeRange("19:00-20:30")).toEqual({ time: "19:00", timeEnd: "20:30" });
+		expect(parseTimeRange("08:15 - 09:45")).toEqual({ time: "08:15", timeEnd: "09:45" });
+	});
+
+	it("битое время / лишние части — null (submit заблокирован)", () => {
+		expect(parseTimeRange("25:00")).toBeNull();
+		expect(parseTimeRange("9:00")).toBeNull(); // не HH:mm
+		expect(parseTimeRange("abc")).toBeNull();
+		expect(parseTimeRange("10:00-11:00-12:00")).toBeNull();
+		expect(parseTimeRange("10:00-xx")).toBeNull();
+	});
+
+	it("вырожденный конец (≤ начала) НЕ отбраковывается — снимет строка события", () => {
+		// формат валиден; buildSingleOccurrenceLine сам уронит конец ≤ начала
+		expect(parseTimeRange("10:00-10:00")).toEqual({ time: "10:00", timeEnd: "10:00" });
+		expect(parseTimeRange("12:00-08:00")).toEqual({ time: "12:00", timeEnd: "08:00" });
+	});
+});
+
+describe("formatTimeRange — преднаполнение поля времени модала (обратно parseTimeRange)", () => {
+	it("диапазон и одиночное время; дефис ASCII для round-trip", () => {
+		expect(formatTimeRange("19:00", "20:30")).toBe("19:00-20:30");
+		expect(formatTimeRange("14:30", null)).toBe("14:30");
+	});
+
+	it("без начала — пустая строка; вырожденный конец выпадает", () => {
+		expect(formatTimeRange(null, null)).toBe("");
+		expect(formatTimeRange(null, "10:00")).toBe("");
+		expect(formatTimeRange("10:00", "10:00")).toBe("10:00");
+		expect(formatTimeRange("10:00", "08:00")).toBe("10:00");
+	});
+
+	it("round-trip format→parse сохраняет пару", () => {
+		expect(parseTimeRange(formatTimeRange("19:00", "20:30"))).toEqual({
+			time: "19:00",
+			timeEnd: "20:30",
+		});
+		expect(parseTimeRange(formatTimeRange("09:15", null))).toEqual({
+			time: "09:15",
+			timeEnd: null,
+		});
 	});
 });
 

@@ -1,5 +1,7 @@
 node_modules/
 main.js
+# автономный MCP-сервер — тоже сборочный артефакт (npm run build:mcp), собирается в CI
+mcp-server.js
 # настройки плагина в test-vault (junction указывает в корень репо)
 data.json
 .claude/settings.local.json

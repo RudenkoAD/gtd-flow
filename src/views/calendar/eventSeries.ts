@@ -237,9 +237,15 @@ export async function createSingleEvent(deps: {
 	date: IsoDate;
 	time: string | null;
 	timeEnd: string | null;
+	/** Опциональное место 📍 (пусто/null/undefined — без поля); эмодзи поля — invalid-location. */
+	location?: string | null;
 }): Promise<EventWriteResult> {
-	const line = buildSingleOccurrenceLine(deps.name, deps.date, deps.time, deps.timeEnd, null);
-	if (line === null) return { ok: false, reason: "empty-name" };
+	const base = buildSingleOccurrenceLine(deps.name, deps.date, deps.time, deps.timeEnd, null);
+	if (base === null) return { ok: false, reason: "empty-name" };
+	// место дописывается той же трансформацией строки (setValueField ядра); эмодзи
+	// поля в значении даёт null — согласовано с createEventSeries ("invalid-location")
+	const line = applyLocation(base, deps.location ?? null);
+	if (line === null) return { ok: false, reason: "invalid-location" };
 	try {
 		await deps.vault.ensureFile(deps.eventsFile);
 		await deps.vault.processFrontmatter(deps.eventsFile, (fm) => {
@@ -249,6 +255,70 @@ export async function createSingleEvent(deps: {
 		return { ok: false, reason: "events-file-create-failed" };
 	}
 	const ok = await deps.vault.processFile(deps.eventsFile, (content) => appendLine(content, line));
+	return ok ? { ok: true } : { ok: false, reason: "write-failed" };
+}
+
+/**
+ * Копия серии-события в ТОТ ЖЕ файл, что источник, но с НОВЫМ, свежим 🆔.
+ * Идентичность серии в этом коде — 🆔/taskId (locateTaskLine адресует правки/
+ * удаление по нему; 🧬 — это провенанс переноса ВХОЖДЕНИЯ, не серии). Свежий 🆔
+ * делает копию адресуемой отдельно от источника даже когда пользователь не тронул
+ * название/правило (иначе две одинаковые строки — двойники для локализации).
+ * Поля (название, правило, место) приходят из источника преднаполненными и
+ * правятся в модале. Валидация — как createEventSeries (invalid-rule / empty-name /
+ * invalid-location). genId — детерминированный в тестах.
+ */
+export async function copyEventSeries(deps: {
+	vault: EventVaultPort;
+	/** Файл источника — копия ложится рядом (тот же container events). */
+	eventsFile: string;
+	name: string;
+	ruleText: string;
+	/** Опциональное место 📍 (пусто/null — без поля). */
+	location?: string | null;
+	/** Ленивый генератор 🆔 (тесты передают детерминированный). */
+	genId?: () => string;
+}): Promise<EventWriteResult> {
+	if (isParseError(parseRule(deps.ruleText))) return { ok: false, reason: "invalid-rule" };
+	// пред-валидация имени и места ДО касания файла (различаем empty-name /
+	// invalid-location повторной сборкой без места — как createEventSeries)
+	if (buildEventLine(deps.name, deps.ruleText, deps.location ?? null) === null) {
+		const reason =
+			buildEventLine(deps.name, deps.ruleText) === null ? "empty-name" : "invalid-location";
+		return { ok: false, reason };
+	}
+	const genId = deps.genId ?? defaultEventId;
+	const n = deps.name.replace(/\s+/g, " ").trim();
+	try {
+		await deps.vault.ensureFile(deps.eventsFile);
+		await deps.vault.processFrontmatter(deps.eventsFile, (fm) => {
+			fm["gtd-events"] = true;
+		});
+	} catch {
+		return { ok: false, reason: "events-file-create-failed" };
+	}
+	let failure: string | null = null;
+	const ok = await deps.vault.processFile(deps.eventsFile, (content) => {
+		const lines = content.split("\n");
+		// свежий 🆔, не совпадающий с уже занятыми в файле (в т.ч. с 🆔 источника)
+		const id = freshEventId(existingIds(lines, deps.eventsFile), genId);
+		// канонический порядок полей — 🆔 перед 📍 (как в editEventLine): id на строку
+		// без места, затем место (место пред-валидировано выше — applyLocation ≠ null)
+		let line: string;
+		try {
+			line = setValueField(`- [ ] ${n} 🔁 ${deps.ruleText.trim()}`, "id", id);
+		} catch {
+			failure = "transform-failed";
+			return null;
+		}
+		const withLoc = applyLocation(line, deps.location ?? null);
+		if (withLoc === null) {
+			failure = "invalid-location";
+			return null;
+		}
+		return appendLine(content, withLoc);
+	});
+	if (failure !== null) return { ok: false, reason: failure };
 	return ok ? { ok: true } : { ok: false, reason: "write-failed" };
 }
 

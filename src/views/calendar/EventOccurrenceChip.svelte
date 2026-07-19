@@ -7,8 +7,10 @@
 	import { obsidianTooltip } from "../common/tooltip";
 	import type { DndPort } from "../dnd/types";
 	import { VIEW_TYPES } from "../registry";
-	import { agendaTimeLabel, type EventOccurrence } from "./calendarLogic";
+	import { agendaTimeLabel, formatTimeRange, type EventOccurrence } from "./calendarLogic";
 	import {
+		copyEventSeries,
+		createSingleEvent,
 		editEventSeries,
 		excludeEventOccurrence,
 		setEventLocation,
@@ -17,6 +19,7 @@
 		type EventVaultPort,
 	} from "./eventSeries";
 	import { EventSeriesModal } from "./EventSeriesModal";
+	import { SingleEventModal } from "./SingleEventModal";
 	import { preservedTimeEnd, type TimedBlock } from "./timeGrid";
 
 	let {
@@ -179,6 +182,64 @@
 		).open();
 	}
 
+	/**
+	 * Копировать в НОВОЕ одноразовое событие: модал одноразового, преднаполненный
+	 * полями этого чипа. Для одноразового — его собственные поля; для вхождения
+	 * серии — дата/время ЭТОГО вхождения + название/место серии (occ уже несёт
+	 * per-occurrence дату и series-level название/время/место). Результат —
+	 * независимое одноразовое событие в ТОМ ЖЕ файле, что источник (серия не
+	 * трогается: 🧬-связи нет, это копия, а не перенос). modalTitle различает
+	 * пункты «Копировать…» и «Копировать вхождение…».
+	 */
+	function openCopyAsSingle(modalTitle: string): void {
+		new SingleEventModal(
+			app,
+			{
+				name: occ.title,
+				date: occ.date,
+				time: formatTimeRange(occ.time, occ.timeEnd),
+				location: occ.location ?? "",
+			},
+			modalTitle,
+			(name, date, time, timeEnd, location) => {
+				void createSingleEvent({
+					vault,
+					eventsFile: occ.task.filePath,
+					name,
+					date,
+					time,
+					timeEnd,
+					location,
+				}).then((res) => {
+					if (res.ok) new Notice("GTD Flow: событие создано");
+					else new Notice(`GTD Flow: ${res.reason}`);
+				});
+			},
+		).open();
+	}
+
+	/**
+	 * Копировать серию: EventSeriesModal, преднаполненный названием/правилом/
+	 * временем/местом источника → НОВАЯ серия со свежим 🆔 в том же файле
+	 * (copyEventSeries; серия-источник не меняется).
+	 */
+	function openCopySeries(): void {
+		const { rule, time } = splitEventRule(occ.task.recurrence ?? "");
+		new EventSeriesModal(
+			app,
+			{ name: occ.title, rule, time, location: occ.location ?? "" },
+			"Копировать серию",
+			(name, ruleText, location) => {
+				void copyEventSeries({ vault, eventsFile: occ.task.filePath, name, ruleText, location }).then(
+					(res) => {
+						if (res.ok) new Notice("GTD Flow: серия создана");
+						else new Notice(`GTD Flow: ${res.reason}`);
+					},
+				);
+			},
+		).open();
+	}
+
 	/** Начало drag блока-вхождения: призрак — весь блок, время при drop — по его верху. */
 	function onPointerDown(e: PointerEvent): void {
 		if (!draggable || dnd === null || rootEl === null || e.button !== 0) return;
@@ -211,6 +272,15 @@
 			);
 			menu.addItem((mi) =>
 				mi
+					.setTitle("Копировать вхождение…")
+					.setIcon("copy")
+					.onClick(() => openCopyAsSingle("Копировать вхождение как событие")),
+			);
+			menu.addItem((mi) =>
+				mi.setTitle("Копировать серию…").setIcon("copy").onClick(() => openCopySeries()),
+			);
+			menu.addItem((mi) =>
+				mi
 					.setTitle("Удалить это вхождение")
 					.setIcon("calendar-x")
 					.onClick(() => void deleteOccurrence()),
@@ -224,6 +294,9 @@
 			);
 			menu.addItem((mi) =>
 				mi.setTitle("Перенести вхождение…").setIcon("calendar-clock").onClick(() => openTransfer()),
+			);
+			menu.addItem((mi) =>
+				mi.setTitle("Копировать…").setIcon("copy").onClick(() => openCopyAsSingle("Копировать событие")),
 			);
 			menu.addItem((mi) =>
 				mi.setTitle("Удалить событие").setIcon("trash").onClick(() => void deleteSingle()),

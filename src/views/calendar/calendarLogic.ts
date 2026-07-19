@@ -16,6 +16,7 @@ import { isInTickler } from "../../core/query/QueryEngine";
 import { isParseError, parseRule } from "../../core/recurrence/grammar";
 import { expandOccurrences } from "../../core/recurrence/occurrences";
 import { addDaysIso, dayOfWeekSun0, startOfWeek } from "../common/dates";
+import { timeToMinutes } from "./timeGrid";
 
 export type CalendarMode = "month" | "week" | "agenda" | "3days" | "day";
 
@@ -174,6 +175,44 @@ export function placedTimeEnd(task: Task, field: CalendarField): string | null {
 export function agendaTimeLabel(time: string | null, timeEnd: string | null): string | null {
 	if (time === null) return null;
 	return timeEnd !== null && timeEnd > time ? `${time}–${timeEnd}` : time;
+}
+
+/**
+ * Разбор поля времени модала одноразового события в пару начало/конец.
+ * Формы: "" → без времени (обе null); "HH:mm" → только начало; "HH:mm-HH:mm" →
+ * начало и конец. Каждая часть валидируется как время суток (timeToMinutes,
+ * 00:00–23:59). Любая иная форма/битое время → null (модал не пускает submit).
+ * Вырожденный конец (≤ начала) здесь НЕ отбраковывается — его снимает
+ * buildSingleOccurrenceLine (канон парсера), как и при переносе вхождения.
+ */
+export function parseTimeRange(
+	input: string,
+): { time: string | null; timeEnd: string | null } | null {
+	const s = input.trim();
+	if (s === "") return { time: null, timeEnd: null };
+	const parts = s.split("-");
+	if (parts.length === 1) {
+		const t = parts[0]!.trim();
+		return timeToMinutes(t) === null ? null : { time: t, timeEnd: null };
+	}
+	if (parts.length === 2) {
+		const a = parts[0]!.trim();
+		const b = parts[1]!.trim();
+		if (timeToMinutes(a) === null || timeToMinutes(b) === null) return null;
+		return { time: a, timeEnd: b };
+	}
+	return null;
+}
+
+/**
+ * Обратно parseTimeRange: пара начало/конец → строка для преднаполнения поля
+ * времени модала. Дефис ASCII (не en-dash agendaTimeLabel) — чтобы parseTimeRange
+ * прочитал результат обратно. Конец пишется только строго позже начала (иначе
+ * выпадает, как в бейдже/строке события); без начала — пустая строка.
+ */
+export function formatTimeRange(time: string | null, timeEnd: string | null): string {
+	if (time === null) return "";
+	return timeEnd !== null && timeEnd > time ? `${time}-${timeEnd}` : time;
 }
 
 /**

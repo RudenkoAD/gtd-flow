@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "dev": "node esbuild.config.mjs",
-    "build": "npm run check:core && tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "build": "npm run check:core && tsc -noEmit -skipLibCheck && node esbuild.config.mjs production && npm run build:mcp",
+    "build:mcp": "node esbuild.mcp.mjs",
     "test": "npm run check:core && vitest run",
     "test:watch": "vitest",
     "check:core": "node scripts/check-core-purity.mjs",
@@ -22,6 +23,7 @@
   "author": "Anton Roudenko",
   "license": "MIT",
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/node": "^22.10.0",
     "builtin-modules": "3.3.0",
     "esbuild": "^0.24.0",
@@ -32,7 +34,9 @@
     "svelte-preprocess": "^6.0.3",
     "tslib": "^2.8.1",
     "typescript": "^5.7.2",
-    "vitest": "^3.0.0"
+    "vitest": "^3.0.0",
+    "yaml": "^2.9.0",
+    "zod": "^4.4.3"
   },
   "dependencies": {
     "@xyflow/svelte": "^1.6.0"

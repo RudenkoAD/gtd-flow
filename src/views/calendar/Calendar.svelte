@@ -12,7 +12,7 @@
 		type NamespaceFilter,
 	} from "../../core/namespace/namespace";
 	import type { IntentDispatcher } from "../../services/WritebackService";
-	import type { GtdFlowSettings } from "../../settings/Settings";
+	import type { GtdFlowSettings, QuickAddKind } from "../../settings/Settings";
 	import { calendarRangeStore } from "../../stores/derived/queryStore";
 	import type { TaskStore } from "../../stores/taskStore";
 	import { addDaysIso } from "../common/dates";
@@ -80,6 +80,8 @@
 		setActiveNamespace,
 		persisted,
 		persist,
+		quickAddKind: initialQuickAddKind = "task",
+		persistQuickAddKind = null,
 	}: {
 		taskStore: TaskStore;
 		dispatcher: IntentDispatcher;
@@ -103,6 +105,11 @@
 		/** Состояние из workspace-раскладки; приходит ПОСЛЕ монтирования. */
 		persisted: Readable<CalendarPersistedState>;
 		persist: (s: CalendarPersistedState) => void;
+		/** Липкое положение переключателя «Задача | Событие» из настроек плагина
+		 *  (снимок на монтировании; дефолт «Задача» для новых пользователей). */
+		quickAddKind?: QuickAddKind;
+		/** Сохранить новый выбор переключателя в настройки (persist через плагин). */
+		persistQuickAddKind?: ((kind: QuickAddKind) => void) | null;
 	} = $props();
 
 	// props фиксированы на время монтирования (вид пересоздаётся с leaf) —
@@ -124,6 +131,16 @@
 	let mode = $state<CalendarMode>("month");
 	// svelte-ignore state_referenced_locally
 	let anchor = $state<IsoDate>(get(taskStore.today));
+
+	// Липкий тип инлайн-ввода: единый источник для ОБЕИХ сеток вида (месяц/тайм-сетка);
+	// снимок настройки на монтировании, дальше живёт локально и при каждой смене
+	// пишется в настройки плагина (переживает перезапуск).
+	// svelte-ignore state_referenced_locally
+	let quickAddKind = $state<QuickAddKind>(initialQuickAddKind);
+	function setQuickAddKind(kind: QuickAddKind): void {
+		quickAddKind = kind;
+		persistQuickAddKind?.(kind);
+	}
 
 	// восстановление из viewState (setState приходит после onOpen — поэтому store)
 	$effect(() =>
@@ -536,6 +553,8 @@
 					onQuickAdd={quickAdd}
 					onQuickAddEvent={(date, text) => quickAddEvent(date, text)}
 					onCreateEvent={createEvent}
+					{quickAddKind}
+					onQuickAddKindChange={setQuickAddKind}
 				/>
 			{/each}
 		</div>
@@ -559,6 +578,8 @@
 			onQuickAddEvent={quickAddEvent}
 			onCreateEvent={createEvent}
 			onMoveOccurrence={moveOccurrence}
+			{quickAddKind}
+			onQuickAddKindChange={setQuickAddKind}
 		/>
 	{:else}
 		<div class="gtd-cal-weekdays">
@@ -596,6 +617,8 @@
 						onQuickAdd={quickAdd}
 						onQuickAddEvent={(date, text) => quickAddEvent(date, text)}
 						onCreateEvent={createEvent}
+						{quickAddKind}
+						onQuickAddKindChange={setQuickAddKind}
 					/>
 				{/each}
 			{/each}

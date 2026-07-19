@@ -15,13 +15,22 @@ import type { DeferPreset } from "../../settings/Settings";
 import { PRIORITY_LABELS, PRIORITY_ORDER } from "./cardFormat";
 import { addDaysIso } from "./dates";
 
-export type MenuSection = "status" | "priority" | "schedule" | "defer" | "move" | "card" | "nav";
+export type MenuSection =
+	| "status"
+	| "priority"
+	| "schedule"
+	| "defer"
+	| "location"
+	| "move"
+	| "card"
+	| "nav";
 
 export type MenuAction =
 	| { kind: "intent"; intent: Intent }
 	| { kind: "pick-due" } // «Запланировать…»: пикер даты → set-date due
 	| { kind: "pick-scheduled" } // «Запланировать (⏳)…»: пикер даты → set-date scheduled
 	| { kind: "pick-defer" } // «Отложить: дата…»: пикер даты → defer
+	| { kind: "pick-location" } // «Добавить/Изменить место…»: prompt текста → set-location
 	| { kind: "pick-column" } // «Переместить в колонку…»: доски × колонки → moveCard в конец
 	| { kind: "pick-project" } // «В проект…»: пикер проектов → move-line
 	| { kind: "make-template" } // «Сделать шаблоном…»: move-line в gtd-recurring файл
@@ -211,6 +220,17 @@ export function buildMenuModel(input: MenuModelInput): MenuNode[] {
 			}),
 		);
 	}
+
+	// --- место (📍): у ЛЮБОЙ задачи во всех видах; подпись динамическая по
+	// наличию места. Исполнение — prompt текста (pick-location в taskMenu.ts). ---
+	const hasLocation = task.location !== null && task.location.trim() !== "";
+	items.push({
+		id: "set-location",
+		section: "location",
+		title: hasLocation ? "Изменить место…" : "Добавить место…",
+		icon: "map-pin",
+		action: { kind: "pick-location" },
+	});
 
 	// --- перемещение: только при живых портах (нет сервиса — нет пункта) ---
 	if (input.hasBoards) {

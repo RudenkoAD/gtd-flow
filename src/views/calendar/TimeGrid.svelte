@@ -66,11 +66,18 @@
 			text: string,
 			time: string | null,
 			timeEnd?: string | null,
+			location?: string | null,
 		) => Promise<void>;
 		/** Инлайн-создание СОБЫТИЯ (сегмент «Событие»): слот сетки — время начала-конца,
 		 *  полоса «Весь день» — событие без времени. null — переключатель скрыт. */
 		onQuickAddEvent?:
-			| ((date: IsoDate, text: string, time: string | null, timeEnd?: string | null) => Promise<void>)
+			| ((
+					date: IsoDate,
+					text: string,
+					time: string | null,
+					timeEnd?: string | null,
+					location?: string | null,
+			  ) => Promise<void>)
 			| null;
 		/** ПКМ по пустому слоту/полосе — создать событие. */
 		onCreateEvent?: ((date: IsoDate, time: string | null) => void) | null;
@@ -171,10 +178,10 @@
 				statusName={dayStatusColor(d.date)?.name ?? null}
 				painting={dayStatusPainting(d.date)}
 				onDropTask={(taskKey, date) => onDropTask(taskKey, date, null)}
-				onQuickAdd={(date, text) => onQuickAdd(date, text, null)}
+				onQuickAdd={(date, text, location) => onQuickAdd(date, text, null, null, location)}
 				onQuickAddEvent={onQuickAddEvent === null
 					? null
-					: (date, text) => onQuickAddEvent(date, text, null, null)}
+					: (date, text, location) => onQuickAddEvent(date, text, null, null, location)}
 				onCreateEvent={onCreateEvent === null
 					? null
 					: (date) => onCreateEvent(date, null)}

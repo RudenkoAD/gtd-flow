@@ -12,6 +12,7 @@
 		renderWikiLinks,
 	} from "../common/cardFormat";
 	import { buildTaskMenu, type TaskMenuPorts } from "../common/taskMenu";
+	import { obsidianTooltip } from "../common/tooltip";
 	import type { DndPort } from "../dnd/types";
 	import { VIEW_TYPES } from "../registry";
 	import { agendaTimeLabel, deferredUntil, placedTime, placedTimeEnd, type PlacedEvent } from "./calendarLogic";
@@ -58,6 +59,16 @@
 	);
 	/** TICKLER (start > today): приглушённый чип, маркер ⏰, дата пробуждения в title. */
 	const deferred = $derived(deferredUntil(ev.task, today));
+	/** Базовая подсказка чипа (native title): дата пробуждения у отложенной либо
+	 *  плоский текст задачи. */
+	const baseTitle = $derived(deferred !== null ? `Отложена до ${deferred}` : titleText);
+	/** Место задачи (📍): непустой текст или null. */
+	const locationText = $derived(
+		ev.task.location !== null && ev.task.location.trim() !== "" ? ev.task.location.trim() : null,
+	);
+	/** При наличии места — единая Obsidian-подсказка ПОД чипом (как у событий):
+	 *  базовый текст + строка «📍 <место>». Без места — null: работает native title. */
+	const chipTooltip = $derived(locationText === null ? null : `${baseTitle}\n📍 ${locationText}`);
 
 	// --- инлайн-редактирование текста (дабл-клик ЛКМ) ---
 	let editing = $state(false);
@@ -169,7 +180,8 @@
 	class:is-done={isDone}
 	class:is-draggable={draggable && !editing}
 	class:is-deferred={deferred !== null}
-	title={deferred !== null ? `Отложена до ${deferred}` : titleText}
+	title={locationText === null ? baseTitle : null}
+	use:obsidianTooltip={{ text: chipTooltip, placement: "bottom", classes: ["gtd-event-tooltip"] }}
 	onpointerdown={onPointerDown}
 	onclick={onClick}
 	oncontextmenu={onContextMenu}

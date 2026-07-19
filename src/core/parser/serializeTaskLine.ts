@@ -27,6 +27,7 @@ import {
 import { parseDatePayload, parseExcludedDates, splitDateTimePayload } from "./parseTaskLine";
 import {
 	extractTags,
+	isLeadingLocation,
 	isTagChar,
 	isTimedDateField,
 	serializeTokens,
@@ -56,7 +57,8 @@ function assertToken(value: string, what: string): void {
 
 /**
  * 📍 — свободный текст места: пробелы допустимы, но НЕ эмодзи полей (payload
- * читается до следующего поля — эмодзи внутри обрезали бы значение при чтении)
+ * читается до следующего поля — эмодзи внутри обрезали бы значение при чтении),
+ * НЕ #теги (payload обрывается перед первым тегом — см. защита «а» токенизатора)
  * и не пустой после схлопывания пробелов. Возвращает канонизированное значение
  * (\s+ → ' ', trim) — то же, что прочитает парсер (снятие поля — value === null).
  */
@@ -69,6 +71,12 @@ function assertLocation(value: string): string {
 		if (v.includes(e)) {
 			throw new Error(`serializeTaskLine: эмодзи поля в локации 📍: ${JSON.stringify(value)}`);
 		}
+	}
+	// #тег в месте обрезался бы при чтении (payload 📍 останавливается перед тегом) —
+	// отклоняем, как и эмодзи полей. Ведущий пробел моделирует gap перед payload,
+	// чтобы граница совпала с токенизатором (extractTags == его логика тега).
+	if (extractTags(` ${v}`).length > 0) {
+		throw new Error(`serializeTaskLine: #тег в локации 📍: ${JSON.stringify(value)}`);
 	}
 	return v;
 }
@@ -133,9 +141,9 @@ function setPayloadField(
 	emoji: string,
 	payload: string | null,
 ): string {
-	// поле места 📍 распознаём только при работе С НИМ (иначе 📍 в тексте обычной
-	// задачи невидим как поле — и его нельзя было бы найти/заменить/снять)
-	const t = mustTokenize(rawLine, { location: field === "location" });
+	// 📍 — поле места по умолчанию (см. TokenizeOptions): токенизуем как обычно,
+	// поле места находится/заменяется/снимается наравне с прочими
+	const t = mustTokenize(rawLine);
 	const idxs = fieldIndices(t.segments, field);
 	if (payload === null) {
 		if (idxs.length === 0) return rawLine;
@@ -439,16 +447,34 @@ function removeTagFromText(text: string, tag: string): string {
  * text канонизируется как description парсера (\s+ → ' ', trim; \n сюда же) —
  * повторный parse даёт description === канон. Пустой канон валиден:
  * «- [ ] 📅 2026-01-01» — задача без описания.
- * Эмодзи полей внутри text — throw (как addTag): парсер прочитал бы их
- * как поля, а не как текст.
+ * Эмодзи полей внутри text — throw (как addTag): парсер прочитал бы их как поля,
+ * а не как текст. Место задаётся отдельно (setValueField location / set-location).
+ * ИСКЛЮЧЕНИЕ — ВЕДУЩИЙ 📍 в самом начале канона: токенизатор читает его как
+ * ЗАГОЛОВОК описания, а не поле (защита «б»). Это единственный способ, которым
+ * валидное описание содержит 📍 (напр. «📍 Важная встреча»), поэтому инлайн-правка
+ * такой задачи/события не должна падать. «Ведущий ли 📍» решает тот же предикат
+ * isLeadingLocation, что и токенизатор (правило leading-📍 не дублируется здесь
+ * строкой) — семантика писателя и читателя совпадает по построению. Любой ДРУГОЙ
+ * 📍 (не ведущий) стал бы полем места при чтении — отклоняем, как прочие эмодзи.
  */
 export function setDescription(rawLine: string, text: string): string {
 	const canon = text.replace(/\s+/g, " ").trim();
+	const loc = VALUE_FIELD_EMOJI.location;
 	for (const e of ALL_FIELD_EMOJI) {
-		// 📍 — валидный текст описания обычной задачи (поле места распознаётся лишь
-		// в строках-событиях), поэтому не запрещаем его: инлайн-правка карточки с
-		// рукописным 📍 иначе молча падала бы на этом гейте
-		if (e === VALUE_FIELD_EMOJI.location) continue;
+		if (e === loc) {
+			// каждый 📍 нового текста должен быть ведущим (иначе стал бы полем места):
+			// проверяем позицию ТЕМ ЖЕ isLeadingLocation, что применяет токенизатор к
+			// канону, ставшему первым текст-сегментом (canon уже trim/схлопнут — как
+			// его увидит читатель). Не ведущий 📍 → throw.
+			for (let idx = canon.indexOf(loc); idx !== -1; idx = canon.indexOf(loc, idx + loc.length)) {
+				if (!isLeadingLocation(canon, idx)) {
+					throw new Error(
+						`serializeTaskLine: эмодзи поля в тексте описания: ${JSON.stringify(text)}`,
+					);
+				}
+			}
+			continue;
+		}
 		if (canon.includes(e)) {
 			throw new Error(
 				`serializeTaskLine: эмодзи поля в тексте описания: ${JSON.stringify(text)}`,

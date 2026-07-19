@@ -66,6 +66,15 @@ export function resolveLineTransform(intent: Intent, currentLine: string): strin
 		case "set-priority":
 			return setPriority(currentLine, intent.priority);
 
+		case "set-location":
+			// пустая/пробельная строка приводится к null (снять поле) — как no-op при
+			// отсутствии 📍; непустое значение канонизирует и валидирует setValueField
+			return setValueField(
+				currentLine,
+				"location",
+				intent.location?.trim() ? intent.location : null,
+			);
+
 		case "move-column": {
 			// Перенос = ТОЛЬКО теги (fromTag/fromTags снять → toTag добавить); статус
 			// карточки не трогается никогда. intent.index (ручной порядок) —

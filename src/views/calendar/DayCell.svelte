@@ -61,11 +61,12 @@
 		painting?: boolean;
 		/** Drop карточки любого вида на этот день (ТЗ §8). */
 		onDropTask: (taskKey: string, date: IsoDate) => Promise<void>;
-		/** Быстрый ввод задачи с датой этого дня. */
-		onQuickAdd: (date: IsoDate, text: string) => Promise<void>;
+		/** Быстрый ввод задачи с датой этого дня. location — из поля «Место» (📍) или null. */
+		onQuickAdd: (date: IsoDate, text: string, location: string | null) => Promise<void>;
 		/** Инлайн-создание СОБЫТИЯ «Весь день» с датой этого дня (сегмент «Событие»
-		 *  переключателя). null — переключатель скрыт, ввод создаёт только задачи. */
-		onQuickAddEvent?: ((date: IsoDate, text: string) => Promise<void>) | null;
+		 *  переключателя). location — из поля «Место» (📍) или null. null-колбэк —
+		 *  переключатель скрыт, ввод создаёт только задачи. */
+		onQuickAddEvent?: ((date: IsoDate, text: string, location: string | null) => Promise<void>) | null;
 		/** ПКМ по пустому месту — создать повторяющееся событие (time=null для дня). */
 		onCreateEvent?: ((date: IsoDate, time: string | null) => void) | null;
 		/** Липкое положение переключателя «Задача | Событие» (общее для всех сеток вида). */
@@ -77,6 +78,8 @@
 	let cellEl: HTMLElement | null = $state(null);
 	let adding = $state(false);
 	let draft = $state("");
+	/** Необязательное «Место» (📍) — второй инпут под названием. */
+	let locationDraft = $state("");
 	/** Обёртка ввода+переключателя — для blur-guard по relatedTarget. */
 	let addWrap = $state<HTMLElement | null>(null);
 
@@ -130,6 +133,7 @@
 	function cancelDraft(): void {
 		adding = false;
 		draft = "";
+		locationDraft = "";
 		// тип НЕ сбрасываем: положение переключателя липкое (последний выбор
 		// живёт в настройках и переживает перезапуск, см. quickAddKind)
 	}
@@ -146,11 +150,14 @@
 	function submitDraft(): void {
 		const text = draft;
 		const kind = quickAddKind;
+		const location = locationDraft.trim() === "" ? null : locationDraft.trim();
 		cancelDraft();
 		if (text.trim() === "") return;
-		// «Событие» → инлайн-создание события «Весь день»; иначе — задача (как прежде)
-		if (kind === "event" && onQuickAddEvent !== null) void onQuickAddEvent(date, text);
-		else void onQuickAdd(date, text);
+		// «Событие» → инлайн-создание события «Весь день»; иначе — задача (как прежде).
+		// Место (📍) идёт в обе ветки: у события — в createSingleEvent, у задачи — полем
+		// 📍 строки (quickAddLine).
+		if (kind === "event" && onQuickAddEvent !== null) void onQuickAddEvent(date, text, location);
+		else void onQuickAdd(date, text, location);
 	}
 </script>
 
@@ -197,6 +204,19 @@
 					aria-label="{quickAddKind === 'event' ? 'Новое событие' : 'Новая задача'} на {date}"
 					bind:value={draft}
 					use:focusInput
+					onkeydown={(e) => {
+						if (e.key === "Enter") submitDraft();
+						else if (e.key === "Escape") cancelDraft();
+					}}
+					onblur={onDraftBlur}
+				/>
+				<!-- необязательное «Место» (📍): Tab из названия, Enter создаёт из любого поля -->
+				<input
+					class="gtd-cal-quickadd gtd-cal-quickadd-loc"
+					type="text"
+					placeholder="📍 Место"
+					aria-label="Место (необязательно) на {date}"
+					bind:value={locationDraft}
 					onkeydown={(e) => {
 						if (e.key === "Enter") submitDraft();
 						else if (e.key === "Escape") cancelDraft();
@@ -306,5 +326,10 @@
 	.gtd-cal-quickadd {
 		width: 100%;
 		font-size: var(--font-ui-smaller, 0.85em);
+	}
+	/* поле «Место» — компактнее и приглушённее названия (необязательное) */
+	.gtd-cal-quickadd-loc {
+		font-size: var(--font-ui-smaller, 0.8em);
+		color: var(--text-muted);
 	}
 </style>

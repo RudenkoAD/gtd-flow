@@ -58,6 +58,15 @@ export interface SetPriority {
 	priority: Priority;
 }
 
+/** Пишет 📍 — место задачи ЛЮБОГО файла (не только события). Локатор адресует
+ *  по 🆔/content-key (📍 вырезано из content-key, ключ стабилен). */
+export interface SetLocation {
+	type: "set-location";
+	key: string;
+	/** Свободный текст места; null или пустая/пробельная строка — снять поле. */
+	location: string | null;
+}
+
 export interface MoveColumn {
 	type: "move-column";
 	key: string;
@@ -193,6 +202,7 @@ export type Intent =
 	| SetText
 	| SetStatus
 	| SetPriority
+	| SetLocation
 	| MoveColumn
 	| Reorder
 	| Defer

@@ -21,6 +21,7 @@ import { localTodayIso } from "../../services/snapshotHelpers";
 import { confirm } from "./ConfirmModal";
 import { openTaskInFile } from "./openTask";
 import { pickBoardColumn, pickDate, pickProject } from "./pickers";
+import { TextPromptModal } from "./TextPromptModal";
 import {
 	NS_CONVENTION,
 	nsTargetPath,
@@ -386,6 +387,26 @@ async function runMenuAction(ctx: TaskMenuCtx, action: MenuAction): Promise<void
 			const date = await pickDate(ctx.app, "Отложить до", ctx.task.start ?? undefined);
 			if (date === null) return;
 			return dispatchDefer(ctx, date);
+		}
+
+		case "pick-location": {
+			// «Добавить/Изменить место…» — prompt с текущим 📍. TextPromptModal
+			// триммит; пустой сабмит (пусто/пробелы) → null: места не было —
+			// setValueField отдаёт ту же строку, applyToLine это видит как no-op без
+			// записи; было — поле снимается (та же семантика, что у событий).
+			new TextPromptModal(
+				ctx.app,
+				"Место задачи",
+				(value) =>
+					void dispatchNoticing(ctx.dispatcher, {
+						type: "set-location",
+						key: ctx.task.key,
+						location: value === "" ? null : value,
+					}),
+				ctx.task.location ?? "",
+				"Адрес или место (пусто — убрать)",
+			).open();
+			return;
 		}
 
 		case "pick-column": {

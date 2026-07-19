@@ -96,13 +96,16 @@ export interface TokenizedTaskLine {
 }
 
 export interface TokenizeOptions {
-	/** Распознавать 📍 как поле места. По умолчанию false: 📍 остаётся ОБЫЧНЫМ
-	 *  текстом задачи. Место — фича календаря (строки gtd-events); включать флаг
-	 *  только для них. Иначе рукописный 📍 в обычной задаче поглотил бы хвост
-	 *  описания и #теги после него — членство в доске/#waiting и content-key
-	 *  менялись бы против предсуществующих данных. Читатель (parseTaskLine на
-	 *  container==="events") и писатель поля (setValueField location) включают его
-	 *  явно; normalizeDescription/content-key — нет (📍 остаётся частью описания). */
+	/** Распознавать 📍 как поле места. ПО УМОЛЧАНИЮ true: 📍 — поле места ВСЕГДА
+	 *  (и в обычных задачах, не только в событиях). Опция сохранена для
+	 *  совместимости сигнатур; передайте false, чтобы вернуть старое поведение
+	 *  «📍 — обычный текст» (никто в кодовой базе так не делает).
+	 *
+	 *  Две защиты от поглощения описания рукописным 📍 (см. tokenizeSegments):
+	 *  (а) payload 📍 обрывается не только перед следующим эмодзи поля, но и ПЕРЕД
+	 *      первым #тегом — тег, дописанный после места, остаётся частью описания;
+	 *  (б) 📍 в САМОМ НАЧАЛЕ описания (до любого текста) — это заголовок, не поле:
+	 *      не съедаем название задачи. */
 	location?: boolean;
 }
 
@@ -154,6 +157,39 @@ function scanToken(s: string, from: number): number {
 	return j;
 }
 
+/** '#' на позиции j начинает валидный #тег (та же логика, что extractTags):
+ *  перед ним не '#'/не тело тега, тело непустое и не чисто числовое. Служит
+ *  границей payload места 📍 — тег, дописанный после места, не проглатывается
+ *  локацией (защита «а»). Числовой «#5» тегом не считается и в место попадает. */
+function tagStartsAt(s: string, j: number): boolean {
+	if (s.charAt(j) !== "#") return false;
+	const prev = j > 0 ? s.charAt(j - 1) : "";
+	if (prev === "#" || isTagChar(prev)) return false;
+	let k = j + 1;
+	while (k < s.length && isTagChar(s.charAt(k))) k++;
+	const body = s.slice(j + 1, k);
+	return body !== "" && /[^0-9]/.test(body);
+}
+
+/** Payload места 📍: свободный текст (как 🔁) до следующего эмодзи поля ИЛИ до
+ *  первого #тега (защита «а» — тег после места остаётся описанием); хвостовые
+ *  пробелы уходят следующему текст-сегменту. */
+function scanLocationPayload(s: string, from: number): number {
+	let j = from;
+	while (j < s.length && matchFieldEmoji(s, j) === null && !tagStartsAt(s, j)) j++;
+	while (j > from && isWs(s.charAt(j - 1))) j--;
+	return j;
+}
+
+/** 📍 на позиции i — заголовок, а не поле (защита «б»), если до него в описании
+ *  нет ни одного непробельного символа: не съедаем название задачи «📍 …».
+ *  Экспортируется, чтобы писатель (setDescription) решал «ведущий ли 📍 в новом
+ *  тексте» ТЕМ ЖЕ предикатом, что и токенизатор — правило leading-📍 живёт в
+ *  одном месте, без дубля строкой на стороне сериализатора. */
+export function isLeadingLocation(rest: string, i: number): boolean {
+	return rest.slice(0, i).trim() === "";
+}
+
 /** Payload дата-поля 📅/⏳/🛫: «дата[ HH:mm[-HH:mm]]». Валидное время
  *  захватывается В payload токена (а не в следующий текст-сегмент); невалидное —
  *  остаётся тексту: дата не ломается, хвост живёт в описании как раньше.
@@ -203,7 +239,9 @@ function scanCommaList(s: string, from: number): number {
  * сегментов даёт исходную строку дословно.
  */
 export function tokenizeSegments(rest: string, opts: TokenizeOptions = {}): Segment[] {
-	const parseLocation = opts.location === true;
+	// 📍 — поле места ПО УМОЛЧАНИЮ (opts.location !== false); опция оставлена для
+	// совместимости сигнатур (см. TokenizeOptions.location).
+	const parseLocation = opts.location !== false;
 	const segs: Segment[] = [];
 	let textStart = 0;
 	let i = 0;
@@ -212,12 +250,14 @@ export function tokenizeSegments(rest: string, opts: TokenizeOptions = {}): Segm
 	};
 	while (i < rest.length) {
 		const m = matchFieldEmoji(rest, i);
-		// 📍 (место) — поле ТОЛЬКО при opts.location (строки-события); иначе это
-		// обычный текст задачи: пропускаем как любой не-полевой символ (см.
-		// TokenizeOptions.location). matchFieldEmoji по-прежнему видит 📍 как
-		// границу payload соседних полей (напр. хвост 🔁), поэтому payload правила
-		// не вбирает литеральный 📍 даже без флага.
-		if (m === null || (m.field === "location" && !parseLocation)) {
+		// 📍 (место) — поле ВСЕГДА, КРОМЕ двух случаев: opts.location === false
+		// (принудительно текст) и 📍 в самом начале описания (заголовок, защита «б»).
+		// Тогда пропускаем как любой не-полевой символ. matchFieldEmoji по-прежнему
+		// видит 📍 как границу payload соседних полей (напр. хвост 🔁).
+		if (
+			m === null ||
+			(m.field === "location" && (!parseLocation || isLeadingLocation(rest, i)))
+		) {
 			i++;
 			continue;
 		}
@@ -234,13 +274,17 @@ export function tokenizeSegments(rest: string, opts: TokenizeOptions = {}): Segm
 		const gap = rest.slice(i, g);
 		i = g;
 		let payloadEnd: number;
-		if (m.field === "recurrence" || m.field === "location") {
-			// 🔁: payload до следующего эмодзи поля или конца строки;
-			// хвостовые пробелы отдаём следующему текстовому сегменту
+		if (m.field === "recurrence") {
+			// 🔁: payload до следующего эмодзи поля или конца строки (может нести
+			// #теги/эмодзи-мусор — это часть правила); хвостовые пробелы отдаём
+			// следующему текстовому сегменту
 			let j = i;
 			while (j < rest.length && matchFieldEmoji(rest, j) === null) j++;
 			while (j > i && isWs(rest.charAt(j - 1))) j--;
 			payloadEnd = j;
+		} else if (m.field === "location") {
+			// 📍: как 🔁, но payload обрывается ещё и перед первым #тегом (защита «а»)
+			payloadEnd = scanLocationPayload(rest, i);
 		} else if (m.field === "dependsOn" || m.field === "excludedDates") {
 			// ⛔ (id) и 🚫 (даты) — поля-списки через запятую: одинаковый скан
 			payloadEnd = scanCommaList(rest, i);
@@ -263,8 +307,9 @@ export function tokenizeSegments(rest: string, opts: TokenizeOptions = {}): Segm
 	return segs;
 }
 
-/** null, если строка — не пункт чеклиста (- [x] ...). opts.location включает
- *  распознавание поля места 📍 (по умолчанию выключено — см. TokenizeOptions). */
+/** null, если строка — не пункт чеклиста (- [x] ...). 📍 распознаётся полем
+ *  места по умолчанию; opts.location === false возвращает старое «📍 — текст»
+ *  (см. TokenizeOptions). */
 export function tokenizeTaskLine(
 	rawLine: string,
 	opts: TokenizeOptions = {},

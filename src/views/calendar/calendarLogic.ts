@@ -5,6 +5,7 @@
  */
 import type { IsoDate, Priority, Task } from "../../core/model/Task";
 import { taskToCalendarEvent, type CalendarField } from "../../core/model/projections";
+import { setValueField } from "../../core/parser/serializeTaskLine";
 import {
 	ALL_NS,
 	NS_CONVENTION,
@@ -383,19 +384,31 @@ export function openTasks(tasks: readonly Task[]): Task[] {
 // Быстрый ввод (клик по пустой области дня)
 // ---------------------------------------------------------------------------
 
-/** Строка захвата `- [ ] <текст> 📅 <дата>[ HH:mm[-HH:mm]]`; пустой текст — null.
- *  time/timeEnd приходят из клика или click-drag по слоту time-grid — формат хвоста
- *  тот же, что у парсера (конец интервала только вместе со временем начала). */
+/** Строка захвата `- [ ] <текст> 📅 <дата>[ HH:mm[-HH:mm]] [📍 <место>]`; пустой
+ *  текст — null. time/timeEnd приходят из клика или click-drag по слоту time-grid —
+ *  формат хвоста тот же, что у парсера (конец интервала только вместе со временем
+ *  начала). location — из отдельного поля «Место» quick-add: непустое дописывается
+ *  полем 📍 (setValueField ядра, тот же путь, что у событий). Недопустимое место
+ *  (эмодзи поля в значении) не роняет захват — строка возвращается без 📍 (совместимо
+ *  с принципом «рядовой юзер не пишет эмодзи полей руками»). */
 export function quickAddLine(
 	text: string,
 	date: IsoDate,
 	time: string | null = null,
 	timeEnd: string | null = null,
+	location: string | null = null,
 ): string | null {
 	const trimmed = text.trim();
 	if (trimmed === "") return null;
 	const timePart = time !== null ? ` ${time}${timeEnd !== null ? `-${timeEnd}` : ""}` : "";
-	return `- [ ] ${trimmed} 📅 ${date}${timePart}`;
+	const base = `- [ ] ${trimmed} 📅 ${date}${timePart}`;
+	const loc = (location ?? "").trim();
+	if (loc === "") return base;
+	try {
+		return setValueField(base, "location", loc);
+	} catch {
+		return base; // эмодзи поля в месте — задача без 📍, а не отказ захвата
+	}
 }
 
 /** Append строки в конец файла — тот же паттерн '\n', что у WritebackService.moveLine. */

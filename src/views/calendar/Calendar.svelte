@@ -371,8 +371,9 @@
 		text: string,
 		time: string | null = null,
 		timeEnd: string | null = null,
+		location: string | null = null,
 	): Promise<void> {
-		const line = quickAddLine(text, date, time, timeEnd);
+		const line = quickAddLine(text, date, time, timeEnd, location);
 		if (line === null) return;
 		// цель захвата — В ЛОКАЛЬНОМ пространстве вида, В МОМЕНТ ввода: его первый
 		// gtd-inbox файл, иначе конвенционные Входящие.md: <root>/ (именованное) или
@@ -411,6 +412,7 @@
 		text: string,
 		time: string | null = null,
 		timeEnd: string | null = null,
+		location: string | null = null,
 	): Promise<void> {
 		if (text.trim() === "") return;
 		const eventsFile = eventTargetForNamespace(
@@ -419,7 +421,15 @@
 			settings.eventsFile,
 			settings.commonRoot,
 		);
-		const res = await createSingleEvent({ vault, eventsFile, name: text, date, time, timeEnd });
+		const res = await createSingleEvent({
+			vault,
+			eventsFile,
+			name: text,
+			date,
+			time,
+			timeEnd,
+			location,
+		});
 		if (res.ok) new Notice("GTD Flow: событие создано");
 		else new Notice(`GTD Flow: ${res.reason}`);
 	}
@@ -550,8 +560,9 @@
 					statusColor={dsFor(date)?.color ?? null}
 					statusName={dsFor(date)?.name ?? null}
 					onDropTask={dropTask}
-					onQuickAdd={quickAdd}
-					onQuickAddEvent={(date, text) => quickAddEvent(date, text)}
+					onQuickAdd={(date, text, location) => quickAdd(date, text, null, null, location)}
+					onQuickAddEvent={(date, text, location) =>
+						quickAddEvent(date, text, null, null, location)}
 					onCreateEvent={createEvent}
 					{quickAddKind}
 					onQuickAddKindChange={setQuickAddKind}
@@ -614,8 +625,9 @@
 						statusName={dsFor(date)?.name ?? null}
 						painting={dsInPreview(date)}
 						onDropTask={dropTask}
-						onQuickAdd={quickAdd}
-						onQuickAddEvent={(date, text) => quickAddEvent(date, text)}
+						onQuickAdd={(date, text, location) => quickAdd(date, text, null, null, location)}
+						onQuickAddEvent={(date, text, location) =>
+							quickAddEvent(date, text, null, null, location)}
 						onCreateEvent={createEvent}
 						{quickAddKind}
 						onQuickAddKindChange={setQuickAddKind}

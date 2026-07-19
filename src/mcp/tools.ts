@@ -141,6 +141,10 @@ export function registerTools(server: McpServer, ctx: ServerContext): void {
 					.enum(["highest", "high", "medium", "low", "lowest", "none"])
 					.optional()
 					.describe("Priority; 'none' removes it."),
+				// TODO(set-location): когда в ядре появится интент 'set-location', добавить
+				// сюда параметр `location` (string; пустая строка = снять 📍) и снять guard
+				// в handlers.updateTask. Пока не публикуем: хендлер бросает явную ошибку на
+				// переданное поле, чтобы не рекламировать неработающую опцию.
 			},
 		},
 		(args) => runTool(ctx, (s) => updateTask(s, args)),
@@ -201,19 +205,29 @@ export function registerTools(server: McpServer, ctx: ServerContext): void {
 		{
 			title: "Add calendar event",
 			description:
-				"Create a calendar event in a namespace's events file. Call when the user wants to schedule something. For a one-off event pass date (ISO) and optional time ('14:30' or '14:30-16:00'). For a recurring event pass rule in the grammar (e.g. 'every tuesday at 19:00', 'every 2 weeks on monday, wednesday', 'every month on the last day'). Optional location (📍). Provide exactly one of date or rule.",
+				"Create a calendar event in a namespace's events file. Call when the user wants to schedule something. Provide EXACTLY ONE of date or rule — passing both is an error (date is for one-off events, rule for recurring). For a one-off event pass date (ISO) and optional time ('14:30' or '14:30-16:00'). For a recurring event pass rule in the grammar (e.g. 'every tuesday at 19:00', 'every 2 weeks on monday, wednesday', 'every month on the last day'). time may be given alongside rule: it is folded into the rule as ' at <time>' — but the rule must not already contain an 'at' clause (that is an error). Optional location (📍).",
 			inputSchema: {
 				name: z.string().describe("Event name."),
 				namespace: z
 					.string()
 					.optional()
 					.describe("Target space name or 'Общее'. Omit for the active space. 'all' is not allowed."),
-				date: z.string().describe("One-off event date, ISO YYYY-MM-DD.").optional(),
-				time: z.string().optional().describe("One-off event time 'HH:mm' or 'HH:mm-HH:mm'."),
+				date: z
+					.string()
+					.describe("One-off event date, ISO YYYY-MM-DD. Mutually exclusive with rule.")
+					.optional(),
+				time: z
+					.string()
+					.optional()
+					.describe(
+						"Event time 'HH:mm' or 'HH:mm-HH:mm'. With date it sets the one-off time; with rule it is folded in as ' at <time>' (rule must not already have an 'at').",
+					),
 				rule: z
 					.string()
 					.optional()
-					.describe("Recurrence rule (grammar), e.g. 'every friday at 09:00'. Time goes inside via 'at HH:mm'."),
+					.describe(
+						"Recurrence rule (grammar), e.g. 'every friday at 09:00'. Time can be inline via 'at HH:mm' or passed separately in time (not both). Mutually exclusive with date.",
+					),
 				location: z.string().optional().describe("📍 place/address."),
 			},
 		},

@@ -612,6 +612,68 @@ describe("WritebackService: set-text (фидбек-раунд 1)", () => {
 		expect(written).toContain("🆔 tx1"); // structural: без id задача потеряла бы адресуемость
 		expect(written).toContain("📅 2026-07-25 14:30"); // поля (и время) нетронуты
 	});
+
+	// Регресс из ревью: задача с ВЕДУЩИМ 📍 (токенизатор читает его заголовком
+	// описания). Раньше setDescription отвергал ЛЮБОЙ 📍 в новом тексте → set-text
+	// падал transform-failed и правка молча терялась. Сохранение ведущего 📍 при
+	// переименовании обязано записаться.
+	it("правит описание задачи с ведущим 📍 (сохранение 📍) — правка не теряется", async () => {
+		const { port, svc, feed } = makeSvc({ genId: () => "tx2" });
+		const line = "- [ ] 📍 Погладить кота 📅 2026-07-20";
+		port.files.set(INBOX, line + "\n");
+		feed.replaceFile(INBOX, [parseLine(INBOX, line, 0)]);
+		const key = feed.getIndex().fileTasks(INBOX)[0]!.key;
+
+		const res = await svc.dispatch({ type: "set-text", key, text: "📍 Погладить собаку" });
+
+		expect(res).toEqual({ ok: true });
+		const written = port.files.get(INBOX)!;
+		expect(written).toContain("📍 Погладить собаку");
+		expect(written).not.toContain("Погладить кота");
+		expect(written).toContain("📅 2026-07-20"); // поле-дата нетронуто
+	});
+});
+
+describe("WritebackService: set-location", () => {
+	it("пишет 📍 у обычной задачи БЕЗ ленивого 🆔 (не структурная, content-key стабилен)", async () => {
+		const { port, svc, feed } = makeSvc({ genId: () => "loc1" });
+		const line = "- [ ] Купить хлеб";
+		port.files.set(INBOX, line + "\n");
+		feed.replaceFile(INBOX, [parseLine(INBOX, line, 0)]);
+		const key = feed.getIndex().fileTasks(INBOX)[0]!.key;
+
+		const res = await svc.dispatch({ type: "set-location", key, location: "Пятёрочка" });
+
+		expect(res).toEqual({ ok: true });
+		// 📍 не меняет content-key ⇒ 🆔 не вписывается (в отличие от set-text/set-date)
+		expect(port.files.get(INBOX)).toBe("- [ ] Купить хлеб 📍 Пятёрочка\n");
+	});
+
+	it("снятие места: null убирает 📍", async () => {
+		const { port, svc, feed } = makeSvc({ autoInjectId: false });
+		const line = "- [ ] Созвон 📍 Кафе 🆔 e1";
+		port.files.set(INBOX, line + "\n");
+		feed.replaceFile(INBOX, [parseLine(INBOX, line, 0)]);
+		const key = feed.getIndex().fileTasks(INBOX)[0]!.key;
+
+		const res = await svc.dispatch({ type: "set-location", key, location: null });
+
+		expect(res).toEqual({ ok: true });
+		expect(port.files.get(INBOX)).toBe("- [ ] Созвон 🆔 e1\n");
+	});
+
+	it("пустой сабмит без существующего места — no-op без записи (ok)", async () => {
+		const { port, svc, feed } = makeSvc({ autoInjectId: false });
+		const line = "- [ ] Созвон 🆔 e1";
+		port.files.set(INBOX, line + "\n");
+		feed.replaceFile(INBOX, [parseLine(INBOX, line, 0)]);
+		const key = feed.getIndex().fileTasks(INBOX)[0]!.key;
+
+		const res = await svc.dispatch({ type: "set-location", key, location: null });
+
+		expect(res).toEqual({ ok: true });
+		expect(port.writes).toHaveLength(0); // строка не изменилась — записи нет
+	});
 });
 
 describe("WritebackService: непокрытые этапы", () => {

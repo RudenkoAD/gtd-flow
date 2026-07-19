@@ -357,12 +357,50 @@ export interface UpdateTaskArgs {
 	scheduled?: string | null;
 	start?: string | null;
 	priority?: string;
+	/** 📍 место; пустая строка снимает поле. ЗАГЛУШКА: пока не поддержано (в ядре
+	 *  нет интента 'set-location') — updateTask бросает понятную ошибку, если поле
+	 *  передано. См. TODO(set-location) в теле функции. */
+	location?: string | null;
+}
+
+const ID_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz";
+
+/**
+ * Свежий 🆔 (6 символов base36) без коллизий по индексу — тем же критерием, что
+ * WritebackService.freshId (носители id ищутся через resolveDep). Нужен, чтобы
+ * из хендлера принудительно поставить якорь id-less задаче перед пакетной правкой
+ * (WritebackService.freshId приватен, а зона MCP его не трогает).
+ */
+function mintTaskId(session: GtdSession): string {
+	const index = session.feed.getIndex();
+	for (let attempt = 0; attempt < 32; attempt++) {
+		let id = "";
+		for (let i = 0; i < 6; i++) {
+			id += ID_ALPHABET.charAt(Math.floor(Math.random() * ID_ALPHABET.length));
+		}
+		if (index.resolveDep(id).length === 0) return id;
+	}
+	throw new Error("could not generate a unique task id");
 }
 
 export async function updateTask(
 	session: GtdSession,
 	args: UpdateTaskArgs,
 ): Promise<Record<string, unknown>> {
+	// TODO(set-location): интент 'set-location' ещё не в ядре (параллельная зона).
+	// Когда он появится — снять этот guard и применять место ЧЕРЕЗ интент, напр.:
+	//   if (args.location !== undefined) {
+	//     const loc = args.location.trim() === "" ? null : args.location;
+	//     await run("location", () => ({ type: "set-location", key, location: loc }));
+	//   }
+	// плюс тест (autoInjectId:false, location одним вызовом → применено). Пока —
+	// НЕ молчим: явная ошибка вместо тихого игнорирования переданного поля.
+	if (args.location !== undefined) {
+		throw new Error(
+			"location updates are not supported yet (pending the core 'set-location' intent)",
+		);
+	}
+
 	const key = resolveTaskKey(session, args.id);
 	const applied: string[] = [];
 	const failed: { op: string; reason: string }[] = [];
@@ -373,8 +411,38 @@ export async function updateTask(
 		else failed.push({ op, reason: res.reason });
 	};
 
-	// Порядок: текст → даты → приоритет → статус. Ленивый 🆔 первой структурной
-	// правки запоминается WritebackService и адресует остальные (одна сессия/инстанс).
+	// Атомарность комбинированной правки id-less задачи. set-text меняет описание,
+	// а значит и content-key: без 🆔 идущие ПОСЛЕ него интенты искали бы строку по
+	// старому описанию и падали line-not-found (частичное применение — баг ревью).
+	// Поэтому для id-less цели, где text идёт ВМЕСТЕ с другими полями, ПЕРЕД пакетом
+	// принудительно впечатываем машинный 🆔 (независимо от autoInjectId — правке
+	// нужен якорь) и адресуем весь набор по нему: WritebackService запоминает
+	// вписанный id (injectedIds) и резолвит по нему все последующие интенты этой же
+	// сессии. Выбран якорь-по-id (а не «text последним»): он не зависит от того,
+	// какие поля входят в content-key, и переживает любую перестановку правок.
+	const hasText = args.text !== undefined;
+	const otherOps =
+		(["due", "scheduled", "start"] as const).filter(
+			(f) => f in args && args[f] !== undefined,
+		).length +
+		(args.priority !== undefined ? 1 : 0) +
+		(args.done !== undefined ? 1 : 0);
+	if (hasText && otherOps > 0) {
+		const target = session.feed.getIndex().get(key);
+		if (target !== undefined && target.taskId === null) {
+			const anchorId = mintTaskId(session);
+			const res = await session.writeback.dispatch({ type: "set-id", key, taskId: anchorId });
+			if (!res.ok) {
+				throw new Error(
+					`could not anchor task '${args.id}' with an 🆔 before a combined edit: ${res.reason}`,
+				);
+			}
+		}
+	}
+
+	// Порядок: текст → даты → приоритет → статус. Якорь (см. выше) уже впечатан для
+	// id-less комбинаций; иначе ленивый 🆔 первой структурной правки запоминается
+	// WritebackService и адресует остальные (одна сессия/инстанс).
 	if (args.text !== undefined) {
 		await run("text", () => ({ type: "set-text", key, text: args.text! }));
 	}
@@ -593,28 +661,53 @@ export async function addEvent(
 	);
 	const location = args.location !== undefined && args.location.trim() !== "" ? args.location : null;
 
+	const hasRule = args.rule !== undefined && args.rule.trim() !== "";
+	const hasDate = args.date !== undefined && args.date.trim() !== "";
+	const hasTime = args.time !== undefined && args.time.trim() !== "";
+
+	// date и rule взаимоисключающи (date — одноразовое, rule — повторяющееся).
+	// Раньше при обоих rule молча побеждал, а date игнорировался — теперь явная
+	// ошибка вместо двусмысленного тихого поведения.
+	if (hasRule && hasDate) {
+		throw new Error(
+			"'date' and 'rule' are mutually exclusive — pass 'date' for a one-off event or 'rule' for a recurring one, not both",
+		);
+	}
+
 	let res: EventWriteResult;
 	let kind: "series" | "single";
-	if (args.rule !== undefined && args.rule.trim() !== "") {
-		if (isParseError(parseRule(args.rule))) {
-			throw new Error(`invalid recurrence rule '${args.rule}'`);
+	if (hasRule) {
+		let ruleText = args.rule!.trim();
+		// time вместе с rule: вплавляем в правило хвостом ' at <time>' (время
+		// вхождения серии живёт внутри грамматики). Если в правиле уже есть клауза
+		// 'at' — двусмысленно (грамматика тоже отвергла бы дубль), ошибка с понятной
+		// подсказкой. \bat\b не цепляет 'at' внутри слов (saturday и пр.).
+		if (hasTime) {
+			if (/\bat\b/i.test(ruleText)) {
+				throw new Error(
+					"rule already sets a time via 'at ...' — drop the separate 'time' argument (or remove 'at' from the rule)",
+				);
+			}
+			ruleText = `${ruleText} at ${args.time!.trim()}`;
+		}
+		if (isParseError(parseRule(ruleText))) {
+			throw new Error(`invalid recurrence rule '${ruleText}'`);
 		}
 		// авто-from как в UI: закрепляем фазу недель серии от даты создания (сегодня)
-		const ruleText = withSeriesAnchor(args.rule.trim(), session.today);
 		res = await createEventSeries({
 			vault: session.vault,
 			eventsFile,
 			name: args.name,
-			ruleText,
+			ruleText: withSeriesAnchor(ruleText, session.today),
 			location,
 		});
 		kind = "series";
-	} else if (args.date !== undefined && args.date.trim() !== "") {
-		const dt = parseDateTime(args.date);
+	} else if (hasDate) {
+		const dt = parseDateTime(args.date!);
 		let time = dt.time;
 		let timeEnd = dt.timeEnd;
-		if (args.time !== undefined && args.time.trim() !== "") {
-			({ time, timeEnd } = parseTimeSpec(args.time));
+		if (hasTime) {
+			({ time, timeEnd } = parseTimeSpec(args.time!));
 		}
 		res = await writeSingleEvent(session, eventsFile, args.name, dt.date, time, timeEnd, location);
 		kind = "single";

@@ -185,6 +185,53 @@ describe("MCP handlers", () => {
 		await expect(updateTask(s, { id: "zzz999", done: true })).rejects.toThrow(/no task found/);
 	});
 
+	it("update_task: комбинированная правка id-less при autoInjectId:false — всё применено атомарно", async () => {
+		// сценарий ревью: text меняет content-key; без принудительного якоря 🆔
+		// scheduled+priority падали line-not-found (частичное применение).
+		const noAutoRoot = await makeVault({
+			".obsidian/plugins/gtd-flow/data.json": JSON.stringify({
+				commonRoot: "GTD",
+				eventsFile: "GTD/Events.md",
+				autoInjectId: false,
+				namespaces: [],
+				activeNamespace: "Общее",
+			}),
+			"GTD/Inbox.md": `---\ngtd-inbox: true\n---\n- [ ] Разобрать бумаги\n`,
+		});
+		try {
+			const s = await session(noAutoRoot);
+			const inbox = listTasks(s, { namespace: "Общее", view: "inbox" }) as any;
+			const target = inbox.tasks.find((t: any) => t.description === "Разобрать бумаги");
+			const key = target.id as string;
+			expect(key).toContain("#"); // content-key: задача без 🆔
+
+			const res = (await updateTask(s, {
+				id: key,
+				text: "Разобрать бумаги в архив",
+				scheduled: "2026-07-25",
+				priority: "high",
+			})) as any;
+			expect(res.ok).toBe(true);
+			expect(res.failed).toHaveLength(0);
+			expect(res.applied).toEqual(expect.arrayContaining(["text", "scheduled", "priority"]));
+
+			const content = await readVaultFile(noAutoRoot, "GTD/Inbox.md");
+			expect(content).toContain("Разобрать бумаги в архив");
+			expect(content).toContain("⏳ 2026-07-25");
+			expect(content).toContain("⏫"); // high
+			expect(content).toMatch(/🆔 \w+/); // машинный якорь впечатан несмотря на autoInjectId:false
+		} finally {
+			await removeVault(noAutoRoot);
+		}
+	});
+
+	it("update_task: location пока не поддержан — явная ошибка (не тихое игнорирование)", async () => {
+		const s = await session(root);
+		await expect(updateTask(s, { id: "aaa111", location: "Дом" })).rejects.toThrow(
+			/location updates are not supported yet/,
+		);
+	});
+
 	// --- delete_task ---
 
 	it("delete_task: удаляет строку задачи", async () => {
@@ -280,6 +327,52 @@ describe("MCP handlers", () => {
 		await expect(addEvent(s, { name: "X", namespace: "Жизнь" })).rejects.toThrow(
 			/either 'rule' .* or 'date'/,
 		);
+	});
+
+	it("add_event: rule + time — время вплавляется в правило хвостом 'at'", async () => {
+		const s = await session(root);
+		const res = (await addEvent(s, {
+			name: "Созвон",
+			namespace: "Работа",
+			rule: "every tuesday",
+			time: "19:00",
+		})) as any;
+		expect(res.ok).toBe(true);
+		const content = await readVaultFile(root, "Работа/События.md");
+		expect(content).toContain("🔁 every tuesday at 19:00");
+	});
+
+	it("add_event: 'saturday' в правиле не принимается за клаузу 'at'", async () => {
+		// \bat\b не должен цепляться за 'at' внутри слова saturday
+		const s = await session(root);
+		const res = (await addEvent(s, {
+			name: "Матч",
+			namespace: "Работа",
+			rule: "every saturday",
+			time: "12:00",
+		})) as any;
+		expect(res.ok).toBe(true);
+		const content = await readVaultFile(root, "Работа/События.md");
+		expect(content).toContain("🔁 every saturday at 12:00");
+	});
+
+	it("add_event: rule уже с 'at' + отдельный time → ошибка", async () => {
+		const s = await session(root);
+		await expect(
+			addEvent(s, {
+				name: "X",
+				namespace: "Работа",
+				rule: "every tuesday at 18:00",
+				time: "19:00",
+			}),
+		).rejects.toThrow(/already sets a time/);
+	});
+
+	it("add_event: date и rule вместе → ошибка (двусмысленно)", async () => {
+		const s = await session(root);
+		await expect(
+			addEvent(s, { name: "X", namespace: "Работа", date: "2026-07-28", rule: "every tuesday" }),
+		).rejects.toThrow(/mutually exclusive/);
 	});
 
 	// --- list_boards ---

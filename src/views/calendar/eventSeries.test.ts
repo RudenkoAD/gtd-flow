@@ -687,6 +687,28 @@ describe("transferEventOccurrence — перенос одноразового", 
 		expect(res.ok).toBe(true);
 		expect(vault.files.get("GTD/Events.md")).toBe("- [ ] Событие 📅 2026-07-25 🧬 ev1\n");
 	});
+
+	it("«Перенести событие…»: дата/время меняются НА МЕСТЕ, без 🚫 и без второй строки", async () => {
+		// Задание 3: у одноразового перенос правит саму строку (📅/время), а НЕ
+		// заводит исключение серии (🚫) и НЕ порождает копию — строка остаётся одна
+		const vault = new FakeVault();
+		vault.files.set("GTD/Events.md", "- [ ] Событие 📅 2026-07-21 09:00\n");
+		const task = taskFrom("- [ ] Событие 📅 2026-07-21 09:00", "GTD/Events.md", 0);
+		const res = await transferEventOccurrence({
+			vault,
+			task,
+			kind: "single",
+			fromDate: "2026-07-21",
+			toDate: "2026-07-28",
+			time: "10:00",
+			timeEnd: null,
+		});
+		expect(res.ok).toBe(true);
+		const out = vault.files.get("GTD/Events.md")!;
+		expect(out).toBe("- [ ] Событие 📅 2026-07-28 10:00\n");
+		expect(out).not.toContain("🚫"); // не механика исключений серии
+		expect(out.trimEnd().split("\n")).toHaveLength(1); // без копии-строки серии
+	});
 });
 
 describe("createEventSeries / editEventSeries — место 📍", () => {

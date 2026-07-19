@@ -134,10 +134,12 @@ function stripVariationSelector(emoji: string): string {
 }
 
 export function parseTaskLine(rawLine: string, ctx: ParseContext): Task | null {
-	// 📍-место распознаём как поле ТОЛЬКО в файлах-событиях (container "events").
-	// В обычных задачах 📍 — часть текста: иначе рукописный 📍 съел бы #теги и
-	// хвост описания после него (потеря членства в доске/#waiting и content-key).
-	const tok = tokenizeTaskLine(rawLine, { location: ctx.container === "events" });
+	// 📍-место распознаём как поле для ЛЮБОГО контейнера (не только событий):
+	// добавить место можно и обычной задаче. Токенизатор защищает описание —
+	// payload 📍 обрывается перед первым #тегом, а 📍 в начале строки остаётся
+	// заголовком (см. TokenizeOptions.location). content-key при этом вырезает 📍
+	// как прочие эмодзи-поля (осознанная смена ключа у строк с рукописным 📍).
+	const tok = tokenizeTaskLine(rawLine);
 	if (tok === null) return null;
 
 	const dates: Record<DateFieldName, IsoDate | null> = {

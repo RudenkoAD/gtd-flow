@@ -1,26 +1,13 @@
 <script lang="ts">
-	import { Menu, Notice, Platform, type App } from "obsidian";
+	import { Platform, type App } from "obsidian";
 	import type { IntentDispatcher } from "../../services/WritebackService";
-	import { confirm } from "../common/ConfirmModal";
-	import { DatePromptModal } from "../common/DatePromptModal";
-	import { TextPromptModal } from "../common/TextPromptModal";
 	import { obsidianTooltip } from "../common/tooltip";
 	import type { DndPort } from "../dnd/types";
 	import { VIEW_TYPES } from "../registry";
-	import { agendaTimeLabel, formatTimeRange, type EventOccurrence } from "./calendarLogic";
-	import {
-		copyEventSeries,
-		createSingleEvent,
-		editEventSeries,
-		excludeEventOccurrence,
-		setEventLocation,
-		splitEventRule,
-		transferEventOccurrence,
-		type EventVaultPort,
-	} from "./eventSeries";
-	import { EventSeriesModal } from "./EventSeriesModal";
-	import { SingleEventModal } from "./SingleEventModal";
-	import { preservedTimeEnd, type TimedBlock } from "./timeGrid";
+	import { agendaTimeLabel, type EventOccurrence } from "./calendarLogic";
+	import { showEventMenu } from "./eventMenu";
+	import { type EventVaultPort } from "./eventSeries";
+	import { type TimedBlock } from "./timeGrid";
 
 	let {
 		occ,
@@ -74,8 +61,6 @@
 	const locationText = $derived(
 		occ.location !== null && occ.location.trim() !== "" ? occ.location.trim() : null,
 	);
-	/** Подпись пункта меню места: есть 📍 → «Изменить место…», нет → «Добавить место…». */
-	const locationMenuLabel = $derived(locationText === null ? "Добавить место…" : "Изменить место…");
 	/** При наличии места — единая Obsidian-подсказка ПОД элементом (placement
 	 *  bottom): описание события + строка «📍 <место>». native title при этом
 	 *  снимается (см. разметку), чтобы не было двойной подсказки; без места —
@@ -83,162 +68,6 @@
 	const eventTooltip = $derived(locationText === null ? null : `${tooltip}\n📍 ${locationText}`);
 	/** Тянуть можно только блок тайм-сетки на десктопе (как чипы задач, ТЗ §8). */
 	const draggable = $derived(block !== null && dnd !== null && !Platform.isPhone);
-
-	function openEdit(): void {
-		const { rule, time } = splitEventRule(occ.task.recurrence ?? "");
-		new EventSeriesModal(
-			app,
-			{ name: occ.title, rule, time, location: occ.location ?? "" },
-			"Изменить серию",
-			(name, ruleText, location) => {
-				void editEventSeries({ vault, task: occ.task, name, ruleText, location }).then((res) => {
-					if (!res.ok) new Notice(`GTD Flow: ${res.reason}`);
-				});
-			},
-		).open();
-	}
-
-	/** «Добавить/Изменить место…» — промпт с текущим 📍. Пустой сабмит (пусто или
-	 *  пробелы, TextPromptModal триммит): места не было — no-op (setEventLocation с
-	 *  null на строке без 📍 не пишет файл), было — поле снимается. Отмена (Escape) —
-	 *  тоже no-op. Правит строку серии ИЛИ одноразового одной записью. */
-	function openLocation(): void {
-		new TextPromptModal(
-			app,
-			"Место события",
-			(value) => {
-				void setEventLocation({
-					vault,
-					task: occ.task,
-					location: value === "" ? null : value,
-				}).then((res) => {
-					if (!res.ok) new Notice(`GTD Flow: ${res.reason}`);
-				});
-			},
-			occ.location ?? "",
-			"Адрес или место (пусто — убрать)",
-		).open();
-	}
-
-	async function deleteSeries(): Promise<void> {
-		const ok = await confirm(
-			app,
-			"Удалить серию?",
-			`Удалить повторяющееся событие «${occ.title}»? Все его будущие вхождения ` +
-				`исчезнут из календаря.`,
-			"Удалить серию",
-		);
-		if (!ok) return;
-		const res = await dispatcher.dispatch({ type: "delete-line", key: occ.task.key });
-		if (!res.ok) new Notice(`GTD Flow: ${res.reason}`);
-	}
-
-	/** Удалить это вхождение серии: 🚫 <дата> (обратимо) — без confirm. */
-	async function deleteOccurrence(): Promise<void> {
-		const res = await excludeEventOccurrence({ vault, task: occ.task, date: occ.date });
-		if (res.ok) new Notice(`Вхождение ${occ.date} удалено`);
-		else new Notice(`GTD Flow: ${res.reason}`);
-	}
-
-	/** Удалить одноразовое событие: удаление строки (delete-line), с confirm как у серии. */
-	async function deleteSingle(): Promise<void> {
-		const ok = await confirm(
-			app,
-			"Удалить событие?",
-			`Удалить событие «${occ.title}» (${occ.date})?`,
-			"Удалить событие",
-		);
-		if (!ok) return;
-		const res = await dispatcher.dispatch({ type: "delete-line", key: occ.task.key });
-		if (!res.ok) new Notice(`GTD Flow: ${res.reason}`);
-	}
-
-	/** Перенести вхождение на выбранные дату+время (та же атомарная запись, что и drag). */
-	async function applyTransfer(toDate: string, time: string | null): Promise<void> {
-		// сохраняем длительность вхождения (конец = новый старт + прежняя длительность)
-		const timeEnd =
-			time === null ? null : (preservedTimeEnd(occ.time, occ.timeEnd, time) ?? null);
-		const res = await transferEventOccurrence({
-			vault,
-			task: occ.task,
-			kind: occ.kind,
-			fromDate: occ.date,
-			toDate,
-			time,
-			timeEnd,
-		});
-		if (res.ok) new Notice(`Перенесено: ${occ.date} → ${toDate}`);
-		else new Notice(`GTD Flow: ${res.reason}`);
-	}
-
-	function openTransfer(): void {
-		new DatePromptModal(
-			app,
-			"Перенести вхождение…",
-			(date, time) => void applyTransfer(date, time),
-			occ.date,
-			true,
-			occ.time,
-		).open();
-	}
-
-	/**
-	 * Копировать в НОВОЕ одноразовое событие: модал одноразового, преднаполненный
-	 * полями этого чипа. Для одноразового — его собственные поля; для вхождения
-	 * серии — дата/время ЭТОГО вхождения + название/место серии (occ уже несёт
-	 * per-occurrence дату и series-level название/время/место). Результат —
-	 * независимое одноразовое событие в ТОМ ЖЕ файле, что источник (серия не
-	 * трогается: 🧬-связи нет, это копия, а не перенос). modalTitle различает
-	 * пункты «Копировать…» и «Копировать вхождение…».
-	 */
-	function openCopyAsSingle(modalTitle: string): void {
-		new SingleEventModal(
-			app,
-			{
-				name: occ.title,
-				date: occ.date,
-				time: formatTimeRange(occ.time, occ.timeEnd),
-				location: occ.location ?? "",
-			},
-			modalTitle,
-			(name, date, time, timeEnd, location) => {
-				void createSingleEvent({
-					vault,
-					eventsFile: occ.task.filePath,
-					name,
-					date,
-					time,
-					timeEnd,
-					location,
-				}).then((res) => {
-					if (res.ok) new Notice("GTD Flow: событие создано");
-					else new Notice(`GTD Flow: ${res.reason}`);
-				});
-			},
-		).open();
-	}
-
-	/**
-	 * Копировать серию: EventSeriesModal, преднаполненный названием/правилом/
-	 * временем/местом источника → НОВАЯ серия со свежим 🆔 в том же файле
-	 * (copyEventSeries; серия-источник не меняется).
-	 */
-	function openCopySeries(): void {
-		const { rule, time } = splitEventRule(occ.task.recurrence ?? "");
-		new EventSeriesModal(
-			app,
-			{ name: occ.title, rule, time, location: occ.location ?? "" },
-			"Копировать серию",
-			(name, ruleText, location) => {
-				void copyEventSeries({ vault, eventsFile: occ.task.filePath, name, ruleText, location }).then(
-					(res) => {
-						if (res.ok) new Notice("GTD Flow: серия создана");
-						else new Notice(`GTD Flow: ${res.reason}`);
-					},
-				);
-			},
-		).open();
-	}
 
 	/** Начало drag блока-вхождения: призрак — весь блок, время при drop — по его верху. */
 	function onPointerDown(e: PointerEvent): void {
@@ -256,53 +85,12 @@
 		);
 	}
 
+	/** ПКМ по чипу/блоку события — общее меню события (eventMenu.ts): один источник
+	 *  пунктов и действий для чипов (месяц/агенда/«Весь день») и блоков почасовой сетки. */
 	function onContextMenu(e: MouseEvent): void {
 		e.preventDefault();
 		e.stopPropagation();
-		const menu = new Menu();
-		if (isSeries) {
-			menu.addItem((mi) =>
-				mi.setTitle("Изменить серию…").setIcon("pencil").onClick(() => openEdit()),
-			);
-			menu.addItem((mi) =>
-				mi.setTitle(locationMenuLabel).setIcon("map-pin").onClick(() => openLocation()),
-			);
-			menu.addItem((mi) =>
-				mi.setTitle("Перенести вхождение…").setIcon("calendar-clock").onClick(() => openTransfer()),
-			);
-			menu.addItem((mi) =>
-				mi
-					.setTitle("Копировать вхождение…")
-					.setIcon("copy")
-					.onClick(() => openCopyAsSingle("Копировать вхождение как событие")),
-			);
-			menu.addItem((mi) =>
-				mi.setTitle("Копировать серию…").setIcon("copy").onClick(() => openCopySeries()),
-			);
-			menu.addItem((mi) =>
-				mi
-					.setTitle("Удалить это вхождение")
-					.setIcon("calendar-x")
-					.onClick(() => void deleteOccurrence()),
-			);
-			menu.addItem((mi) =>
-				mi.setTitle("Удалить серию").setIcon("trash").onClick(() => void deleteSeries()),
-			);
-		} else {
-			menu.addItem((mi) =>
-				mi.setTitle(locationMenuLabel).setIcon("map-pin").onClick(() => openLocation()),
-			);
-			menu.addItem((mi) =>
-				mi.setTitle("Перенести вхождение…").setIcon("calendar-clock").onClick(() => openTransfer()),
-			);
-			menu.addItem((mi) =>
-				mi.setTitle("Копировать…").setIcon("copy").onClick(() => openCopyAsSingle("Копировать событие")),
-			);
-			menu.addItem((mi) =>
-				mi.setTitle("Удалить событие").setIcon("trash").onClick(() => void deleteSingle()),
-			);
-		}
-		menu.showAtMouseEvent(e);
+		showEventMenu(e, { occ, app, dispatcher, vault });
 	}
 </script>
 

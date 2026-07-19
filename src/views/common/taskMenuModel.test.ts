@@ -68,11 +68,12 @@ describe("buildMenuModel: секции от портов", () => {
 		expect(got).not.toContain("move-project");
 		expect(got).not.toContain("move-template");
 		expect(got).not.toContain("card-open");
-		// база паритета: статус, приоритет, запланировать, отложить, файл
+		// база паритета: статус, приоритет, запланировать, отложить, место, файл
 		expect(got).toContain("status-done");
 		expect(got).toContain("priority-high");
 		expect(got).toContain("schedule-due");
 		expect(got).toContain("defer-date");
+		expect(got).toContain("set-location");
 		expect(got).toContain("open-file");
 	});
 
@@ -235,6 +236,33 @@ describe("buildMenuModel: пункт «Удалить»", () => {
 	});
 });
 
+describe("buildMenuModel: пункт «Место» (📍)", () => {
+	it("доступен для ЛЮБОЙ задачи, секция location, иконка map-pin, action pick-location", () => {
+		const item = byId(buildMenuModel(input()), "set-location");
+		expect(item.section).toBe("location");
+		expect(item.icon).toBe("map-pin");
+		expect(item.action).toEqual({ kind: "pick-location" });
+	});
+
+	it("подпись «Добавить место…» без места, «Изменить место…» при наличии", () => {
+		const noLoc = byId(buildMenuModel(input()), "set-location");
+		expect(noLoc.title).toBe("Добавить место…");
+		const task = makeTask({ filePath: "a.md", location: "Офис" });
+		const withLoc = byId(buildMenuModel(input({ task })), "set-location");
+		expect(withLoc.title).toBe("Изменить место…");
+		// пробельное место трактуется как отсутствие
+		const blank = makeTask({ filePath: "a.md", location: "   " });
+		expect(byId(buildMenuModel(input({ task: blank })), "set-location").title).toBe(
+			"Добавить место…",
+		);
+	});
+
+	it("верхнеуровневый пункт (не внутри подменю)", () => {
+		const items = buildMenuModel(input());
+		expect(items.some((n) => !isSubmenuNode(n) && n.id === "set-location")).toBe(true);
+	});
+});
+
 describe("buildMenuModel: подменю «Приоритет…»", () => {
 	it("подменю с 6 уровнями, заголовок и секция priority", () => {
 		const sub = submenuById(buildMenuModel(input()), "priority");
@@ -372,7 +400,7 @@ describe("buildMenuModel: инварианты", () => {
 			}),
 		);
 		expect(ids(nodes)).toContain("archive");
-		const order = ["status", "priority", "schedule", "defer", "move", "card", "nav"];
+		const order = ["status", "priority", "schedule", "defer", "location", "move", "card", "nav"];
 		const seen = nodes.map((n) => order.indexOf(n.section));
 		for (let i = 1; i < seen.length; i++) expect(seen[i]! >= seen[i - 1]!).toBe(true);
 	});

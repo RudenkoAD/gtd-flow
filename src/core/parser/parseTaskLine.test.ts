@@ -427,7 +427,7 @@ describe("parseTaskLine: content-key", () => {
 	});
 });
 
-describe("parseTaskLine: 📍 location (только строки-события container 'events')", () => {
+describe("parseTaskLine: 📍 location (любой контейнер, не только события)", () => {
 	const ev = ctx({ container: "events" });
 
 	it("вычленяет свободный текст места; payload до следующего поля", () => {
@@ -461,42 +461,43 @@ describe("parseTaskLine: 📍 location (только строки-события
 		expect(t.taskId).toBe("ev1");
 		expect(t.description).toBe("Тр");
 	});
+
+	it("место парсится и в ОБЫЧНОЙ задаче (container plain), не только в событиях", () => {
+		const t = parseTaskLine("- [ ] Созвон 📍 Кафе на углу", ctx())!;
+		expect(t.location).toBe("Кафе на углу");
+		expect(t.container).toBe("plain");
+	});
 });
 
-describe("parseTaskLine: 📍 в ОБЫЧНОЙ задаче — текст, не поле (регресс)", () => {
-	// Место — фича календаря. В не-событийных файлах рукописный 📍 обязан остаться
-	// текстом: иначе съедались бы #теги/описание после него (потеря членства в
-	// доске/#waiting и смена content-key против предсуществующих данных).
-	it("литеральный 📍 не становится полем location", () => {
+describe("parseTaskLine: 📍 в обычной задаче — поле места + защиты токенизатора", () => {
+	// Место теперь поле для ЛЮБОГО файла. Токенизатор защищает описание: payload 📍
+	// обрывается перед #тегом (защита «а»), а 📍 в начале строки остаётся заголовком
+	// (защита «б»). #теги после места сохраняются — членство в доске/#waiting цело.
+	it("защита «а»: #теги ПОСЛЕ места сохраняются, место вырезано из description", () => {
 		const t = parseTaskLine("- [ ] Купить билеты 📍 касса вокзала #kanban/trips/todo", ctx())!;
-		expect(t.location).toBeNull();
+		expect(t.location).toBe("касса вокзала");
+		expect(t.tags).toEqual(["#kanban/trips/todo"]); // тег не проглочен местом
+		expect(t.description).toBe("Купить билеты #kanban/trips/todo");
 	});
 
-	it("#теги ПОСЛЕ 📍 сохраняются в tags и в description (членство в доске цело)", () => {
-		const t = parseTaskLine("- [ ] Купить билеты 📍 касса вокзала #kanban/trips/todo", ctx())!;
-		expect(t.tags).toEqual(["#kanban/trips/todo"]);
-		expect(t.description).toBe("Купить билеты 📍 касса вокзала #kanban/trips/todo");
-	});
-
-	it("#waiting после 📍 не теряется", () => {
+	it("защита «а»: #waiting после места не теряется", () => {
 		const t = parseTaskLine("- [ ] Ответ от банка 📍 отделение №5 #waiting", ctx())!;
+		expect(t.location).toBe("отделение №5");
 		expect(t.tags).toEqual(["#waiting"]);
 	});
 
-	it("content-key совпадает с тем же текстом без реинтерпретации 📍", () => {
-		const line = "- [ ] Купить билеты 📍 касса вокзала #kanban/trips/todo";
-		const t = parseTaskLine(line, ctx({ filePath: "a.md" }))!;
-		// ключ = fnv1a(полного описания С литеральным 📍), как до появления фичи места
-		const hash = fnv1a("Купить билеты 📍 касса вокзала #kanban/trips/todo")
-			.toString(16)
-			.padStart(8, "0");
-		expect(t.key).toBe(`a.md#${hash}#0`);
-	});
-
-	it("📅-задача (не событие) с рукописным 📍 — 📍 остаётся в заголовке", () => {
+	it("защита «б»: 📍 в начале строки — остаётся заголовком, location = null", () => {
 		const t = parseTaskLine("- [ ] 📍 Важная встреча 📅 2026-07-20", ctx())!;
 		expect(t.location).toBeNull();
 		expect(t.due).toBe("2026-07-20");
 		expect(t.description).toBe("📍 Важная встреча");
+	});
+
+	it("content-key ОСОЗНАННО меняется: 📍 вырезано из описания как прочие поля", () => {
+		const line = "- [ ] Купить билеты 📍 касса вокзала #kanban/trips/todo";
+		const t = parseTaskLine(line, ctx({ filePath: "a.md" }))!;
+		// ключ = fnv1a(описания БЕЗ места) — строки с рукописным 📍 один раз сменят ключ
+		const hash = fnv1a("Купить билеты #kanban/trips/todo").toString(16).padStart(8, "0");
+		expect(t.key).toBe(`a.md#${hash}#0`);
 	});
 });

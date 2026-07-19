@@ -466,11 +466,17 @@ describe("tokenizeSegments (низкоуровневый)", () => {
 	});
 });
 
-describe("📍 location: свободный текст до следующего поля (как 🔁)", () => {
-	// 📍 — поле ТОЛЬКО при { location: true } (строки-события); опция передаётся
-	// парсером лишь для container "events". По умолчанию 📍 — обычный текст.
+describe("📍 location: свободный текст до следующего поля/тега (как 🔁)", () => {
+	// 📍 — поле места ПО УМОЛЧАНИЮ (и в обычных задачах). Опция { location: false }
+	// возвращает старое поведение «📍 — текст» (обратная совместимость).
+	it("поле места распознаётся БЕЗ флага (по умолчанию)", () => {
+		const f = fields(tokenizeTaskLine("- [ ] Созвон 📍 Кафе на углу")!.segments);
+		expect(f[0]!.field).toBe("location");
+		expect(f[0]!.payload).toBe("Кафе на углу");
+	});
+
 	it("payload идёт до конца строки, хвостовые пробелы уходят тексту", () => {
-		const t = tokenizeTaskLine("- [ ] Созвон 📍 Кафе на углу  ", { location: true })!;
+		const t = tokenizeTaskLine("- [ ] Созвон 📍 Кафе на углу  ")!;
 		const f = fields(t.segments);
 		expect(f[0]!.field).toBe("location");
 		expect(f[0]!.payload).toBe("Кафе на углу");
@@ -479,9 +485,7 @@ describe("📍 location: свободный текст до следующего
 	});
 
 	it("payload обрезается перед следующим полем 🔁", () => {
-		const t = tokenizeTaskLine("- [ ] Тр 📍 Спортзал на Ленина 🔁 every tuesday at 19:00", {
-			location: true,
-		})!;
+		const t = tokenizeTaskLine("- [ ] Тр 📍 Спортзал на Ленина 🔁 every tuesday at 19:00")!;
 		const f = fields(t.segments);
 		expect(f[0]!.field).toBe("location");
 		expect(f[0]!.payload).toBe("Спортзал на Ленина");
@@ -490,9 +494,7 @@ describe("📍 location: свободный текст до следующего
 	});
 
 	it("🔁 обрезается перед 📍 и наоборот (соседство полей со свободным текстом)", () => {
-		const t = tokenizeTaskLine("- [ ] Тр 🔁 every tuesday at 19:00 📍 Зал 🆔 ev1", {
-			location: true,
-		})!;
+		const t = tokenizeTaskLine("- [ ] Тр 🔁 every tuesday at 19:00 📍 Зал 🆔 ev1")!;
 		const f = fields(t.segments);
 		expect(f[0]!.field).toBe("recurrence");
 		expect(f[0]!.payload).toBe("every tuesday at 19:00");
@@ -502,26 +504,57 @@ describe("📍 location: свободный текст до следующего
 		expect(f[2]!.payload).toBe("ev1");
 	});
 
-	it("round-trip дословный со свободным текстом места (в т.ч. рядом с 🔁/🆔)", () => {
+	it("защита «а»: payload обрывается перед первым #тегом, тег остаётся текстом", () => {
+		const t = tokenizeTaskLine("- [ ] Купить билеты 📍 касса вокзала #kanban/trips/todo")!;
+		const f = fields(t.segments);
+		expect(f[0]!.field).toBe("location");
+		expect(f[0]!.payload).toBe("касса вокзала"); // #тег не проглочен
+		expect(extractTags(t.segments.map((s) => (s.kind === "text" ? s.text : "")).join(""))).toEqual(
+			["#kanban/trips/todo"],
+		);
+	});
+
+	it("защита «а»: числовой #5 — не тег, остаётся частью места", () => {
+		const f = fields(tokenizeTaskLine("- [ ] Ev 📍 ТЦ #5 этаж")!.segments);
+		expect(f[0]!.payload).toBe("ТЦ #5 этаж");
+	});
+
+	it("защита «б»: 📍 в самом начале описания — заголовок, не поле", () => {
+		const t = tokenizeTaskLine("- [ ] 📍 Важная встреча 📅 2026-07-20")!;
+		const f = fields(t.segments);
+		expect(f.map((x) => x.field)).toEqual(["due"]); // 📍 полем НЕ стало
+		const text = t.segments.map((s) => (s.kind === "text" ? s.text : "")).join("");
+		expect(text).toContain("📍 Важная встреча");
+	});
+
+	it("защита «б»: 📍 после поля-даты (описание пусто) — всё же поле", () => {
+		const f = fields(tokenizeTaskLine("- [ ] 📅 2026-01-01 📍 Офис")!.segments);
+		expect(f[0]!.field).toBe("due");
+		expect(f[1]!.field).toBe("location");
+		expect(f[1]!.payload).toBe("Офис");
+	});
+
+	it("{ location: false } возвращает старое поведение «📍 — текст»", () => {
+		const t = tokenizeTaskLine("- [ ] Созвон 📍 Кафе на углу", { location: false })!;
+		expect(fields(t.segments)).toEqual([]); // 📍 не даёт поля
+		const text = t.segments.map((s) => (s.kind === "text" ? s.text : "")).join("");
+		expect(text).toBe(" Созвон 📍 Кафе на углу");
+	});
+
+	it("round-trip дословный со свободным текстом места (в т.ч. рядом с 🔁/🆔/#тегом)", () => {
 		// round-trip лослесс НЕЗАВИСИМО от флага: 📍 либо поле, либо текст — байты те же
 		for (const line of [
 			"- [ ] Созвон 📅 2026-07-20 14:30 📍 Офис, 3 этаж",
 			"- [ ] Тр 🔁 every tuesday at 19:00 📍 Спортзал на Ленина 🆔 ev1",
 			"- [ ] X 📍 Место  с  двойными  пробелами 🚫 2026-07-21 ^blk",
+			"- [ ] Купить билеты 📍 касса вокзала #kanban/trips/todo",
+			"- [ ] 📍 Заголовок с ведущим 📍 📅 2026-01-01",
 		]) {
-			for (const opts of [{}, { location: true }]) {
+			for (const opts of [{}, { location: true }, { location: false }]) {
 				const t = tokenizeTaskLine(line, opts);
 				expect(t).not.toBeNull();
 				expect(serializeTokens(t!)).toBe(line);
 			}
 		}
-	});
-
-	it("БЕЗ флага 📍 — обычный текст, не поле (обычная задача с рукописным 📍)", () => {
-		const t = tokenizeTaskLine("- [ ] Купить билеты 📍 касса вокзала #kanban/trips/todo")!;
-		expect(fields(t.segments)).toEqual([]); // 📍 не даёт поля
-		// весь хвост, включая #тег после 📍, остаётся текстом
-		const text = t.segments.map((s) => (s.kind === "text" ? s.text : "")).join("");
-		expect(text).toBe(" Купить билеты 📍 касса вокзала #kanban/trips/todo");
 	});
 });

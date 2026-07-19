@@ -63,6 +63,7 @@ const KEYED_LINE_TYPES = new Set<Intent["type"]>([
 	"set-date",
 	"set-status",
 	"set-priority",
+	"set-location",
 	"move-column",
 	"defer",
 	"set-id",

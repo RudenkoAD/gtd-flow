@@ -62,12 +62,19 @@
 			text: string,
 			time: string | null,
 			timeEnd?: string | null,
+			location?: string | null,
 		) => Promise<void>;
 		/** Инлайн-создание СОБЫТИЯ (сегмент «Событие» переключателя): дата колонки +
-		 *  время начала слота и, при click-drag, конец интервала. null — переключатель
-		 *  скрыт, ввод создаёт только задачи. */
+		 *  время начала слота и, при click-drag, конец интервала. location — из поля
+		 *  «Место» (📍) или null. null-колбэк — переключатель скрыт, ввод создаёт только задачи. */
 		onQuickAddEvent?:
-			| ((date: IsoDate, text: string, time: string | null, timeEnd?: string | null) => Promise<void>)
+			| ((
+					date: IsoDate,
+					text: string,
+					time: string | null,
+					timeEnd?: string | null,
+					location?: string | null,
+			  ) => Promise<void>)
 			| null;
 		/** ПКМ по пустому слоту — создать событие с временем слота. */
 		onCreateEvent?: ((date: IsoDate, time: string | null) => void) | null;
@@ -87,6 +94,8 @@
 	/** Минуты конца интервала quick-add (из click-drag); null — без длительности. */
 	let addingEndMin = $state<number | null>(null);
 	let draft = $state("");
+	/** Необязательное «Место» (📍) — второй инпут под названием. */
+	let locationDraft = $state("");
 	/** Обёртка ввода+переключателя — для blur-guard по relatedTarget. */
 	let addWrap = $state<HTMLElement | null>(null);
 
@@ -234,6 +243,7 @@
 		addingMin = null;
 		addingEndMin = null;
 		draft = "";
+		locationDraft = "";
 		// тип НЕ сбрасываем: положение переключателя липкое (последний выбор
 		// живёт в настройках и переживает перезапуск, см. quickAddKind)
 	}
@@ -251,13 +261,16 @@
 		const endMin = addingEndMin;
 		const kind = quickAddKind;
 		const text = draft;
+		const location = locationDraft.trim() === "" ? null : locationDraft.trim();
 		cancelDraft();
 		if (min === null || text.trim() === "") return;
 		const time = minutesToTime(min);
 		const timeEnd = endMin !== null ? minutesToTime(endMin) : null;
-		// «Событие» → инлайн-создание события с временем слота; иначе — задача (как прежде)
-		if (kind === "event" && onQuickAddEvent !== null) void onQuickAddEvent(date, text, time, timeEnd);
-		else void onQuickAdd(date, text, time, timeEnd);
+		// «Событие» → инлайн-создание события с временем слота; иначе — задача (как прежде).
+		// Место (📍) идёт в обе ветки: у события — в createSingleEvent, у задачи — полем 📍.
+		if (kind === "event" && onQuickAddEvent !== null)
+			void onQuickAddEvent(date, text, time, timeEnd, location);
+		else void onQuickAdd(date, text, time, timeEnd, location);
 	}
 </script>
 
@@ -325,6 +338,19 @@
 				}}
 				onblur={onDraftBlur}
 			/>
+			<!-- необязательное «Место» (📍): Tab из названия, Enter создаёт из любого поля -->
+			<input
+				class="gtd-tg-quickadd-input gtd-tg-quickadd-loc"
+				type="text"
+				placeholder="📍 Место"
+				aria-label="Место (необязательно) на {date} {slotRange}"
+				bind:value={locationDraft}
+				onkeydown={(e) => {
+					if (e.key === "Enter") submitDraft();
+					else if (e.key === "Escape") cancelDraft();
+				}}
+				onblur={onDraftBlur}
+			/>
 			{#if onQuickAddEvent !== null && onQuickAddKindChange !== null}
 				<QuickAddKindSwitch kind={quickAddKind} onChange={onQuickAddKindChange} />
 			{/if}
@@ -370,6 +396,11 @@
 	.gtd-tg-quickadd-input {
 		width: 100%;
 		font-size: var(--font-ui-smaller, 0.85em);
+	}
+	/* поле «Место» — компактнее и приглушённее названия (необязательное) */
+	.gtd-tg-quickadd-loc {
+		font-size: var(--font-ui-smaller, 0.8em);
+		color: var(--text-muted);
 	}
 	.gtd-tg-createsel {
 		position: absolute;

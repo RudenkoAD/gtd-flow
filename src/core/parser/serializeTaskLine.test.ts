@@ -350,6 +350,51 @@ describe("setDescription", () => {
 		expect(() => setDescription("- [ ] T", "x⏫y")).toThrow();
 		expect(() => setDescription("- [ ] T", "повторять 🔁 daily")).toThrow();
 		expect(() => setDescription("- [ ] T", `x ⏳️ y`)).toThrow(); // с U+FE0F
+		// не ведущий 📍 стал бы полем места — запрещён (ведущий 📍 — отдельный кейс ниже)
+		expect(() => setDescription("- [ ] T", "встреча 📍 кафе")).toThrow();
+	});
+
+	it("существующее поле 📍 переживает правку описания дословно", () => {
+		const out = setDescription("- [ ] Старое 📍 Офис, 3 этаж 🆔 e1", "Новое");
+		expect(out).toBe("- [ ] Новое 📍 Офис, 3 этаж 🆔 e1");
+		const t = parseTaskLine(out, { ...ctx(), container: "events" })!;
+		expect(t.description).toBe("Новое");
+		expect(t.location).toBe("Офис, 3 этаж");
+	});
+
+	// Регресс: токенизатор читает ВЕДУЩИЙ 📍 как заголовок описания (isLeadingLocation,
+	// защита «б»), значит description задачи МОЖЕТ содержать 📍. setDescription обязан
+	// терпеть именно этот случай, иначе инлайн-правка такой задачи молча падает
+	// (transform-failed) и правка теряется. Не ведущий 📍 стал бы полем — отклоняем.
+	describe("ведущий 📍 в тексте описания (заголовок, не поле)", () => {
+		it("правка описания с ведущим 📍 не падает и читается назад тем же текстом", () => {
+			const line = "- [ ] 📍 Погладить кота 📅 2026-07-20";
+			// парсер и правда отдал ведущий 📍 в описание, место — пустое
+			const before = parseTaskLine(line, ctx())!;
+			expect(before.description).toBe("📍 Погладить кота");
+			expect(before.location).toBeNull();
+			// правка с сохранённым ведущим 📍 проходит без throw
+			const out = setDescription(line, "📍 Погладить собаку");
+			expect(out).toBe("- [ ] 📍 Погладить собаку 📅 2026-07-20");
+			const after = parseTaskLine(out, ctx())!;
+			expect(after.description).toBe("📍 Погладить собаку");
+			expect(after.location).toBeNull(); // 📍 не превратился в поле места
+		});
+
+		it("голый ведущий 📍 и ведущий 📍 с тегом — валидны", () => {
+			expect(setDescription("- [ ] Old 📅 2026-07-20", "📍")).toBe(
+				"- [ ] 📍 📅 2026-07-20",
+			);
+			const out = setDescription("- [ ] Old 📅 2026-07-20", "📍 Встреча #next");
+			expect(out).toBe("- [ ] 📍 Встреча #next 📅 2026-07-20");
+			expect(parseTaskLine(out, ctx())!.location).toBeNull();
+		});
+
+		it("throw: не ведущий 📍 (стал бы полем места)", () => {
+			expect(() => setDescription("- [ ] T", "встреча 📍 кафе")).toThrow();
+			// ведущий 📍 допустим, но ВТОРОЙ 📍 стал бы полем — вся правка отклоняется
+			expect(() => setDescription("- [ ] T", "📍 встреча 📍 кафе")).toThrow();
+		});
 	});
 
 	it("throw: не-задача", () => {
@@ -523,8 +568,24 @@ describe("setValueField 📍 location (свободный текст с проб
 		expect(() => setValueField("- [ ] X", "location", "у 🔁 повтора")).toThrow();
 	});
 
+	it("#тег в месте — throw (payload 📍 обрезался бы перед тегом при чтении)", () => {
+		expect(() => setValueField("- [ ] X", "location", "Кафе #home")).toThrow();
+		expect(() => setValueField("- [ ] X", "location", "#waiting у входа")).toThrow();
+		// числовой #5 — не тег, место с ним валидно и парсится обратно тем же
+		expect(setValueField("- [ ] X", "location", "ТЦ #5")).toBe("- [ ] X 📍 ТЦ #5");
+		expect(parseTaskLine("- [ ] X 📍 ТЦ #5", { ...ctx(), container: "events" })!.location).toBe(
+			"ТЦ #5",
+		);
+	});
+
 	it("удаление отсутствующего 📍 — тождество строки", () => {
 		expect(setValueField("- [ ] X 🆔 e1", "location", null)).toBe("- [ ] X 🆔 e1");
+	});
+
+	it("место можно задать/снять у ОБЫЧНОЙ задачи (не только события)", () => {
+		const withLoc = setValueField("- [ ] Купить хлеб", "location", "Пятёрочка");
+		expect(withLoc).toBe("- [ ] Купить хлеб 📍 Пятёрочка");
+		expect(setValueField(withLoc, "location", null)).toBe("- [ ] Купить хлеб");
 	});
 });
 

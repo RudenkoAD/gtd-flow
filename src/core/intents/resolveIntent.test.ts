@@ -139,6 +139,26 @@ describe("resolveLineTransform — однострочные intents", () => {
 		expect(out).toBe("- [ ] 📅 2026-07-25");
 	});
 
+	// Регресс из ревью: строка с ВЕДУЩИМ 📍 (токенизатор читает его заголовком
+	// описания, не полем). Инлайн-правка с сохранённым ведущим 📍 обязана пройти,
+	// а не падать transform-failed — иначе правка молча теряется.
+	it("set-text: правка задачи с ведущим 📍 (сохранение 📍) не падает", () => {
+		const out = resolveLineTransform(
+			{ type: "set-text", key: "k", text: "📍 Погладить собаку" },
+			"- [ ] 📍 Погладить кота 📅 2026-07-20",
+		);
+		expect(out).toBe("- [ ] 📍 Погладить собаку 📅 2026-07-20");
+	});
+
+	it("set-text: не ведущий 📍 в новом тексте по-прежнему бросает", () => {
+		expect(() =>
+			resolveLineTransform(
+				{ type: "set-text", key: "k", text: "встреча 📍 кафе" },
+				"- [ ] 📍 Погладить кота 📅 2026-07-20",
+			),
+		).toThrow();
+	});
+
 	it("set-status: ' ' → 'x'", () => {
 		const out = resolveLineTransform(
 			{ type: "set-status", key: "k", statusChar: "x" },
@@ -182,6 +202,43 @@ describe("resolveLineTransform — однострочные intents", () => {
 			"- [ ] Позвонить маме",
 		);
 		expect(out).toContain("⏫");
+	});
+
+	it("set-location: добавляет 📍 к обычной задаче", () => {
+		const out = resolveLineTransform(
+			{ type: "set-location", key: "k", location: "Кафе на углу" },
+			"- [ ] Созвон с командой",
+		);
+		expect(out).toBe("- [ ] Созвон с командой 📍 Кафе на углу");
+	});
+
+	it("set-location: заменяет существующее место", () => {
+		const out = resolveLineTransform(
+			{ type: "set-location", key: "k", location: "Офис, 3 этаж" },
+			"- [ ] Созвон 📍 Кафе 🆔 e1",
+		);
+		expect(out).toBe("- [ ] Созвон 📍 Офис, 3 этаж 🆔 e1");
+	});
+
+	it("set-location: null снимает поле", () => {
+		const out = resolveLineTransform(
+			{ type: "set-location", key: "k", location: null },
+			"- [ ] Созвон 📍 Кафе 🆔 e1",
+		);
+		expect(out).toBe("- [ ] Созвон 🆔 e1");
+	});
+
+	it("set-location: пустая/пробельная строка = снять поле (как null)", () => {
+		expect(
+			resolveLineTransform(
+				{ type: "set-location", key: "k", location: "   " },
+				"- [ ] Созвон 📍 Кафе",
+			),
+		).toBe("- [ ] Созвон");
+		// места не было — снятие тождественно исходной строке (no-op в WritebackService)
+		expect(
+			resolveLineTransform({ type: "set-location", key: "k", location: "" }, "- [ ] Созвон"),
+		).toBe("- [ ] Созвон");
 	});
 
 	it("defer: пишет 🛫", () => {

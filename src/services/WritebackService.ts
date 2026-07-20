@@ -17,6 +17,14 @@ import type { IndexFeed } from "./types";
 
 export type IntentResult = { ok: true } | { ok: false; reason: string };
 
+/**
+ * Итог пакетной правки одной строки (dispatchMany): всё-или-ничего.
+ * opIndex — индекс интента, чей трансформ упал (виновник); -1 — сбой уровня
+ * локализации/файла (строка не найдена, протухший индекс, файла нет) — тогда
+ * виновника нет, не записан весь пакет целиком.
+ */
+export type BatchResult = { ok: true } | { ok: false; reason: string; opIndex: number };
+
 export interface IntentDispatcher {
 	dispatch(intent: Intent): Promise<IntentResult>;
 }
@@ -341,6 +349,118 @@ export class WritebackService implements IntentDispatcher {
 	}
 
 	// --- однострочные intents ---
+
+	/**
+	 * Пакет однострочных intents ОДНОЙ задачи атомарно: локализация строки один
+	 * раз и последовательная свёртка всех трансформов внутри ЕДИНОГО
+	 * processFile — одна запись на весь пакет. Всё-или-ничего: упал любой
+	 * трансформ (opIndex — виновник) или строка не найдена (opIndex = -1) —
+	 * ноль записей, файл не тронут. Тем самым исчезает окно частичного
+	 * применения между отдельными dispatch'ами (внешняя правка файла между
+	 * записями), и для id-less задач не нужен мост через впечатанный 🆔:
+	 * content-key меняется только ПОСЛЕ единственной записи.
+	 *
+	 * Ленивый 🆔 — как в dispatch: одна вставка на пакет, если задача id-less,
+	 * включён autoInjectId и в пакете есть структурная правка.
+	 */
+	async dispatchMany(intents: readonly (Intent & { key: string })[]): Promise<BatchResult> {
+		if (intents.length === 0) return { ok: true };
+		if (intents.length === 1) {
+			const res = await this.dispatch(intents[0]!);
+			if (res.ok) return { ok: true };
+			return { ok: false, reason: res.reason, opIndex: 0 };
+		}
+		const key = intents[0]!.key;
+		for (const it of intents) {
+			// контракт: один пакет — одна строка одной задачи
+			if (!KEYED_LINE_TYPES.has(it.type) || it.key !== key) {
+				return { ok: false, reason: "batch-not-single-line", opIndex: intents.indexOf(it) };
+			}
+		}
+		try {
+			const task = this.deps.feed.getIndex().get(key);
+			if (task === undefined) {
+				this.injectedIds.delete(key);
+				return { ok: false, reason: "task-not-found", opIndex: -1 };
+			}
+			if (task.taskId !== null) this.injectedIds.delete(key);
+			const remembered = task.taskId === null ? (this.injectedIds.get(key) ?? null) : null;
+
+			let injectId: string | null = null;
+			if (
+				task.taskId === null &&
+				remembered === null &&
+				this.deps.autoInjectId &&
+				intents.some((it) => STRUCTURAL_TYPES.has(it.type))
+			) {
+				injectId = this.freshId();
+				if (injectId === null) return { ok: false, reason: "id-collision", opIndex: -1 };
+			}
+			// set-id в пакете сам даёт якорь — запомним его как вписанный
+			const setId = intents.find((it) => it.type === "set-id");
+
+			const target: LineTarget =
+				remembered !== null
+					? { taskId: remembered, description: task.description, lineStart: task.lineStart }
+					: task;
+			const expectedIdless =
+				target.taskId === null ? this.countIdlessInIndex(task.filePath, target.description) : -1;
+			let failure: string | null = "file-not-found";
+			let failedOp = -1;
+			await this.deps.write.processFile(task.filePath, (content) => {
+				failure = null;
+				const lines = content.split("\n");
+				const idx = locateTaskLine(lines, task.filePath, target);
+				if (idx === -1) {
+					failure = "line-not-found";
+					return null;
+				}
+				if (
+					target.taskId === null &&
+					countIdlessMatches(lines, task.filePath, target.description) !== expectedIdless
+				) {
+					failure = "stale-index";
+					return null;
+				}
+				let line = lines[idx]!;
+				if (injectId !== null) {
+					try {
+						line = setValueField(line, "id", injectId);
+					} catch {
+						failure = "transform-failed";
+						return null;
+					}
+				}
+				// свёртка: все трансформы над одной строкой, любой сбой — ноль записей
+				for (let n = 0; n < intents.length; n++) {
+					try {
+						const next = resolveLineTransform(intents[n]!, line);
+						if (next === null) {
+							failure = "transform-failed";
+							failedOp = n;
+							return null;
+						}
+						line = next;
+					} catch {
+						failure = "transform-failed";
+						failedOp = n;
+						return null;
+					}
+				}
+				if (line === lines[idx]) return null; // no-op: успех без записи
+				lines[idx] = line;
+				return lines.join("\n");
+			});
+			if (failure !== null) return { ok: false, reason: failure, opIndex: failedOp };
+			// строка теперь несёт 🆔 (ленивый или из set-id) — помним до реиндекса
+			if (injectId !== null) this.injectedIds.set(key, injectId);
+			else if (setId !== undefined && task.taskId === null && setId.type === "set-id")
+				this.injectedIds.set(key, setId.taskId);
+			return { ok: true };
+		} catch {
+			return { ok: false, reason: "write-failed", opIndex: -1 };
+		}
+	}
 
 	private async dispatchKeyedLine(intent: Intent & { key: string }): Promise<IntentResult> {
 		const task = this.deps.feed.getIndex().get(intent.key);

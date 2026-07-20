@@ -186,8 +186,11 @@ describe("MCP handlers", () => {
 	});
 
 	it("update_task: комбинированная правка id-less при autoInjectId:false — всё применено атомарно", async () => {
-		// сценарий ревью: text меняет content-key; без принудительного якоря 🆔
-		// scheduled+priority падали line-not-found (частичное применение).
+		// сценарий ревью: text меняет content-key; раньше без якоря 🆔 scheduled+
+		// priority падали line-not-found (частичное применение). Теперь весь пакет
+		// применяется ОДНОЙ записью (dispatchMany): content-key меняется только
+		// после неё, поэтому принудительный якорь-🆔 больше не нужен вовсе —
+		// autoInjectId:false честно оставляет строку без 🆔.
 		const noAutoRoot = await makeVault({
 			".obsidian/plugins/gtd-flow/data.json": JSON.stringify({
 				commonRoot: "GTD",
@@ -219,17 +222,113 @@ describe("MCP handlers", () => {
 			expect(content).toContain("Разобрать бумаги в архив");
 			expect(content).toContain("⏳ 2026-07-25");
 			expect(content).toContain("⏫"); // high
-			expect(content).toMatch(/🆔 \w+/); // машинный якорь впечатан несмотря на autoInjectId:false
+			expect(content).not.toContain("🆔"); // атомарной записи якорь не нужен
 		} finally {
 			await removeVault(noAutoRoot);
 		}
 	});
 
-	it("update_task: location пока не поддержан — явная ошибка (не тихое игнорирование)", async () => {
+	it("update_task: мультиполе применяется ОДНОЙ записью файла (атомарность)", async () => {
 		const s = await session(root);
-		await expect(updateTask(s, { id: "aaa111", location: "Дом" })).rejects.toThrow(
-			/location updates are not supported yet/,
-		);
+		// счётчик фактических записей через обёртку processFile
+		let writes = 0;
+		const origProcessFile = s.vault.processFile.bind(s.vault);
+		s.vault.processFile = async (path: string, tf: (c: string) => string | null) => {
+			let wrote = false;
+			const ok = await origProcessFile(path, (c) => {
+				const next = tf(c);
+				if (next !== null && next !== c) wrote = true;
+				return next;
+			});
+			if (wrote) writes++;
+			return ok;
+		};
+
+		const res = (await updateTask(s, {
+			id: "aaa111",
+			text: "Задача с айди и датой",
+			due: "2026-07-30",
+			location: "Офис",
+		})) as any;
+		expect(res.ok).toBe(true);
+		expect(res.applied).toEqual(["text", "due", "location"]);
+		expect(writes).toBe(1); // все три поля — одна запись
+
+		const content = await readVaultFile(root, "GTD/Inbox.md");
+		expect(content).toContain("Задача с айди и датой");
+		expect(content).toContain("📅 2026-07-30");
+		expect(content).toContain("📍 Офис");
+	});
+
+	it("update_task: сбой одной операции — файл не тронут, все ops failed (всё-или-ничего)", async () => {
+		const s = await session(root);
+		const before = await readVaultFile(root, "GTD/Inbox.md");
+
+		// локация с эмодзи поля — setValueField бросит на этапе трансформа
+		const res = (await updateTask(s, {
+			id: "aaa111",
+			text: "Не должно примениться",
+			location: "📅 мусор",
+		})) as any;
+		expect(res.ok).toBe(false);
+		expect(res.applied).toEqual([]);
+		expect(res.failed.map((f: any) => f.op).sort()).toEqual(["location", "text"]);
+		const locFail = res.failed.find((f: any) => f.op === "location");
+		expect(locFail.reason).toBe("transform-failed"); // виновник — исходная причина
+		const textFail = res.failed.find((f: any) => f.op === "text");
+		expect(textFail.reason).toMatch(/atomic batch aborted by 'location'/);
+
+		const after = await readVaultFile(root, "GTD/Inbox.md");
+		expect(after).toBe(before); // ноль записей
+	});
+
+	it("update_task: location задаёт 📍 через интент ядра", async () => {
+		const s = await session(root);
+		const res = (await updateTask(s, { id: "aaa111", location: "Дом" })) as any;
+		expect(res.ok).toBe(true);
+		expect(res.applied).toEqual(["location"]);
+		const content = await readVaultFile(root, "GTD/Inbox.md");
+		expect(content).toContain("- [ ] Задача с айди 🆔 aaa111 📍 Дом");
+	});
+
+	it("update_task: location null и пустая строка снимают 📍", async () => {
+		const s = await session(root);
+		await updateTask(s, { id: "aaa111", location: "Дом" });
+
+		// null снимает поле
+		let s2 = await session(root);
+		let res = (await updateTask(s2, { id: "aaa111", location: null })) as any;
+		expect(res.ok).toBe(true);
+		expect(res.applied).toEqual(["location:clear"]);
+		let content = await readVaultFile(root, "GTD/Inbox.md");
+		expect(content).toContain("- [ ] Задача с айди 🆔 aaa111");
+		expect(content).not.toContain("📍");
+
+		// пустая/пробельная строка эквивалентна null
+		await updateTask(await session(root), { id: "aaa111", location: "Офис" });
+		s2 = await session(root);
+		res = (await updateTask(s2, { id: "aaa111", location: "   " })) as any;
+		expect(res.ok).toBe(true);
+		expect(res.applied).toEqual(["location:clear"]);
+		content = await readVaultFile(root, "GTD/Inbox.md");
+		expect(content).not.toContain("📍");
+	});
+
+	it("update_task: location в комбинированной правке id-less задачи (autoInjectId по умолчанию)", async () => {
+		const s = await session(root);
+		const inbox = listTasks(s, { namespace: "Общее", view: "inbox" }) as any;
+		const target = inbox.tasks.find((t: any) => t.description === "Общая задача без даты");
+		const res = (await updateTask(s, {
+			id: target.id,
+			text: "Задача с местом",
+			location: "Кафе на углу",
+		})) as any;
+		expect(res.ok).toBe(true);
+		expect(res.failed).toHaveLength(0);
+		expect(res.applied).toEqual(expect.arrayContaining(["text", "location"]));
+		const content = await readVaultFile(root, "GTD/Inbox.md");
+		expect(content).toContain("Задача с местом");
+		expect(content).toContain("📍 Кафе на углу");
 	});
 
 	// --- delete_task ---

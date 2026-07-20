@@ -73,7 +73,23 @@ describe.skipIf(!built)("MCP server e2e (stdio)", () => {
 	let child: ChildProcessWithoutNullStreams;
 
 	beforeAll(async () => {
-		root = await makeVault(FIXTURE_FILES);
+		root = await makeVault({
+			...FIXTURE_FILES,
+			// файл-паритет с кэшем Obsidian: цитаты/коллауты и отступный код —
+			// НЕ задачи; вложенная подзадача — задача (см. scanFile.ts)
+			"GTD/Паритет.md": [
+				"- [ ] Паритет корневая",
+				"    - [ ] Паритет подзадача",
+				"> - [ ] Паритет в цитате",
+				"> [!note]",
+				"> - [ ] Паритет в коллауте",
+				"",
+				"Текст.",
+				"",
+				"    - [ ] Паритет отступный код",
+				"",
+			].join("\n"),
+		});
 		child = spawn(process.execPath, [bundlePath, "--vault", root], {
 			cwd: repoRoot,
 			stdio: ["pipe", "pipe", "pipe"],
@@ -120,5 +136,21 @@ describe.skipIf(!built)("MCP server e2e (stdio)", () => {
 		const payload = JSON.parse(call.content[0].text);
 		expect(payload.namespace).toBe("Общее");
 		expect(payload.tasks.some((t: any) => t.description === "Общая задача без даты")).toBe(true);
+	}, 30000);
+
+	it("паритет скана с кэшем Obsidian: цитаты/коллауты и отступный код исключены", async () => {
+		const { request } = rpc(child);
+		const call = await request("tools/call", {
+			name: "list_tasks",
+			arguments: { namespace: "Общее", view: "all" },
+		});
+		expect(call.isError).toBeFalsy();
+		const payload = JSON.parse(call.content[0].text);
+		const descs = payload.tasks.map((t: any) => t.description);
+		expect(descs).toContain("Паритет корневая");
+		expect(descs).toContain("Паритет подзадача");
+		expect(descs).not.toContain("Паритет в цитате");
+		expect(descs).not.toContain("Паритет в коллауте");
+		expect(descs).not.toContain("Паритет отступный код");
 	}, 30000);
 });

@@ -67,4 +67,90 @@ describe("buildIndex", () => {
 			await removeVault(r);
 		}
 	});
+
+	// --- паритет с кэшем Obsidian: цитаты/коллауты ---
+
+	it("задачи в цитатах/коллаутах не попадают в индекс (как в плагине)", async () => {
+		// Obsidian кладёт такие пункты в ListItemCache, но parseTaskLine плагина
+		// отбрасывает строку с префиксом «> » — итог одинаков на обеих сторонах:
+		// задача не индексируется. Скан зеркалит кэш, отбрасывает даунстрим.
+		const r = await makeVault({
+			"Note.md": [
+				"- [ ] обычная задача",
+				"> - [ ] задача в цитате",
+				"> > - [ ] задача во вложенной цитате",
+				"> [!note]",
+				"> - [ ] задача в коллауте",
+				"",
+			].join("\n"),
+		});
+		try {
+			const vault = new FsVault(r);
+			const { feed } = await buildIndex(await vault.listMarkdownFiles(), FIXTURE_TODAY);
+			const descs = feed
+				.getIndex()
+				.fileTasks("Note.md")
+				.map((t) => t.description)
+				.sort();
+			expect(descs).toEqual(["обычная задача"]);
+		} finally {
+			await removeVault(r);
+		}
+	});
+
+	// --- паритет с кэшем Obsidian: отступные блоки кода vs вложенные подзадачи ---
+
+	it("отступный блок кода не индексируется, вложенные подзадачи — индексируются", async () => {
+		const r = await makeVault({
+			"Note.md": [
+				"Абзац текста.",
+				"",
+				"    - [ ] фейк в отступном блоке кода",
+				"",
+				"- [ ] родитель",
+				"    - [ ] вложенная подзадача",
+				"	- [ ] подзадача с табом",
+				"",
+			].join("\n"),
+		});
+		try {
+			const vault = new FsVault(r);
+			const { feed } = await buildIndex(await vault.listMarkdownFiles(), FIXTURE_TODAY);
+			const tasks = feed.getIndex().fileTasks("Note.md");
+			const descs = tasks.map((t) => t.description).sort();
+			expect(descs).toEqual(["вложенная подзадача", "подзадача с табом", "родитель"]);
+			// родительская связь по отступу сохранена
+			const child = tasks.find((t) => t.description === "вложенная подзадача");
+			const parent = tasks.find((t) => t.description === "родитель");
+			expect(child?.parentLine).toBe(parent?.lineStart);
+		} finally {
+			await removeVault(r);
+		}
+	});
+
+	it("отступная строка-пункт после пустой строки и не-списка — код, после пункта — список", async () => {
+		const r = await makeVault({
+			"Note.md": [
+				"- [ ] верхний пункт",
+				"    - [ ] продолжение списка (реальная задача)",
+				"",
+				"Текст-разделитель.",
+				"",
+				"	- [ ] таб-отступный код после текста",
+				"",
+			].join("\n"),
+		});
+		try {
+			const vault = new FsVault(r);
+			const { feed } = await buildIndex(await vault.listMarkdownFiles(), FIXTURE_TODAY);
+			const descs = feed
+				.getIndex()
+				.fileTasks("Note.md")
+				.map((t) => t.description)
+				.sort();
+			expect(descs).toEqual(["верхний пункт", "продолжение списка (реальная задача)"]);
+		} finally {
+			await removeVault(r);
+		}
+	});
 });

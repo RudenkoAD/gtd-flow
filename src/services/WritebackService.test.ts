@@ -868,3 +868,113 @@ describe("WritebackService: delete-line withChildren (пункт «Удалит�
 		expect(port.files.get(INBOX)).toBe("- [ ] дубль\n    ребёнок первого\n");
 	});
 });
+
+describe("WritebackService: dispatchMany (атомарный пакет одной строки)", () => {
+	it("несколько полей — одна запись processFile, все правки в строке", async () => {
+		const { port, feed, svc } = makeSvc();
+		const task = parseLine(INBOX, "- [ ] задача 🆔 abc", 0);
+		feed.replaceFile(INBOX, [task]);
+		port.files.set(INBOX, "- [ ] задача 🆔 abc\n");
+
+		const res = await svc.dispatchMany([
+			{ type: "set-text", key: task.key, text: "переименована" },
+			{ type: "set-date", key: task.key, field: "due", date: "2026-08-01" },
+			{ type: "set-priority", key: task.key, priority: "high" },
+		]);
+
+		expect(res).toEqual({ ok: true });
+		expect(port.calls).toBe(1); // единственный processFile на весь пакет
+		expect(port.writes).toHaveLength(1);
+		const line = port.files.get(INBOX)!;
+		expect(line).toContain("переименована");
+		expect(line).toContain("📅 2026-08-01");
+		expect(line).toContain("⏫");
+	});
+
+	it("id-less задача: text+date+location одной записью, ленивый 🆔 один на пакет", async () => {
+		const { port, feed, svc } = makeSvc({ genId: () => "fresh1" });
+		const content = "- [ ] без айди\n";
+		port.files.set(INBOX, content);
+		indexContent(feed, INBOX, content);
+		const task = feed.getIndex().fileTasks(INBOX)[0]!;
+
+		const res = await svc.dispatchMany([
+			{ type: "set-text", key: task.key, text: "новый текст" },
+			{ type: "set-date", key: task.key, field: "scheduled", date: "2026-08-02" },
+			{ type: "set-location", key: task.key, location: "Дом" },
+		]);
+
+		expect(res).toEqual({ ok: true });
+		expect(port.calls).toBe(1);
+		const line = port.files.get(INBOX)!;
+		expect(line).toContain("новый текст");
+		expect(line).toContain("⏳ 2026-08-02");
+		expect(line).toContain("📍 Дом");
+		expect(line).toContain("🆔 fresh1"); // ровно один ленивый якорь
+		expect(line.match(/🆔/g)).toHaveLength(1);
+	});
+
+	it("всё-или-ничего: сбой одного трансформа — файл не тронут, opIndex указывает виновника", async () => {
+		const { port, feed, svc } = makeSvc();
+		const task = parseLine(INBOX, "- [ ] задача 🆔 abc", 0);
+		feed.replaceFile(INBOX, [task]);
+		const original = "- [ ] задача 🆔 abc\n";
+		port.files.set(INBOX, original);
+
+		const res = await svc.dispatchMany([
+			{ type: "set-text", key: task.key, text: "переименована" },
+			// невалидная локация (эмодзи поля) — setValueField бросит
+			{ type: "set-location", key: task.key, location: "📅 мусор" },
+		]);
+
+		expect(res).toEqual({ ok: false, reason: "transform-failed", opIndex: 1 });
+		expect(port.files.get(INBOX)).toBe(original); // ноль записей
+		expect(port.writes).toHaveLength(0);
+	});
+
+	it("строка не найдена — ничего не записано, opIndex = -1", async () => {
+		const { port, feed, svc } = makeSvc();
+		const task = parseLine(INBOX, "- [ ] задача 🆔 abc", 0);
+		feed.replaceFile(INBOX, [task]);
+		// внешняя правка: строка исчезла из файла до диспатча
+		port.files.set(INBOX, "- [ ] совсем другая строка\n");
+
+		const res = await svc.dispatchMany([
+			{ type: "set-text", key: task.key, text: "x" },
+			{ type: "set-priority", key: task.key, priority: "low" },
+		]);
+
+		expect(res).toEqual({ ok: false, reason: "line-not-found", opIndex: -1 });
+		expect(port.writes).toHaveLength(0);
+	});
+
+	it("пакет из одного интента эквивалентен dispatch (поведение не изменилось)", async () => {
+		const { port, feed, svc } = makeSvc();
+		const task = parseLine(INBOX, "- [ ] одиночка 🆔 solo", 0);
+		feed.replaceFile(INBOX, [task]);
+		port.files.set(INBOX, "- [ ] одиночка 🆔 solo\n");
+
+		const res = await svc.dispatchMany([
+			{ type: "set-date", key: task.key, field: "due", date: "2026-09-01" },
+		]);
+
+		expect(res).toEqual({ ok: true });
+		expect(port.files.get(INBOX)).toContain("📅 2026-09-01");
+	});
+
+	it("интенты разных задач в одном пакете — отказ без записи", async () => {
+		const { port, feed, svc } = makeSvc();
+		const a = parseLine(INBOX, "- [ ] а 🆔 aa1", 0);
+		const b = parseLine(INBOX, "- [ ] б 🆔 bb1", 1);
+		feed.replaceFile(INBOX, [a, b]);
+		port.files.set(INBOX, "- [ ] а 🆔 aa1\n- [ ] б 🆔 bb1\n");
+
+		const res = await svc.dispatchMany([
+			{ type: "set-priority", key: a.key, priority: "high" },
+			{ type: "set-priority", key: b.key, priority: "low" },
+		]);
+
+		expect(res).toEqual({ ok: false, reason: "batch-not-single-line", opIndex: 1 });
+		expect(port.writes).toHaveLength(0);
+	});
+});

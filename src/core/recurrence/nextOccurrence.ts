@@ -10,8 +10,11 @@
  * - КЛАМПИНГ: «on the 31st» → Jan 31, Feb 28/29, Mar 31… (не пропуск, как в RFC 5545).
  * - Месячный/годовой шаг привязан к дню ПРАВИЛА, а не к дню after:
  *   «every month on the 15th» после 2026-07-20 → 2026-08-15.
- * - daily и weekly-без-byDay не имеют абсолютного якоря: цепочку задаёт курсор 🔜
- *   (следующее — просто after + шаг).
+ * - daily и weekly-без-byDay при n=1 (или без якоря) не имеют абсолютного якоря:
+ *   цепочку задаёт курсор 🔜 (следующее — просто after + шаг). При n>1 и
+ *   известном якоре (rule.from либо anchor-аргумент) серия — арифметическая:
+ *   якорь, якорь+n, якорь+2n… (для weekly шаг 7n); ПЕРВОЕ вхождение — сам якорь
+ *   (from ВКЛЮЧИТЕЛЬНО и как граница, и как фаза), а не якорь+шаг.
  * - weekly с byDay при n>1: чётность недель детерминирует ЯКОРЬ (anchor) —
  *   rule.from либо базовая дата серии события. При известном якоре членами
  *   считаются перечисленные дни ТОЛЬКО в неделях, отстоящих от недели якоря
@@ -32,6 +35,8 @@ import {
 	dayOfWeek,
 	daysInMonth,
 	fromParts,
+	fromEpochDays,
+	toEpochDays,
 	toParts,
 	weeksBetween,
 } from "./dateMath";
@@ -71,6 +76,23 @@ function capUntil(cand: IsoDate, until: IsoDate | undefined): IsoDate | null {
 	return cand;
 }
 
+/** Положительный остаток: ((a % b) + b) % b — фазовые проверки не зависят от знака. */
+function posMod(a: number, b: number): number {
+	return ((a % b) + b) % b;
+}
+
+/**
+ * Следующий член арифметической серии anchor + k*step (в днях эпохи) СТРОГО
+ * ПОСЛЕ after. Основа фазовой семантики daily/weekly-без-byDay при n>1 и
+ * известном якоре (rule.from либо anchor-аргумент): первый член — сам якорь,
+ * дальше шаг ровно step дней; фаза детерминирована и не зависит от after.
+ */
+function nextInPhase(anchorDate: IsoDate, step: number, after: IsoDate): IsoDate {
+	const anc = toEpochDays(anchorDate);
+	const delta = toEpochDays(after) - anc;
+	return fromEpochDays(anc + (Math.floor(delta / step) + 1) * step);
+}
+
 export function nextOccurrence(rule: Rule, after: IsoDate, anchor?: IsoDate): IsoDate | null {
 	// клауза from (нижняя граница, §6): вхождений раньше from не бывает. Поднимаем
 	// курсор поиска до from−1 — «строго после» тогда впервые попадёт на дату ≥ from.
@@ -79,8 +101,16 @@ export function nextOccurrence(rule: Rule, after: IsoDate, anchor?: IsoDate): Is
 		after = addDays(rule.from, -1);
 	}
 	switch (rule.freq) {
-		case "daily":
+		case "daily": {
+			// фаза от якоря (rule.from приоритетнее anchor-аргумента): при n>1 члены —
+			// anchor + k*n, первый — сам якорь (from ВКЛЮЧИТЕЛЬНО, а не from+n).
+			// n=1 якоря не требует: любой день — член, шаг от курсора идентичен фазовому.
+			const dailyAnchor = rule.from ?? anchor;
+			if (dailyAnchor !== undefined && rule.n > 1) {
+				return capUntil(nextInPhase(dailyAnchor, rule.n, after), rule.until);
+			}
 			return capUntil(addDays(after, rule.n), rule.until);
+		}
 
 		case "weekdays": {
 			let d = addDays(after, 1);
@@ -93,6 +123,11 @@ export function nextOccurrence(rule: Rule, after: IsoDate, anchor?: IsoDate): Is
 
 		case "weekly": {
 			if (rule.byDay.length === 0) {
+				// как daily: при n>1 и якоре фаза anchor + k*7n, первый член — сам якорь
+				const weeklyAnchor = rule.from ?? anchor;
+				if (weeklyAnchor !== undefined && rule.n > 1) {
+					return capUntil(nextInPhase(weeklyAnchor, 7 * rule.n, after), rule.until);
+				}
 				return capUntil(addDays(after, 7 * rule.n), rule.until);
 			}
 			const days = [...rule.byDay].sort((a, b) => a - b);
@@ -173,12 +208,22 @@ export function isOccurrence(rule: Rule, date: IsoDate, anchor?: IsoDate): boole
 	if (rule.from !== undefined && compare(date, rule.from) < 0) return false;
 	if (rule.until !== undefined && compare(date, rule.until) > 0) return false;
 	switch (rule.freq) {
-		case "daily":
-			return true;
+		case "daily": {
+			// фазовая проверка ТОЛЬКО при известном якоре и n>1 — зеркало nextOccurrence:
+			// член ⇔ (date − якорь) кратно n. Без якоря — прежняя структурная
+			// совместимость (любая дата), как у weekly с byDay: двухступенчатая
+			// проверка spawnPlan (структура → фаза) различает ветки снапа.
+			if (anchor === undefined || rule.n <= 1) return true;
+			return posMod(toEpochDays(date) - toEpochDays(anchor), rule.n) === 0;
+		}
 		case "weekdays":
 			return dayOfWeek(date) <= 4;
 		case "weekly":
-			if (rule.byDay.length === 0) return true;
+			if (rule.byDay.length === 0) {
+				// как daily: при якоре и n>1 член ⇔ (date − якорь) кратно 7n
+				if (anchor === undefined || rule.n <= 1) return true;
+				return posMod(toEpochDays(date) - toEpochDays(anchor), 7 * rule.n) === 0;
+			}
 			if (!rule.byDay.includes(dayOfWeek(date))) return false;
 			// чётность недель — только при известном якоре и n>1; фаза от первого вхождения
 			if (anchor === undefined || rule.n <= 1) return true;

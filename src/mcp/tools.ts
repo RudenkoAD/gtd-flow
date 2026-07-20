@@ -121,7 +121,7 @@ export function registerTools(server: McpServer, ctx: ServerContext): void {
 		{
 			title: "Update task",
 			description:
-				"Edit an existing task by id (🆔 preferred; a content-key from list_tasks also works). Call to mark done/undone, rename, set or clear dates, or set priority. Pass done, text, priority, and/or due/scheduled/start (an ISO string sets it, null clears it). Only the provided fields change.",
+				"Edit an existing task by id (🆔 preferred; a content-key from list_tasks also works). Call to mark done/undone, rename, set or clear dates, set priority, or set location. Pass done, text, priority, location, and/or due/scheduled/start (an ISO string sets it, null clears it). Only the provided fields change.",
 			inputSchema: {
 				id: z.string().describe("Task 🆔 or content-key (from list_tasks)."),
 				done: z.boolean().optional().describe("true marks done (✅ today), false reopens."),
@@ -141,10 +141,11 @@ export function registerTools(server: McpServer, ctx: ServerContext): void {
 					.enum(["highest", "high", "medium", "low", "lowest", "none"])
 					.optional()
 					.describe("Priority; 'none' removes it."),
-				// TODO(set-location): когда в ядре появится интент 'set-location', добавить
-				// сюда параметр `location` (string; пустая строка = снять 📍) и снять guard
-				// в handlers.updateTask. Пока не публикуем: хендлер бросает явную ошибку на
-				// переданное поле, чтобы не рекламировать неработающую опцию.
+				location: z
+					.string()
+					.nullable()
+					.optional()
+					.describe("📍 location (free text) or null/empty string to clear."),
 			},
 		},
 		(args) => runTool(ctx, (s) => updateTask(s, args)),

@@ -363,120 +363,90 @@ export interface UpdateTaskArgs {
 	location?: string | null;
 }
 
-const ID_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz";
-
-/**
- * Свежий 🆔 (6 символов base36) без коллизий по индексу — тем же критерием, что
- * WritebackService.freshId (носители id ищутся через resolveDep). Нужен, чтобы
- * из хендлера принудительно поставить якорь id-less задаче перед пакетной правкой
- * (WritebackService.freshId приватен, а зона MCP его не трогает).
- */
-function mintTaskId(session: GtdSession): string {
-	const index = session.feed.getIndex();
-	for (let attempt = 0; attempt < 32; attempt++) {
-		let id = "";
-		for (let i = 0; i < 6; i++) {
-			id += ID_ALPHABET.charAt(Math.floor(Math.random() * ID_ALPHABET.length));
-		}
-		if (index.resolveDep(id).length === 0) return id;
-	}
-	throw new Error("could not generate a unique task id");
-}
-
 export async function updateTask(
 	session: GtdSession,
 	args: UpdateTaskArgs,
 ): Promise<Record<string, unknown>> {
 	const key = resolveTaskKey(session, args.id);
-	const applied: string[] = [];
-	const failed: { op: string; reason: string }[] = [];
 
-	const run = async (op: string, factory: () => Intent): Promise<void> => {
-		const res = await session.writeback.dispatch(factory());
-		if (res.ok) applied.push(op);
-		else failed.push({ op, reason: res.reason });
-	};
+	// Все правки собираются в ОДИН пакет и применяются одной записью
+	// (WritebackService.dispatchMany): строка локализуется один раз, трансформы
+	// сворачиваются последовательно внутри единого processFile. Внешняя правка
+	// файла между отдельными dispatch'ами больше не даёт частичного применения,
+	// а прежний якорь-🆔 для id-less комбинаций с text (a6392b2) не нужен:
+	// content-key меняется только ПОСЛЕ единственной записи. Семантика
+	// всё-или-ничего: сбой любой операции ⇒ файл не тронут, все ops — failed.
+	const ops: { op: string; intent: Intent & { key: string } }[] = [];
 
-	// Атомарность комбинированной правки id-less задачи. set-text меняет описание,
-	// а значит и content-key: без 🆔 идущие ПОСЛЕ него интенты искали бы строку по
-	// старому описанию и падали line-not-found (частичное применение — баг ревью).
-	// Поэтому для id-less цели, где text идёт ВМЕСТЕ с другими полями, ПЕРЕД пакетом
-	// принудительно впечатываем машинный 🆔 (независимо от autoInjectId — правке
-	// нужен якорь) и адресуем весь набор по нему: WritebackService запоминает
-	// вписанный id (injectedIds) и резолвит по нему все последующие интенты этой же
-	// сессии. Выбран якорь-по-id (а не «text последним»): он не зависит от того,
-	// какие поля входят в content-key, и переживает любую перестановку правок.
-	const hasText = args.text !== undefined;
-	const otherOps =
-		(["due", "scheduled", "start"] as const).filter(
-			(f) => f in args && args[f] !== undefined,
-		).length +
-		(args.priority !== undefined ? 1 : 0) +
-		(args.location !== undefined ? 1 : 0) +
-		(args.done !== undefined ? 1 : 0);
-	if (hasText && otherOps > 0) {
-		const target = session.feed.getIndex().get(key);
-		if (target !== undefined && target.taskId === null) {
-			const anchorId = mintTaskId(session);
-			const res = await session.writeback.dispatch({ type: "set-id", key, taskId: anchorId });
-			if (!res.ok) {
-				throw new Error(
-					`could not anchor task '${args.id}' with an 🆔 before a combined edit: ${res.reason}`,
-				);
-			}
-		}
-	}
-
-	// Порядок: текст → даты → приоритет → место → статус. Якорь (см. выше) уже впечатан для
-	// id-less комбинаций; иначе ленивый 🆔 первой структурной правки запоминается
-	// WritebackService и адресует остальные (одна сессия/инстанс).
+	// Порядок: текст → даты → приоритет → место → статус (стабильные имена ops).
 	if (args.text !== undefined) {
-		await run("text", () => ({ type: "set-text", key, text: args.text! }));
+		ops.push({ op: "text", intent: { type: "set-text", key, text: args.text } });
 	}
 	for (const field of ["due", "scheduled", "start"] as const) {
 		if (!(field in args)) continue;
 		const raw = args[field];
 		if (raw === undefined) continue;
 		if (raw === null) {
-			await run(`${field}:clear`, () => ({ type: "set-date", key, field, date: null }));
+			ops.push({ op: `${field}:clear`, intent: { type: "set-date", key, field, date: null } });
 		} else {
 			const dt = parseDateTime(raw);
-			await run(field, () => ({
-				type: "set-date",
-				key,
-				field,
-				date: dt.date,
-				time: dt.time,
-				timeEnd: dt.timeEnd,
-			}));
+			ops.push({
+				op: field,
+				intent: {
+					type: "set-date",
+					key,
+					field,
+					date: dt.date,
+					time: dt.time,
+					timeEnd: dt.timeEnd,
+				},
+			});
 		}
 	}
 	if (args.priority !== undefined) {
 		const priority = assertPriority(args.priority);
-		await run("priority", () => ({ type: "set-priority", key, priority }));
+		ops.push({ op: "priority", intent: { type: "set-priority", key, priority } });
 	}
 	if (args.location !== undefined) {
 		// null и пустая/пробельная строка — снять 📍 (нормализует resolveIntent);
 		// имена операций зеркалят даты: 'location' — задать, 'location:clear' — снять
 		const loc = args.location;
 		if (loc === null || loc.trim() === "") {
-			await run("location:clear", () => ({ type: "set-location", key, location: null }));
+			ops.push({ op: "location:clear", intent: { type: "set-location", key, location: null } });
 		} else {
-			await run("location", () => ({ type: "set-location", key, location: loc }));
+			ops.push({ op: "location", intent: { type: "set-location", key, location: loc } });
 		}
 	}
 	if (args.done !== undefined) {
-		await run("done", () =>
-			args.done
+		ops.push({
+			op: "done",
+			intent: args.done
 				? { type: "set-status", key, statusChar: "x", date: session.today }
 				: { type: "set-status", key, statusChar: " " },
-		);
+		});
 	}
 
-	if (applied.length === 0 && failed.length === 0) {
+	if (ops.length === 0) {
 		throw new Error("nothing to update — provide done/text/due/scheduled/start/priority/location");
 	}
-	return { ok: failed.length === 0, id: args.id, applied, failed };
+
+	const res = await session.writeback.dispatchMany(ops.map((o) => o.intent));
+	if (res.ok) {
+		return { ok: true, id: args.id, applied: ops.map((o) => o.op), failed: [] };
+	}
+	// всё-или-ничего: файл не записан, все операции — failed; виновник (opIndex)
+	// несёт исходную причину, остальные — пометку об отменённом пакете
+	const culprit = res.opIndex >= 0 ? ops[res.opIndex]?.op : undefined;
+	const failed = ops.map((o) => ({
+		op: o.op,
+		reason:
+			o.op === culprit
+				? res.reason
+				: culprit !== undefined
+					? `not applied — atomic batch aborted by '${culprit}': ${res.reason}`
+					: res.reason,
+	}));
+	return { ok: false, id: args.id, applied: [], failed };
 }
 
 // ---------------------------------------------------------------------------

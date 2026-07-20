@@ -186,8 +186,11 @@ describe("MCP handlers", () => {
 	});
 
 	it("update_task: комбинированная правка id-less при autoInjectId:false — всё применено атомарно", async () => {
-		// сценарий ревью: text меняет content-key; без принудительного якоря 🆔
-		// scheduled+priority падали line-not-found (частичное применение).
+		// сценарий ревью: text меняет content-key; раньше без якоря 🆔 scheduled+
+		// priority падали line-not-found (частичное применение). Теперь весь пакет
+		// применяется ОДНОЙ записью (dispatchMany): content-key меняется только
+		// после неё, поэтому принудительный якорь-🆔 больше не нужен вовсе —
+		// autoInjectId:false честно оставляет строку без 🆔.
 		const noAutoRoot = await makeVault({
 			".obsidian/plugins/gtd-flow/data.json": JSON.stringify({
 				commonRoot: "GTD",
@@ -219,10 +222,64 @@ describe("MCP handlers", () => {
 			expect(content).toContain("Разобрать бумаги в архив");
 			expect(content).toContain("⏳ 2026-07-25");
 			expect(content).toContain("⏫"); // high
-			expect(content).toMatch(/🆔 \w+/); // машинный якорь впечатан несмотря на autoInjectId:false
+			expect(content).not.toContain("🆔"); // атомарной записи якорь не нужен
 		} finally {
 			await removeVault(noAutoRoot);
 		}
+	});
+
+	it("update_task: мультиполе применяется ОДНОЙ записью файла (атомарность)", async () => {
+		const s = await session(root);
+		// счётчик фактических записей через обёртку processFile
+		let writes = 0;
+		const origProcessFile = s.vault.processFile.bind(s.vault);
+		s.vault.processFile = async (path: string, tf: (c: string) => string | null) => {
+			let wrote = false;
+			const ok = await origProcessFile(path, (c) => {
+				const next = tf(c);
+				if (next !== null && next !== c) wrote = true;
+				return next;
+			});
+			if (wrote) writes++;
+			return ok;
+		};
+
+		const res = (await updateTask(s, {
+			id: "aaa111",
+			text: "Задача с айди и датой",
+			due: "2026-07-30",
+			location: "Офис",
+		})) as any;
+		expect(res.ok).toBe(true);
+		expect(res.applied).toEqual(["text", "due", "location"]);
+		expect(writes).toBe(1); // все три поля — одна запись
+
+		const content = await readVaultFile(root, "GTD/Inbox.md");
+		expect(content).toContain("Задача с айди и датой");
+		expect(content).toContain("📅 2026-07-30");
+		expect(content).toContain("📍 Офис");
+	});
+
+	it("update_task: сбой одной операции — файл не тронут, все ops failed (всё-или-ничего)", async () => {
+		const s = await session(root);
+		const before = await readVaultFile(root, "GTD/Inbox.md");
+
+		// локация с эмодзи поля — setValueField бросит на этапе трансформа
+		const res = (await updateTask(s, {
+			id: "aaa111",
+			text: "Не должно примениться",
+			location: "📅 мусор",
+		})) as any;
+		expect(res.ok).toBe(false);
+		expect(res.applied).toEqual([]);
+		expect(res.failed.map((f: any) => f.op).sort()).toEqual(["location", "text"]);
+		const locFail = res.failed.find((f: any) => f.op === "location");
+		expect(locFail.reason).toBe("transform-failed"); // виновник — исходная причина
+		const textFail = res.failed.find((f: any) => f.op === "text");
+		expect(textFail.reason).toMatch(/atomic batch aborted by 'location'/);
+
+		const after = await readVaultFile(root, "GTD/Inbox.md");
+		expect(after).toBe(before); // ноль записей
 	});
 
 	it("update_task: location задаёт 📍 через интент ядра", async () => {

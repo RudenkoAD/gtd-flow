@@ -29,6 +29,7 @@ interface WidgetApi {
 	computeWidgetData(input: unknown): Promise<string>;
 	buildCaptureLine(text: string, location?: string | null): string;
 	captureTargetPath(dataJson: string | null, namespace?: string | null): string;
+	buildEditedLine(rawLine: string, edits: unknown): string;
 }
 
 describe("widget-core bundle в QuickJS-подобном контексте", () => {
@@ -54,29 +55,51 @@ describe("widget-core bundle в QuickJS-подобном контексте", ()
 		expect(typeof api.computeWidgetData).toBe("function");
 		expect(typeof api.buildCaptureLine).toBe("function");
 		expect(typeof api.captureTargetPath).toBe("function");
+		expect(typeof api.buildEditedLine).toBe("function");
 
 		const json = await api.computeWidgetData({
 			files: {
 				"GTD/Входящие.md": "---\ngtd-inbox: true\n---\n- [ ] задача из виджета\n",
-				"GTD/События.md": "---\ngtd-events: true\n---\n- [ ] Встреча 📅 2026-07-20 10:00\n",
+				"GTD/События.md":
+					"---\ngtd-events: true\n---\n" +
+					"- [ ] Встреча 📅 2026-07-20 10:00\n" +
+					"- [ ] Планёрка 🔁 every day at 09:00\n",
 			},
 			dataJson: null,
 			todayIso: "2026-07-20",
 			nowMinutes: 8 * 60 + 30,
 			inboxNamespace: null,
+			agendaDays: 3,
 		});
 		const data = JSON.parse(json) as {
-			today: { items: { title: string }[]; generatedAt: string };
-			inbox: { items: { title: string }[] };
+			today: { items: { title: string; itemKind: string; rawLine: string }[]; generatedAt: string };
+			agenda: { days: { date: string; items: { title: string }[] }[] };
+			inbox: { items: { title: string; namespace: string }[] };
 			errors: string[];
 		};
 		expect(data.errors).toEqual([]);
 		expect(data.inbox.items.map((i) => i.title)).toEqual(["задача из виджета"]);
-		expect(data.today.items.map((i) => i.title)).toEqual(["Встреча"]);
+		expect(data.inbox.items[0]!.namespace).toBe("Общее");
+		expect(data.today.items.map((i) => i.title)).toEqual(["Планёрка", "Встреча"]);
+		expect(data.today.items.find((i) => i.title === "Встреча")!.itemKind).toBe("single-event");
 		expect(data.today.generatedAt).toBe("2026-07-20T08:30");
+		// агенда: 3 дня от todayIso; серия «Планёрка» ежедневная — во всех днях
+		expect(data.agenda.days.map((d) => d.date)).toEqual([
+			"2026-07-20",
+			"2026-07-21",
+			"2026-07-22",
+		]);
+		expect(data.agenda.days.every((d) => d.items.some((i) => i.title === "Планёрка"))).toBe(true);
 
 		// синхронные экспорты тоже работают в этом контексте
 		expect(api.buildCaptureLine("купить хлеб")).toBe("- [ ] купить хлеб");
 		expect(api.captureTargetPath(null, null)).toBe("GTD/Входящие.md");
+
+		// buildEditedLine — синхронная правка строки, JSON-результат
+		const edited = JSON.parse(api.buildEditedLine("- [ ] задача из виджета", { title: "переименовано" })) as {
+			ok: boolean;
+			line?: string;
+		};
+		expect(edited).toEqual({ ok: true, line: "- [ ] переименовано" });
 	});
 });

@@ -53,9 +53,6 @@ export function defaultHasDue(t: Task): boolean {
  * (см. InboxConfig.includePlain). По умолчанию false: входящие смотрят только
  * на файлы GTD Flow. Вид передаёт сюда settings.inboxIncludePlain.
  */
-export function defaultInboxConfig(
-	_inboxSources?: readonly string[],
-	includePlain = false,
-): InboxConfig {
+export function defaultInboxConfig(includePlain = false): InboxConfig {
 	return { hasBoardTag: defaultHasBoardTag, hasDue: defaultHasDue, includePlain };
 }

@@ -99,6 +99,17 @@ function defaultGenId(): string {
 	return s;
 }
 
+/** Мемо-кэш парсов на КОНКРЕТНЫЙ массив строк (один processFile → один массив):
+ *  локализация + fail-closed сверка count проходят по файлу дважды-трижды, и на
+ *  больших файлах повторный полный парс каждой строки давал O(строк²) на одну
+ *  правку. WeakMap не держит массив живым; filePath внутри одного массива
+ *  константен, поэтому ключа (массив, parseLocation, номер строки) достаточно.
+ *  slot[i] === undefined ⇒ ещё не парсили (null — «парсили, не задача»). */
+const parseCache = new WeakMap<
+	readonly string[],
+	{ plain: (Task | null | undefined)[]; events: (Task | null | undefined)[] }
+>();
+
 /** Парс строки файла вне индексатора: контекст файла для локализации не важен —
  *  нужны только taskId и нормализованное description. Исключение — поле места 📍:
  *  в файлах-событиях оно вырезано из description, поэтому такие строки парсим с
@@ -111,7 +122,15 @@ function parseAt(
 ): Task | null {
 	const raw = lines[i];
 	if (raw === undefined) return null;
-	return parseTaskLine(raw, {
+	let entry = parseCache.get(lines);
+	if (entry === undefined) {
+		entry = { plain: [], events: [] };
+		parseCache.set(lines, entry);
+	}
+	const slot = parseLocation ? entry.events : entry.plain;
+	const cached = slot[i];
+	if (cached !== undefined) return cached;
+	const t = parseTaskLine(raw, {
 		filePath,
 		lineStart: i,
 		parentLine: null,
@@ -119,6 +138,8 @@ function parseAt(
 		container: parseLocation ? "events" : "plain",
 		projectActive: true,
 	});
+	slot[i] = t;
+	return t;
 }
 
 /** Индексы строк — носителей 🆔, в порядке файла (id уникален; дубли id

@@ -308,10 +308,20 @@ export default class GtdFlowPlugin extends Plugin {
 		for (const meta of Object.values(VIEW_META)) {
 			this.addRibbonIcon(meta.icon, meta.displayText, () => void this.activateView(meta.kind));
 		}
+
+		// Ранний сброс отложенных позиций графа при закрытии приложения: onunload
+		// Obsidian не await'ит, а beforeunload даёт шанс успеть стартовать запись
+		// до смерти процесса (registerDomEvent снимет слушатель при выгрузке).
+		this.registerDomEvent(window, "beforeunload", () => {
+			void this.projects.flushPending();
+		});
 	}
 
 	onunload(): void {
 		// Виды/события/интервалы зарегистрированы через register* — снимаются автоматически.
+		// flushPending здесь — best-effort: Obsidian не ждёт async-выгрузку. При
+		// ОТКЛЮЧЕНИИ плагина процесс жив и промис доедет; окно потери — только выход
+		// из приложения, его сужает ранний сброс по beforeunload (см. onload).
 		void this.projects.flushPending();
 		this.taskStore.dispose();
 		this.indexer.dispose();

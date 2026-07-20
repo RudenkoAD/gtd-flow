@@ -30,7 +30,7 @@ describe("createQueryStore: мемоизация и дебаунс", () => {
 		const store = createQueryStore(
 			ts,
 			{ kind: "active" },
-			{ settingsBits: defaultInboxConfig([]), evaluate: spy },
+			{ settingsBits: defaultInboxConfig(), evaluate: spy },
 			debounceMs,
 		);
 		return { feed, ts, spy, store };
@@ -175,7 +175,7 @@ describe("готовые фабрики: реальный evaluate поверх 
 		});
 		feed.replaceFile("notes.md", [captured, withDue]);
 
-		const store = inboxStore(ts, defaultInboxConfig([]));
+		const store = inboxStore(ts, defaultInboxConfig());
 		const items = get(store);
 		expect(items.map((t) => t.lineStart)).toEqual([1]);
 		ts.dispose();
@@ -268,7 +268,7 @@ describe("per-namespace фильтр запросов и реактивност�
 		const ts = createTaskStore(feed);
 		seedTwoInboxes(feed);
 		const ns$ = writable<NamespaceFilter>({ active: "Работа", defs: DEFS });
-		const store = inboxStore(ts, defaultInboxConfig([]), 50, ns$);
+		const store = inboxStore(ts, defaultInboxConfig(), 50, ns$);
 		let value: Task[] = [];
 		const un = store.subscribe((v) => {
 			value = v;
@@ -293,7 +293,7 @@ describe("per-namespace фильтр запросов и реактивност�
 		const ts = createTaskStore(feed);
 		seedTwoInboxes(feed);
 		const ns$ = writable<NamespaceFilter>({ active: "Работа", defs: [] });
-		const store = inboxStore(ts, defaultInboxConfig([]), 50, ns$);
+		const store = inboxStore(ts, defaultInboxConfig(), 50, ns$);
 		expect(get(store).map((t) => t.filePath).sort()).toEqual([
 			"Work/Входящие.md",
 			"Личное/Входящие.md",
@@ -305,7 +305,7 @@ describe("per-namespace фильтр запросов и реактивност�
 		const feed = new FakeFeed("2026-07-15");
 		const ts = createTaskStore(feed);
 		seedTwoInboxes(feed);
-		const store = inboxStore(ts, defaultInboxConfig([]));
+		const store = inboxStore(ts, defaultInboxConfig());
 		expect(get(store).length).toBe(2);
 		ts.dispose();
 	});
@@ -319,7 +319,7 @@ describe("per-namespace фильтр запросов и реактивност�
 		const store = createQueryStore(
 			ts,
 			{ kind: "inbox" },
-			{ settingsBits: defaultInboxConfig([]), namespace$: ns$, evaluate: spy },
+			{ settingsBits: defaultInboxConfig(), namespace$: ns$, evaluate: spy },
 			50,
 		);
 		const un = store.subscribe(() => {});

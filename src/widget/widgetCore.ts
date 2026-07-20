@@ -267,7 +267,7 @@ export async function computeWidgetData(input: WidgetInput): Promise<string> {
 			tasks: allTasks,
 			today: todayIso,
 			resolveDep,
-			settingsBits: defaultInboxConfig(undefined, settings.inboxIncludePlain),
+			settingsBits: defaultInboxConfig(settings.inboxIncludePlain),
 			namespace: widgetFilter(inboxActive, settings),
 		};
 		for (const t of evaluate({ kind: "inbox" }, ctx)) {

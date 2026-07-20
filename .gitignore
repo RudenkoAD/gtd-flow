@@ -2,6 +2,8 @@ node_modules/
 main.js
 # автономный MCP-сервер — тоже сборочный артефакт (npm run build:mcp), собирается в CI
 mcp-server.js
+# JS-бандл ядра для Android-виджетов (npm run build:widget-core), собирается в CI
+widget-core.js
 # настройки плагина в test-vault (junction указывает в корень репо)
 data.json
 .claude/settings.local.json

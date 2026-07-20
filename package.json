@@ -6,8 +6,9 @@
   "type": "module",
   "scripts": {
     "dev": "node esbuild.config.mjs",
-    "build": "npm run check:core && tsc -noEmit -skipLibCheck && node esbuild.config.mjs production && npm run build:mcp",
+    "build": "npm run check:core && tsc -noEmit -skipLibCheck && node esbuild.config.mjs production && npm run build:mcp && npm run build:widget-core",
     "build:mcp": "node esbuild.mcp.mjs",
+    "build:widget-core": "node esbuild.widget.mjs",
     "test": "npm run check:core && vitest run",
     "test:watch": "vitest",
     "check:core": "node scripts/check-core-purity.mjs",

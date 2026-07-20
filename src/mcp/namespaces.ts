@@ -37,8 +37,10 @@ export function fileNsLabel(
 
 /**
  * Аргумент `namespace` → NamespaceFilter. undefined/пусто ⇒ активное пространство
- * настроек. «Все»/«all»/«*» ⇒ ALL_NS. «Общее»/«common» ⇒ DEFAULT_NS. Иначе — имя
- * пользовательского пространства; неизвестное имя ⇒ ошибка со списком доступных.
+ * настроек. Точное имя пользовательского пространства побеждает зарезервированные
+ * слова (пространство «All» или «Default» остаётся достижимым); затем
+ * «Все»/«all»/«*» ⇒ ALL_NS, «Общее»/«common»/«default» ⇒ DEFAULT_NS.
+ * Неизвестное имя ⇒ ошибка со списком доступных.
  */
 export function resolveNamespaceFilter(
 	arg: string | undefined,
@@ -49,12 +51,14 @@ export function resolveNamespaceFilter(
 		return { active: settings.activeNamespace, defs };
 	}
 	const a = arg.trim();
+	// Пользовательские имена — первыми: иначе пространство, названное «All» или
+	// «Default», было бы навсегда затенено зарезервированными словами ниже.
+	if (defs.some((d) => d.name === a)) return { active: a, defs };
 	const lower = a.toLowerCase();
 	if (a === ALL_LABEL || lower === "all" || a === "*") return { active: ALL_NS, defs };
 	if (a === COMMON_LABEL || lower === "common" || lower === "default") {
 		return { active: DEFAULT_NS, defs };
 	}
-	if (defs.some((d) => d.name === a)) return { active: a, defs };
 	const names = [COMMON_LABEL, ...defs.map((d) => d.name)].map((n) => `'${n}'`).join(", ");
 	throw new Error(`unknown namespace '${a}'. Available: ${names} (or 'all')`);
 }

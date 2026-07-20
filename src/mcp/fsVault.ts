@@ -12,7 +12,7 @@
  * старый целиком, либо новый целиком, никогда полу-записанный).
  */
 import { promises as fs } from "fs";
-import { readFileSync } from "fs";
+import { readFileSync, realpathSync } from "fs";
 import * as path from "path";
 import { applyFrontmatter, readFrontmatter } from "./frontmatter";
 
@@ -25,23 +25,72 @@ export interface VaultFile {
 /** Папки, которые никогда не сканируются и не индексируются. */
 const SKIP_DIRS = new Set([".obsidian", ".trash", ".git"]);
 
+/** ФС с нечувствительным к регистру сравнением путей (упрощённо по платформе). */
+const CASE_INSENSITIVE_FS = process.platform === "win32" || process.platform === "darwin";
+
+/** realpath без исключений: null, если путь не существует/недоступен. */
+function safeRealpath(p: string): string | null {
+	try {
+		return realpathSync(p);
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * «Физический» путь кандидата: realpath глубочайшего СУЩЕСТВУЮЩЕГО предка +
+ * несуществующий хвост как есть. Нужен для записи новых файлов: сам файл ещё
+ * не существует, но его существующие предки не должны выводить за корень
+ * через симлинк.
+ */
+function realDeepestExisting(absPath: string): string {
+	let dir = absPath;
+	let tail = "";
+	// Поднимаемся, пока не найдём существующего предка (корень ФС существует всегда).
+	for (;;) {
+		const real = safeRealpath(dir);
+		if (real !== null) return tail === "" ? real : path.join(real, tail);
+		const parent = path.dirname(dir);
+		if (parent === dir) return absPath; // дошли до корня ФС — как есть
+		tail = tail === "" ? path.basename(dir) : path.join(path.basename(dir), tail);
+		dir = parent;
+	}
+}
+
+/** Принадлежит ли путь корню (сам корень или строго внутри), с учётом регистра ФС. */
+function isInsideRoot(candidate: string, root: string): boolean {
+	const a = CASE_INSENSITIVE_FS ? candidate.toLowerCase() : candidate;
+	const r = CASE_INSENSITIVE_FS ? root.toLowerCase() : root;
+	if (a === r) return true;
+	const rootWithSep = r.endsWith(path.sep) ? r : r + path.sep;
+	return a.startsWith(rootWithSep);
+}
+
 export class FsVault {
-	/** Абсолютный нормализованный корень vault'а. */
+	/** Абсолютный нормализованный корень vault'а (realpath — симлинки развёрнуты). */
 	private readonly root: string;
 
 	constructor(root: string) {
-		this.root = path.resolve(root);
+		// realpath корня один раз: сравнение путей ниже идёт по «физическим» путям,
+		// иначе симлинк-корень (или иной регистр буквы диска на Windows) ломал бы
+		// префикс-проверку честных путей и/или пропускал бы обходные.
+		const resolved = path.resolve(root);
+		this.root = safeRealpath(resolved) ?? resolved;
 	}
 
 	/**
 	 * Vault-относительный POSIX-путь → абсолютный путь ФС, с запретом выхода за
-	 * корень (защита от «../» и абсолютных путей в аргументах инструментов).
+	 * корень (защита от «../», абсолютных путей и симлинк-обхода в аргументах
+	 * инструментов). Целевой файл может ещё не существовать (запись) — поэтому
+	 * realpath берётся от ГЛУБОЧАЙШЕГО существующего предка, и уже физический
+	 * путь проверяется на принадлежность корню. На case-insensitive платформах
+	 * (win32/darwin) сравнение регистронезависимое.
 	 */
 	private abs(relPosix: string): string {
 		const rel = relPosix.split("/").join(path.sep);
 		const resolved = path.resolve(this.root, rel);
-		const rootWithSep = this.root.endsWith(path.sep) ? this.root : this.root + path.sep;
-		if (resolved !== this.root && !resolved.startsWith(rootWithSep)) {
+		const real = realDeepestExisting(resolved);
+		if (!isInsideRoot(real, this.root) || !isInsideRoot(resolved, this.root)) {
 			throw new Error(`путь выходит за пределы vault: ${relPosix}`);
 		}
 		return resolved;

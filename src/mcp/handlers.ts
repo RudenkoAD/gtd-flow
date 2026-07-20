@@ -357,9 +357,9 @@ export interface UpdateTaskArgs {
 	scheduled?: string | null;
 	start?: string | null;
 	priority?: string;
-	/** 📍 место; пустая строка снимает поле. ЗАГЛУШКА: пока не поддержано (в ядре
-	 *  нет интента 'set-location') — updateTask бросает понятную ошибку, если поле
-	 *  передано. См. TODO(set-location) в теле функции. */
+	/** 📍 место: строка задаёт (пустая/пробельная — снимает), null снимает поле.
+	 *  Применяется интентом ядра 'set-location' (📍 вырезано из content-key —
+	 *  ключ задачи стабилен). */
 	location?: string | null;
 }
 
@@ -387,20 +387,6 @@ export async function updateTask(
 	session: GtdSession,
 	args: UpdateTaskArgs,
 ): Promise<Record<string, unknown>> {
-	// TODO(set-location): интент 'set-location' ещё не в ядре (параллельная зона).
-	// Когда он появится — снять этот guard и применять место ЧЕРЕЗ интент, напр.:
-	//   if (args.location !== undefined) {
-	//     const loc = args.location.trim() === "" ? null : args.location;
-	//     await run("location", () => ({ type: "set-location", key, location: loc }));
-	//   }
-	// плюс тест (autoInjectId:false, location одним вызовом → применено). Пока —
-	// НЕ молчим: явная ошибка вместо тихого игнорирования переданного поля.
-	if (args.location !== undefined) {
-		throw new Error(
-			"location updates are not supported yet (pending the core 'set-location' intent)",
-		);
-	}
-
 	const key = resolveTaskKey(session, args.id);
 	const applied: string[] = [];
 	const failed: { op: string; reason: string }[] = [];
@@ -426,6 +412,7 @@ export async function updateTask(
 			(f) => f in args && args[f] !== undefined,
 		).length +
 		(args.priority !== undefined ? 1 : 0) +
+		(args.location !== undefined ? 1 : 0) +
 		(args.done !== undefined ? 1 : 0);
 	if (hasText && otherOps > 0) {
 		const target = session.feed.getIndex().get(key);
@@ -440,7 +427,7 @@ export async function updateTask(
 		}
 	}
 
-	// Порядок: текст → даты → приоритет → статус. Якорь (см. выше) уже впечатан для
+	// Порядок: текст → даты → приоритет → место → статус. Якорь (см. выше) уже впечатан для
 	// id-less комбинаций; иначе ленивый 🆔 первой структурной правки запоминается
 	// WritebackService и адресует остальные (одна сессия/инстанс).
 	if (args.text !== undefined) {
@@ -468,6 +455,16 @@ export async function updateTask(
 		const priority = assertPriority(args.priority);
 		await run("priority", () => ({ type: "set-priority", key, priority }));
 	}
+	if (args.location !== undefined) {
+		// null и пустая/пробельная строка — снять 📍 (нормализует resolveIntent);
+		// имена операций зеркалят даты: 'location' — задать, 'location:clear' — снять
+		const loc = args.location;
+		if (loc === null || loc.trim() === "") {
+			await run("location:clear", () => ({ type: "set-location", key, location: null }));
+		} else {
+			await run("location", () => ({ type: "set-location", key, location: loc }));
+		}
+	}
 	if (args.done !== undefined) {
 		await run("done", () =>
 			args.done
@@ -477,7 +474,7 @@ export async function updateTask(
 	}
 
 	if (applied.length === 0 && failed.length === 0) {
-		throw new Error("nothing to update — provide done/text/due/scheduled/start/priority");
+		throw new Error("nothing to update — provide done/text/due/scheduled/start/priority/location");
 	}
 	return { ok: failed.length === 0, id: args.id, applied, failed };
 }

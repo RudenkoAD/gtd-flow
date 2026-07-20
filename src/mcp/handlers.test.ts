@@ -225,11 +225,53 @@ describe("MCP handlers", () => {
 		}
 	});
 
-	it("update_task: location пока не поддержан — явная ошибка (не тихое игнорирование)", async () => {
+	it("update_task: location задаёт 📍 через интент ядра", async () => {
 		const s = await session(root);
-		await expect(updateTask(s, { id: "aaa111", location: "Дом" })).rejects.toThrow(
-			/location updates are not supported yet/,
-		);
+		const res = (await updateTask(s, { id: "aaa111", location: "Дом" })) as any;
+		expect(res.ok).toBe(true);
+		expect(res.applied).toEqual(["location"]);
+		const content = await readVaultFile(root, "GTD/Inbox.md");
+		expect(content).toContain("- [ ] Задача с айди 🆔 aaa111 📍 Дом");
+	});
+
+	it("update_task: location null и пустая строка снимают 📍", async () => {
+		const s = await session(root);
+		await updateTask(s, { id: "aaa111", location: "Дом" });
+
+		// null снимает поле
+		let s2 = await session(root);
+		let res = (await updateTask(s2, { id: "aaa111", location: null })) as any;
+		expect(res.ok).toBe(true);
+		expect(res.applied).toEqual(["location:clear"]);
+		let content = await readVaultFile(root, "GTD/Inbox.md");
+		expect(content).toContain("- [ ] Задача с айди 🆔 aaa111");
+		expect(content).not.toContain("📍");
+
+		// пустая/пробельная строка эквивалентна null
+		await updateTask(await session(root), { id: "aaa111", location: "Офис" });
+		s2 = await session(root);
+		res = (await updateTask(s2, { id: "aaa111", location: "   " })) as any;
+		expect(res.ok).toBe(true);
+		expect(res.applied).toEqual(["location:clear"]);
+		content = await readVaultFile(root, "GTD/Inbox.md");
+		expect(content).not.toContain("📍");
+	});
+
+	it("update_task: location в комбинированной правке id-less задачи (autoInjectId по умолчанию)", async () => {
+		const s = await session(root);
+		const inbox = listTasks(s, { namespace: "Общее", view: "inbox" }) as any;
+		const target = inbox.tasks.find((t: any) => t.description === "Общая задача без даты");
+		const res = (await updateTask(s, {
+			id: target.id,
+			text: "Задача с местом",
+			location: "Кафе на углу",
+		})) as any;
+		expect(res.ok).toBe(true);
+		expect(res.failed).toHaveLength(0);
+		expect(res.applied).toEqual(expect.arrayContaining(["text", "location"]));
+		const content = await readVaultFile(root, "GTD/Inbox.md");
+		expect(content).toContain("Задача с местом");
+		expect(content).toContain("📍 Кафе на углу");
 	});
 
 	// --- delete_task ---

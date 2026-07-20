@@ -259,7 +259,7 @@ every week on saturday,sunday: выходной
 | `gtd_overview` | Пространства (имя, корень) и счётчики: входящие / отложенные / доски / проекты / события. |
 | `list_tasks` | Задачи с фильтрами `namespace`, `view` (`inbox`/`tickler`/`board`/`project`/`all`), `board`, `project`, `include_done`. |
 | `add_task` | Новая задача во «Входящие» пространства (текст может содержать поля-эмодзи; опц. `due`/`scheduled`/`start`). |
-| `update_task` | Правка по id (🆔 или content-key): `done`, `text`, даты (строка — задать, `null` — снять), `priority`. |
+| `update_task` | Правка по id (🆔 или content-key): `done`, `text`, даты (строка — задать, `null` — снять), `priority`, `location` (📍: строка — задать, `null`/пустая — снять). |
 | `delete_task` | Удалить строку задачи (по умолчанию вместе с вложенным блоком). |
 | `move_card` | Перенести карточку в колонку доски (в конец колонки). |
 | `list_events` | Развёрнутые вхождения календаря в диапазоне `from`..`to` (серии + одноразовые, с местом 📍). |

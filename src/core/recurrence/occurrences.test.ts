@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { weeksBetween } from "./dateMath";
+import { toEpochDays, weeksBetween } from "./dateMath";
 import type { Rule } from "./grammar";
 import { DEFAULT_OCCURRENCE_CAP, expandOccurrences } from "./occurrences";
 
@@ -256,6 +256,80 @@ describe("expandOccurrences — weekly n>1 чётность недель (яко
 			"2026-07-31", // пт той же недели
 			"2026-08-11",
 			"2026-08-14",
+		]);
+	});
+});
+
+describe("expandOccurrences — фаза daily/weekly-без-byDay при n>1", () => {
+	it("daily n>1 с from: фаза от from — 07-15, 07-17, 07-19 (не 07-16)", () => {
+		const r: Rule = { freq: "daily", n: 2, from: "2026-07-15" };
+		expect(expandOccurrences(r, "2026-07-10", "2026-07-20")).toEqual([
+			"2026-07-15",
+			"2026-07-17",
+			"2026-07-19",
+		]);
+	});
+
+	it("daily n>1 с from: фаза НЕ зависит от начала видимого диапазона", () => {
+		const r: Rule = { freq: "daily", n: 3, from: "2026-07-15" };
+		// перекрывающиеся диапазоны дают одинаковые даты в пересечении
+		expect(expandOccurrences(r, "2026-07-01", "2026-07-31")).toEqual([
+			"2026-07-15",
+			"2026-07-18",
+			"2026-07-21",
+			"2026-07-24",
+			"2026-07-27",
+			"2026-07-30",
+		]);
+		expect(expandOccurrences(r, "2026-07-16", "2026-07-31")).toEqual([
+			"2026-07-18",
+			"2026-07-21",
+			"2026-07-24",
+			"2026-07-27",
+			"2026-07-30",
+		]);
+	});
+
+	it("daily n>1 БЕЗ from: эпоха-фолбэк держит фазу стабильной при листании", () => {
+		const r: Rule = { freq: "daily", n: 3 };
+		const a = expandOccurrences(r, "2026-07-01", "2026-07-31");
+		const b = expandOccurrences(r, "2026-07-02", "2026-07-31");
+		const c = expandOccurrences(r, "2026-06-15", "2026-07-31");
+		// пересечение диапазонов даёт ОДНИ И ТЕ ЖЕ даты — серия не «прыгает»
+		expect(b).toEqual(a.filter((d) => d >= "2026-07-02"));
+		expect(a).toEqual(c.filter((d) => d >= "2026-07-01"));
+		// и это ровно каждые 3 дня
+		expect(toEpochDays(a[1]!) - toEpochDays(a[0]!)).toBe(3);
+	});
+
+	it("weekly без byDay, n>1 с from: фаза от from — 07-15, 07-29, 08-12", () => {
+		const r: Rule = { freq: "weekly", n: 2, byDay: [], from: "2026-07-15" };
+		expect(expandOccurrences(r, "2026-07-01", "2026-08-15")).toEqual([
+			"2026-07-15",
+			"2026-07-29",
+			"2026-08-12",
+		]);
+		// начало диапазона после from — та же фаза
+		expect(expandOccurrences(r, "2026-07-16", "2026-08-15")).toEqual([
+			"2026-07-29",
+			"2026-08-12",
+		]);
+	});
+
+	it("weekly без byDay, n>1 БЕЗ from: эпоха-фолбэк держит фазу стабильной", () => {
+		const r: Rule = { freq: "weekly", n: 2, byDay: [] };
+		const a = expandOccurrences(r, "2026-07-01", "2026-08-31");
+		const b = expandOccurrences(r, "2026-07-08", "2026-08-31");
+		expect(b).toEqual(a.filter((d) => d >= "2026-07-08"));
+		expect(toEpochDays(a[1]!) - toEpochDays(a[0]!)).toBe(14);
+	});
+
+	it("daily n=1: разворот прежний — каждое число диапазона (обратная совместимость)", () => {
+		const r: Rule = { freq: "daily", n: 1 };
+		expect(expandOccurrences(r, "2026-07-15", "2026-07-17")).toEqual([
+			"2026-07-15",
+			"2026-07-16",
+			"2026-07-17",
 		]);
 	});
 });

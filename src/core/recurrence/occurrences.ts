@@ -13,18 +13,20 @@ import { nextOccurrence, snapWeekAnchor } from "./nextOccurrence";
 export const DEFAULT_OCCURRENCE_CAP = 500;
 
 /**
- * Фолбэк-якорь чётности недель для weekly-правил с n>1 и byDay БЕЗ собственного
- * якоря (ни rule.from, ни базовой даты серии). Разворот вхождений — вид: фаза
- * недель ОБЯЗАНА быть стабильной (не зависеть от начала видимого диапазона),
- * иначе серия «прыгала» бы по неделям при листании календаря и выглядела
- * еженедельной. Привязываемся к фиксированному понедельнику эпохи — фаза
- * глобально детерминирована и задокументирована (конкретная неделя произвольна;
+ * Фолбэк-якорь фазы для интервальных правил с n>1 БЕЗ собственного якоря
+ * (ни rule.from, ни базовой даты серии): weekly с byDay (чётность недель),
+ * daily и weekly без byDay (фаза шага в днях). Разворот вхождений — вид: фаза
+ * ОБЯЗАНА быть стабильной (не зависеть от начала видимого диапазона),
+ * иначе серия «прыгала» бы при листании календаря и выглядела
+ * ежедневной/еженедельной. Привязываемся к фиксированному понедельнику эпохи —
+ * фаза глобально детерминирована и задокументирована (конкретный день произволен;
  * новые серии из UI получают явный 'from', см. eventSeries.withSeriesAnchor).
  */
 const WEEK_PARITY_EPOCH: IsoDate = "1970-01-05"; // понедельник
 
-/** Эффективный якорь для разворота: явный from/base серии, иначе — для weekly
- *  n>1 с byDay стабильный эпоха-фолбэк (не даёт фазе зависеть от диапазона).
+/** Эффективный якорь для разворота: явный from/base серии, иначе — для
+ *  интервальных правил с n>1 (weekly с byDay, daily, weekly без byDay)
+ *  стабильный эпоха-фолбэк (не даёт фазе зависеть от диапазона).
  *  Итог для weekly с byDay проходит через ту же нормализацию фазы, что и ядро
  *  (snapWeekAnchor): якорь → неделя первого вхождения. Для эпоха-фолбэка снап
  *  внутри той же недели (понедельник → первый день byDay) фазу не меняет —
@@ -33,8 +35,11 @@ function effectiveAnchor(rule: Rule, anchor: IsoDate | undefined): IsoDate | und
 	let anc: IsoDate | undefined;
 	if (rule.from !== undefined) anc = rule.from;
 	else if (anchor !== undefined) anc = anchor;
-	else if (rule.freq === "weekly" && rule.byDay.length > 0 && rule.n > 1) anc = WEEK_PARITY_EPOCH;
-	else return undefined;
+	else if ((rule.freq === "weekly" || rule.freq === "daily") && rule.n > 1) {
+		// daily n>1 и weekly n>1 (с byDay и без): без якоря фаза зависела бы от
+		// fromIso−1 — тот же эпоха-фолбэк держит её детерминированной
+		anc = WEEK_PARITY_EPOCH;
+	} else return undefined;
 	if (rule.freq === "weekly" && rule.byDay.length > 0) return snapWeekAnchor(anc, rule.byDay);
 	return anc;
 }

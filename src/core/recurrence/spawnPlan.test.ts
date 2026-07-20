@@ -263,6 +263,28 @@ describe("planSpawns — broken templates", () => {
 		expect(res.spawns).toEqual([]);
 		expect(res.cursorAdvances).toEqual([{ templateId: "rev-prio", newCursor: "2026-08-15" }]);
 	});
+	it("daily n>1 с from: курсор вне фазы пере-снапывается на ближайший член серии", () => {
+		// 'every 2 days from 2026-07-15': члены 07-15, 07-17, 07-19…; курсор 07-18
+		// структурно «любой день», но фазово чужой — снап на 07-19 без спавна
+		const t = makeTemplate({
+			recurrence: "every 2 days from 2026-07-15",
+			nextSpawn: "2026-07-18",
+			rawLine:
+				"- [ ] Water plants 🔁 every 2 days from 2026-07-15 🆔 rev-prio 🔜 2026-07-18",
+		});
+		const res = plan([tpl(t)], { today: "2026-07-16" });
+		expect(res.spawns).toEqual([]);
+		expect(res.cursorAdvances).toEqual([{ templateId: "rev-prio", newCursor: "2026-07-19" }]);
+		// курсор В фазе — обычный ход без пере-снапа
+		const ok = makeTemplate({
+			recurrence: "every 2 days from 2026-07-15",
+			nextSpawn: "2026-07-17",
+			rawLine:
+				"- [ ] Water plants 🔁 every 2 days from 2026-07-15 🆔 rev-prio 🔜 2026-07-17",
+		});
+		const res2 = plan([tpl(ok)], { today: "2026-07-17" });
+		expect(res2.spawns.map((s) => s.occurrence)).toEqual(["2026-07-17"]);
+	});
 });
 
 describe("planSpawns — instance line construction", () => {

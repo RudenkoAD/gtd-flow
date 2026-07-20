@@ -8,7 +8,7 @@
 	import EventChip from "./EventChip.svelte";
 	import EventOccurrenceChip from "./EventOccurrenceChip.svelte";
 	import QuickAddKindSwitch from "./QuickAddKindSwitch.svelte";
-	import type { CalendarWritePort, EventOccurrence, PlacedEvent } from "./calendarLogic";
+	import { mergeDayItems, type CalendarWritePort, type EventOccurrence, type PlacedEvent } from "./calendarLogic";
 
 	let {
 		date,
@@ -74,6 +74,11 @@
 		/** Смена переключателя — родитель сохраняет выбор в настройки (persist). */
 		onQuickAddKindChange?: ((kind: QuickAddKind) => void) | null;
 	} = $props();
+
+	// Задачи и вхождения событий — в ОДНОМ списке с общей сортировкой по времени
+	// (без группировки «сначала задачи, потом события»): элементы без времени —
+	// первыми, затем по возрастанию времени, при равенстве событие раньше задачи.
+	const dayItems = $derived(mergeDayItems(events, eventOccurrences));
 
 	let cellEl: HTMLElement | null = $state(null);
 	let adding = $state(false);
@@ -187,12 +192,11 @@
 		{label ?? Number(date.slice(8, 10))}
 	</div>
 	<div class="gtd-cal-events">
-		{#each events as ev (ev.task.key)}
-			<EventChip {ev} {today} {dnd} {dispatcher} {app} {settings} {menuPorts} />
-		{/each}
-		{#each eventOccurrences as occ (occ.task.key)}
-			{#if vault !== null}
-				<EventOccurrenceChip {occ} {app} {dispatcher} {vault} />
+		{#each dayItems as it (it.kind === "task" ? "t:" + it.ev.task.key : "e:" + it.occ.task.key)}
+			{#if it.kind === "task"}
+				<EventChip ev={it.ev} {today} {dnd} {dispatcher} {app} {settings} {menuPorts} />
+			{:else if vault !== null}
+				<EventOccurrenceChip occ={it.occ} {app} {dispatcher} {vault} />
 			{/if}
 		{/each}
 		{#if adding}

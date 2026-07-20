@@ -365,6 +365,45 @@ export function expandEventOccurrences(
 }
 
 /**
+ * Единый элемент дня агенды/ячейки: задача (чип задачи) ИЛИ вхождение события
+ * (чип события) — чтобы рендерить оба типа из ОДНОГО отсортированного списка.
+ */
+export type AgendaDayItem =
+	| { kind: "task"; ev: PlacedEvent }
+	| { kind: "event"; occ: EventOccurrence };
+
+/**
+ * Слить задачи дня (placeEvents) и вхождения событий дня (expandEventOccurrences)
+ * в ЕДИНЫЙ список с общей сортировкой по времени — без группировки по типу
+ * (баг: «○ 13:45 задача» стояла выше «◇ 09:00 события»). Инвариант:
+ *  • элементы без времени / «на весь день» — ПЕРВЫМИ (событие перед задачей);
+ *  • затем всё остальное по возрастанию времени начала, НЕЗАВИСИМО от типа;
+ *  • при равном времени — событие перед задачей, далее стабильно (исходный
+ *    порядок внутри каждого списка: у задач — приоритет/описание placeEvents,
+ *    у событий — название expandEventOccurrences).
+ * Время задачи — поля-размещения (placedTime); "HH:mm" лексикографика ==
+ * хронология. sort стабилен (Node ≥ 11) — секундарные ключи входов сохраняются.
+ */
+export function mergeDayItems(
+	events: readonly PlacedEvent[],
+	occurrences: readonly EventOccurrence[],
+): AgendaDayItem[] {
+	// typeRank: событие (0) раньше задачи (1) при равенстве времени — «событие перед задачей»
+	const rows: { item: AgendaDayItem; time: string | null; typeRank: number }[] = [];
+	for (const occ of occurrences) rows.push({ item: { kind: "event", occ }, time: occ.time, typeRank: 0 });
+	for (const ev of events)
+		rows.push({ item: { kind: "task", ev }, time: placedTime(ev.task, ev.field), typeRank: 1 });
+	rows.sort((a, b) => {
+		const an = a.time === null;
+		const bn = b.time === null;
+		if (an !== bn) return an ? -1 : 1; // без времени — вперёд группой
+		if (!an && a.time !== b.time) return a.time! < b.time! ? -1 : 1; // оба со временем — asc
+		return a.typeRank - b.typeRank; // равенство (оба без времени / равное время): событие раньше, далее стабильно
+	});
+	return rows.map((r) => r.item);
+}
+
+/**
  * Поле для drop на день (ТЗ §8): задача уже видна в календаре — двигаем ЕЁ
  * поле (то, по которому она размещена placement'ом); иначе первое из
  * placement; пустой placement — due.

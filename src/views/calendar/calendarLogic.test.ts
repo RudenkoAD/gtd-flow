@@ -13,6 +13,7 @@ import {
 	eventTargetForNamespace,
 	expandEventOccurrences,
 	formatTimeRange,
+	mergeDayItems,
 	monthGrid,
 	monthStart,
 	monthTitle,
@@ -564,6 +565,55 @@ describe("expandEventOccurrences (§события)", () => {
 		const noLoc = event({ recurrence: "every day" });
 		const no = expandEventOccurrences([noLoc], "2026-07-15", "2026-07-15").get("2026-07-15")![0]!;
 		expect(no.location).toBeNull();
+	});
+});
+
+describe("mergeDayItems — единый порядок задач и событий дня по времени (без группировки по типу)", () => {
+	function event(overrides: Partial<Task> = {}): Task {
+		return makeTask({ container: "events", ...overrides });
+	}
+	const DATE = "2026-07-20";
+	/** Метка элемента: тип + название/описание — для проверки точного порядка. */
+	const label = (it: ReturnType<typeof mergeDayItems>[number]): string =>
+		it.kind === "task" ? `task:${it.ev.task.description}` : `event:${it.occ.title}`;
+
+	it("смешанный день: без времени первыми (событие раньше задачи), затем по времени asc независимо от типа", () => {
+		// репорт пользователя: «○ 13:45 задача» стояла ВЫШЕ «◇ 09:00 события» —
+		// теперь задача идёт на своём времени, а не в общей группе задач
+		const taskLate = makeTask({ due: DATE, dueTime: "13:45", description: "Физиотерапевт" });
+		const taskUntimed = makeTask({ due: DATE, description: "Позвонить" });
+		const tasks = placeEvents([taskLate, taskUntimed], PLACEMENT).get(DATE)!;
+
+		const ev9 = event({ description: "завтрак", recurrence: "every day at 09:00" });
+		const ev10 = event({ description: "созвон", recurrence: "every day at 10:00" });
+		const evAllDay = event({ description: "день рождения", recurrence: "every day" });
+		const occ = expandEventOccurrences([ev9, ev10, evAllDay], DATE, DATE).get(DATE)!;
+
+		expect(mergeDayItems(tasks, occ).map(label)).toEqual([
+			"event:день рождения", // без времени / весь день — первым, событие раньше задачи
+			"task:Позвонить", // без времени — после события
+			"event:завтрак", // 09:00
+			"event:созвон", // 10:00
+			"task:Физиотерапевт", // 13:45 — по времени, а не в конце (был баг)
+		]);
+	});
+
+	it("равное время — событие перед задачей", () => {
+		const task = makeTask({ due: DATE, dueTime: "10:00", description: "задача-10" });
+		const tasks = placeEvents([task], PLACEMENT).get(DATE)!;
+		const ev = event({ description: "событие-10", recurrence: "every day at 10:00" });
+		const occ = expandEventOccurrences([ev], DATE, DATE).get(DATE)!;
+		expect(mergeDayItems(tasks, occ).map((it) => it.kind)).toEqual(["event", "task"]);
+	});
+
+	it("пустые входы — пусто; одиночные списки сохраняют свой внутренний порядок", () => {
+		expect(mergeDayItems([], [])).toEqual([]);
+		const t1 = makeTask({ due: DATE, dueTime: "08:00" });
+		const t2 = makeTask({ due: DATE, dueTime: "09:00" });
+		const onlyTasks = mergeDayItems(placeEvents([t2, t1], PLACEMENT).get(DATE)!, []);
+		expect(
+			onlyTasks.map((it) => (it.kind === "task" ? placedTime(it.ev.task, it.ev.field) : null)),
+		).toEqual(["08:00", "09:00"]);
 	});
 });
 

@@ -21,6 +21,7 @@
 	let {
 		days,
 		today,
+		nowMinutes = null,
 		byDay,
 		eventsByDay = new Map(),
 		dnd,
@@ -43,6 +44,9 @@
 		/** Колонки сетки: 1 (день) или 3 (три дня), подряд. */
 		days: IsoDate[];
 		today: IsoDate;
+		/** Минуты от полуночи для линии текущего времени (только в колонке today);
+		 *  null — линию не рисовать (§сегодня). */
+		nowMinutes?: number | null;
 		byDay: Map<IsoDate, PlacedEvent[]>;
 		/** Виртуальные вхождения серий-событий по дням (§события). */
 		eventsByDay?: Map<IsoDate, EventOccurrence[]>;
@@ -201,6 +205,7 @@
 				<TimeGridCol
 					date={d.date}
 					{today}
+					{nowMinutes}
 					blocks={d.blocks}
 					eventBlocks={eventDayLayouts[i]?.blocks ?? []}
 					statusColor={dayStatusColor(d.date)?.color ?? null}

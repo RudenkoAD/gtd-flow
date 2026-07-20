@@ -61,7 +61,7 @@
 		withSeriesAnchor,
 	} from "./eventSeries";
 	import { EventSeriesModal } from "./EventSeriesModal";
-	import { dropTimeEnd, preservedTimeEnd } from "./timeGrid";
+	import { dropTimeEnd, minutesOfDay, preservedTimeEnd } from "./timeGrid";
 	import { createPaintController, type PaintPreview } from "./dayStatusPaint";
 	import { EMPTY_DAY_STATUS_MODEL, statusForDate, type DayStatusModel } from "../../core/daystatus/dayStatus";
 	import type { DayStatusPort } from "../../services/DayStatusService";
@@ -116,6 +116,17 @@
 	// одноразовый снимок при инициализации намеренный
 	// svelte-ignore state_referenced_locally
 	const today = taskStore.today;
+
+	// Линия текущего времени (§сегодня): локальные минуты от полуночи, пересчёт раз
+	// в минуту. ОДИН интервал на весь вид — общий для тайм-сетки (горизонталь в
+	// колонке сегодня) и агенды (маркер ● HH:mm ———). Смену суток ловит today-стор
+	// (ObsidianClock): колонка/секция «сегодня» переезжает сама, nowMin к 00:00
+	// сбрасывается этим же минутным тиком.
+	let nowMin = $state(minutesOfDay(new Date()));
+	$effect(() => {
+		const id = window.setInterval(() => (nowMin = minutesOfDay(new Date())), 60_000);
+		return () => window.clearInterval(id);
+	});
 
 	// Фильтр пространства: реактивный derive из активного namespace + список корней.
 	// Задачи/события календаря режутся по нему; смена активного пере-рендерит вид
@@ -551,6 +562,7 @@
 					label={agendaLabel(date)}
 					events={byDay.get(date) ?? []}
 					eventOccurrences={eventsByDay.get(date) ?? []}
+					nowMinutes={nowMin}
 					{dnd}
 					{dispatcher}
 					{app}
@@ -573,6 +585,7 @@
 		<TimeGrid
 			days={agendaDays(range.from, timeGridDays)}
 			today={$today}
+			nowMinutes={nowMin}
 			{byDay}
 			{eventsByDay}
 			{dnd}

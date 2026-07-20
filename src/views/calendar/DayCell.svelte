@@ -8,13 +8,21 @@
 	import EventChip from "./EventChip.svelte";
 	import EventOccurrenceChip from "./EventOccurrenceChip.svelte";
 	import QuickAddKindSwitch from "./QuickAddKindSwitch.svelte";
-	import { mergeDayItems, type CalendarWritePort, type EventOccurrence, type PlacedEvent } from "./calendarLogic";
+	import {
+		mergeDayItems,
+		nowMarkerIndex,
+		type CalendarWritePort,
+		type EventOccurrence,
+		type PlacedEvent,
+	} from "./calendarLogic";
+	import { minutesToTime } from "./timeGrid";
 
 	let {
 		date,
 		today,
 		events,
 		eventOccurrences = [],
+		nowMinutes = null,
 		dnd,
 		dispatcher,
 		app,
@@ -39,6 +47,9 @@
 		events: PlacedEvent[];
 		/** Виртуальные вхождения серий-событий на этот день (§события). */
 		eventOccurrences?: EventOccurrence[];
+		/** Минуты от полуночи для маркера «сейчас» (● HH:mm ———) в агенде; рисуется
+		 *  только когда date === today. null — маркера нет (месяц/неделя, §сегодня). */
+		nowMinutes?: number | null;
 		dnd: DndPort | null;
 		dispatcher: IntentDispatcher;
 		app: App;
@@ -79,6 +90,16 @@
 	// (без группировки «сначала задачи, потом события»): элементы без времени —
 	// первыми, затем по возрастанию времени, при равенстве событие раньше задачи.
 	const dayItems = $derived(mergeDayItems(events, eventOccurrences));
+
+	// Маркер «сейчас» (● HH:mm ———) — только в секции СЕГОДНЯШНЕГО дня агенды
+	// (nowMinutes передаётся лишь оттуда). Индекс вставки в отсортированный список:
+	// после начавшихся до «сейчас» и без-времени, перед первым временем >= сейчас.
+	// null — маркера нет (не сегодня либо месяц/неделя, где nowMinutes === null).
+	const markerAt = $derived(
+		nowMinutes !== null && date === today ? nowMarkerIndex(dayItems, nowMinutes) : null,
+	);
+	/** Подпись маркера «HH:mm» ("" когда маркера нет — narrowing для шаблона). */
+	const nowText = $derived(nowMinutes === null ? "" : minutesToTime(nowMinutes));
 
 	let cellEl: HTMLElement | null = $state(null);
 	let adding = $state(false);
@@ -166,6 +187,14 @@
 	}
 </script>
 
+<!-- Разделитель «сейчас»: ● HH:mm ———, между элементами дня «сегодня» (§сегодня). -->
+{#snippet nowLine()}
+	<div class="gtd-now" aria-hidden="true">
+		<span class="gtd-now-label">{nowText}</span>
+		<span class="gtd-now-rule"></span>
+	</div>
+{/snippet}
+
 <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
 <div
 	class="gtd-cal-cell"
@@ -192,13 +221,16 @@
 		{label ?? Number(date.slice(8, 10))}
 	</div>
 	<div class="gtd-cal-events">
-		{#each dayItems as it (it.kind === "task" ? "t:" + it.ev.task.key : "e:" + it.occ.task.key)}
+		{#each dayItems as it, i (it.kind === "task" ? "t:" + it.ev.task.key : "e:" + it.occ.task.key)}
+			{#if markerAt === i}{@render nowLine()}{/if}
 			{#if it.kind === "task"}
 				<EventChip ev={it.ev} {today} {dnd} {dispatcher} {app} {settings} {menuPorts} />
 			{:else if vault !== null}
 				<EventOccurrenceChip occ={it.occ} {app} {dispatcher} {vault} />
 			{/if}
 		{/each}
+		<!-- маркер под всеми элементами (индекс == длине) и в пустой сегодняшний день -->
+		{#if markerAt !== null && markerAt >= dayItems.length}{@render nowLine()}{/if}
 		{#if adding}
 			<div class="gtd-cal-quickadd-wrap" bind:this={addWrap}>
 				<input
@@ -320,6 +352,36 @@
 		flex-direction: column;
 		gap: 2px;
 		overflow-y: auto;
+	}
+	/* Разделитель «сейчас» в агенде: ● HH:mm ——— между элементами дня. Тонкая
+	   линия (2px) акцентным красным темы (--color-red, фолбэк interactive-accent). */
+	.gtd-now {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		margin: 1px 0;
+	}
+	.gtd-now::before {
+		content: "";
+		flex: none;
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		background: var(--color-red, var(--interactive-accent));
+	}
+	.gtd-now-label {
+		flex: none;
+		font-size: var(--font-ui-smaller, 0.75em);
+		font-variant-numeric: tabular-nums;
+		line-height: 1;
+		font-weight: 600;
+		color: var(--color-red, var(--interactive-accent));
+	}
+	.gtd-now-rule {
+		flex: 1 1 auto;
+		height: 2px;
+		border-radius: 1px;
+		background: var(--color-red, var(--interactive-accent));
 	}
 	.gtd-cal-quickadd-wrap {
 		display: flex;

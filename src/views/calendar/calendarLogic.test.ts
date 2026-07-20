@@ -5,6 +5,7 @@ import { ALL_NS, DEFAULT_NS, type NamespaceDef } from "../../core/namespace/name
 import {
 	AGENDA_PAGE_DAYS,
 	agendaDays,
+	agendaItemTime,
 	agendaLabel,
 	agendaTimeLabel,
 	appendLine,
@@ -20,6 +21,7 @@ import {
 	nextAgenda,
 	nextMonth,
 	nextWeek,
+	nowMarkerIndex,
 	openTasks,
 	parseTimeRange,
 	placeEvents,
@@ -614,6 +616,61 @@ describe("mergeDayItems — единый порядок задач и событ
 		expect(
 			onlyTasks.map((it) => (it.kind === "task" ? placedTime(it.ev.task, it.ev.field) : null)),
 		).toEqual(["08:00", "09:00"]);
+	});
+});
+
+describe("nowMarkerIndex / agendaItemTime — маркер «сейчас» в агенде (§сегодня)", () => {
+	const DATE = "2026-07-20";
+	function event(overrides: Partial<Task> = {}): Task {
+		return makeTask({ container: "events", ...overrides });
+	}
+	/** День «сегодня»: без-времени событие + событие 09:00 + задача 13:45.
+	 *  mergeDayItems → [event(др, нет времени), event(завтрак 09:00), task(врач 13:45)]. */
+	function build(): ReturnType<typeof mergeDayItems> {
+		const allDay = event({ description: "др", recurrence: "every day" });
+		const ev9 = event({ description: "завтрак", recurrence: "every day at 09:00" });
+		const task1345 = makeTask({ due: DATE, dueTime: "13:45", description: "врач" });
+		const occ = expandEventOccurrences([allDay, ev9], DATE, DATE).get(DATE)!;
+		const tasks = placeEvents([task1345], PLACEMENT).get(DATE)!;
+		return mergeDayItems(tasks, occ);
+	}
+
+	it("agendaItemTime: задача → время поля, событие → время вхождения, без времени → null", () => {
+		const items = build();
+		expect(items.map(agendaItemTime)).toEqual([null, "09:00", "13:45"]);
+	});
+
+	it("до всех со временем: после без-времени, перед первым таймированным", () => {
+		// 08:00: без-времени (1) выше, 09:00 >= 480 → стоп
+		expect(nowMarkerIndex(build(), 8 * 60)).toBe(1);
+	});
+
+	it("между элементами: после 09:00, перед 13:45", () => {
+		// 10:00: без-времени + 09:00 выше, 13:45 >= 600 → стоп
+		expect(nowMarkerIndex(build(), 10 * 60)).toBe(2);
+	});
+
+	it("после всех: индекс == длине списка (маркер под всеми)", () => {
+		const items = build();
+		expect(items.length).toBe(3);
+		expect(nowMarkerIndex(items, 23 * 60)).toBe(3);
+	});
+
+	it("ровно на времени элемента: элемент уходит ПОД линию (>= сейчас)", () => {
+		// 09:00: событие 09:00 не «строго до» → маркер перед ним (индекс 1)
+		expect(nowMarkerIndex(build(), 9 * 60)).toBe(1);
+	});
+
+	it("пустой день — 0 (одна линия наверху, день видит «сейчас»)", () => {
+		expect(nowMarkerIndex([], 10 * 60)).toBe(0);
+	});
+
+	it("элементы без времени всегда выше линии (даже при nowMinutes 0)", () => {
+		const allDay = event({ description: "др", recurrence: "every day" });
+		const occ = expandEventOccurrences([allDay], DATE, DATE).get(DATE)!;
+		const items = mergeDayItems([], occ);
+		expect(items.length).toBe(1);
+		expect(nowMarkerIndex(items, 0)).toBe(1);
 	});
 });
 

@@ -5,6 +5,8 @@
  * Ноль obsidian/DOM — тестируется в node.
  */
 
+import type { IsoDate } from "../../core/model/Task";
+
 export const MINUTES_PER_DAY = 24 * 60;
 export const GRID_START_MIN = 0;
 export const GRID_END_MIN = MINUTES_PER_DAY;
@@ -39,6 +41,30 @@ export function minutesToTime(min: number): string {
 export function snapMinutes(min: number, step = SNAP_STEP_MIN): number {
 	const snapped = Math.round(min / step) * step;
 	return Math.min(Math.max(snapped, GRID_START_MIN), GRID_END_MIN - step);
+}
+
+// ---------------------------------------------------------------------------
+// Линия текущего времени (горизонталь «● HH:mm ———» в колонке сегодня, §сегодня)
+// ---------------------------------------------------------------------------
+
+/** Локальные минуты от полуночи по часам Date — позиция линии «сейчас».
+ *  Секунды отбрасываем: линия двигается по минутам (пересчёт раз в минуту). */
+export function minutesOfDay(d: Date): number {
+	return d.getHours() * 60 + d.getMinutes();
+}
+
+/** Верх линии «сейчас» (и позиция по времени вообще) в процентах высоты сетки
+ *  суток: минуты от полуночи → top в % — ТОТ ЖЕ маппинг, что у topPct блоков
+ *  (layoutDay). Клампится в [0, 100] — защита от времени вне суток. */
+export function timeTopPct(minutes: number): number {
+	const clamped = Math.min(Math.max(minutes, 0), MINUTES_PER_DAY);
+	return (clamped / MINUTES_PER_DAY) * 100;
+}
+
+/** Рисовать ли линию «сейчас» в колонке даты: только колонка СЕГОДНЯШНЕГО дня и
+ *  валидное время (nowMinutes !== null). В другие дни линии нет (§сегодня). */
+export function showNowLine(date: IsoDate, today: IsoDate, nowMinutes: number | null): boolean {
+	return nowMinutes !== null && date === today;
 }
 
 /** Вертикальное смещение внутри сетки высотой gridHeight → минуты [0, 1439]. */

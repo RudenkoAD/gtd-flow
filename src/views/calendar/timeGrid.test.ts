@@ -9,11 +9,14 @@ import {
 	dropTimeEnd,
 	layoutDay,
 	minutesFromOffsetY,
+	minutesOfDay,
 	minutesToTime,
 	preservedTimeEnd,
 	resizeEndMin,
+	showNowLine,
 	snapMinutes,
 	timeToMinutes,
+	timeTopPct,
 	type TimedEventInput,
 } from "./timeGrid";
 
@@ -102,6 +105,36 @@ describe("minutesFromOffsetY", () => {
 	it("вырожденная высота — 0", () => {
 		expect(minutesFromOffsetY(100, 0)).toBe(0);
 		expect(minutesFromOffsetY(100, -5)).toBe(0);
+	});
+});
+
+describe("линия текущего времени (§сегодня)", () => {
+	it("minutesOfDay — локальные часы:минуты в минуты от полуночи (секунды отброшены)", () => {
+		expect(minutesOfDay(new Date(2026, 6, 20, 0, 0, 0))).toBe(0);
+		expect(minutesOfDay(new Date(2026, 6, 20, 8, 30, 45))).toBe(510);
+		expect(minutesOfDay(new Date(2026, 6, 20, 14, 30, 0))).toBe(870);
+		expect(minutesOfDay(new Date(2026, 6, 20, 23, 59, 59))).toBe(1439);
+	});
+
+	it("timeTopPct — минуты→% высоты сетки, тот же маппинг, что у topPct блоков", () => {
+		expect(timeTopPct(0)).toBe(0);
+		expect(timeTopPct(720)).toBe(50); // полдень — середина суток
+		expect(timeTopPct(540)).toBe(37.5); // 09:00 == topPct блока в 09:00
+		expect(timeTopPct(MINUTES_PER_DAY)).toBe(100);
+	});
+
+	it("timeTopPct — кламп вне суток в [0,100]", () => {
+		expect(timeTopPct(-30)).toBe(0);
+		expect(timeTopPct(MINUTES_PER_DAY + 100)).toBe(100);
+	});
+
+	it("showNowLine — линия только в колонке сегодня и при валидном времени", () => {
+		expect(showNowLine("2026-07-20", "2026-07-20", 870)).toBe(true);
+		// не сегодня → нет линии
+		expect(showNowLine("2026-07-19", "2026-07-20", 870)).toBe(false);
+		expect(showNowLine("2026-07-21", "2026-07-20", 870)).toBe(false);
+		// нет времени (null) → нет линии даже в колонке сегодня
+		expect(showNowLine("2026-07-20", "2026-07-20", null)).toBe(false);
 	});
 });
 

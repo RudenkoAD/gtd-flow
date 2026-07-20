@@ -15,12 +15,14 @@
 		minutesFromOffsetY,
 		minutesToTime,
 		snapMinutes,
+		timeTopPct,
 		type TimedBlock,
 	} from "./timeGrid";
 
 	let {
 		date,
 		today,
+		nowMinutes = null,
 		blocks,
 		eventBlocks = [],
 		statusColor = null,
@@ -40,6 +42,9 @@
 	}: {
 		date: IsoDate;
 		today: IsoDate;
+		/** Минуты от полуночи для линии текущего времени; рисуется только когда
+		 *  date === today и nowMinutes !== null. null — линии нет (§сегодня). */
+		nowMinutes?: number | null;
 		/** Блоки со временем этого дня (раскладку делает родитель через layoutDay). */
 		blocks: { block: TimedBlock; ev: PlacedEvent }[];
 		/** Виртуальные блоки серий-событий со временем (§события). */
@@ -305,6 +310,14 @@
 			<EventOccurrenceChip occ={eb.occ} block={eb.block} {app} {dispatcher} {vault} {dnd} />
 		{/if}
 	{/each}
+	{#if nowMinutes !== null && date === today}
+		<!-- Горизонталь текущего времени (● HH:mm ———), только колонка сегодня.
+		     Оверлей поверх блоков, но pointer-events:none — не мешает кликам/жестам. -->
+		<div class="gtd-tg-now" style="top:{timeTopPct(nowMinutes)}%" aria-hidden="true">
+			<span class="gtd-tg-now-label">{minutesToTime(nowMinutes)}</span>
+			<span class="gtd-tg-now-rule"></span>
+		</div>
+	{/if}
 	{#if dragging && selFromMin !== null && selToMin !== null}
 		<!-- живое выделение диапазона во время протяжки (pointer-events:none) -->
 		<div
@@ -401,6 +414,44 @@
 	.gtd-tg-quickadd-loc {
 		font-size: var(--font-ui-smaller, 0.8em);
 		color: var(--text-muted);
+	}
+	/* Линия текущего времени: тонкая горизонталь через колонку сегодня, точка +
+	   подпись HH:mm слева (стиль Google Calendar). Оверлей — pointer-events:none,
+	   не перехватывает клики/жесты по блокам и пустому слоту. Цвет — акцентный
+	   красный темы (--color-red), фолбэк на interactive-accent. */
+	.gtd-tg-now {
+		position: absolute;
+		left: 0;
+		right: 0;
+		z-index: 2; /* над блоками, под quickadd-вводом (z:3) — ввод не перекрывается линией */
+		display: flex;
+		align-items: center;
+		gap: 3px;
+		transform: translateY(-50%); /* линия центрируется на пиксельной позиции времени */
+		pointer-events: none;
+	}
+	/* точка-кружок слева от подписи */
+	.gtd-tg-now::before {
+		content: "";
+		flex: none;
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		background: var(--color-red, var(--interactive-accent));
+	}
+	.gtd-tg-now-label {
+		flex: none;
+		font-size: var(--font-ui-smaller, 0.7em);
+		font-variant-numeric: tabular-nums;
+		line-height: 1;
+		color: var(--color-red, var(--interactive-accent));
+		font-weight: 600;
+		white-space: nowrap;
+	}
+	.gtd-tg-now-rule {
+		flex: 1 1 auto;
+		height: 2px;
+		background: var(--color-red, var(--interactive-accent));
 	}
 	.gtd-tg-createsel {
 		position: absolute;

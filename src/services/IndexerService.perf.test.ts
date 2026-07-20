@@ -216,7 +216,7 @@ describe(`перф-смоук: ${FILES} файлов × ${TASKS_PER_FILE} зад
 			tasks: index.all(),
 			today: TODAY,
 			resolveDep: (id) => index.resolveDep(id),
-			settingsBits: defaultInboxConfig(["GTD/Inbox.md"]),
+			settingsBits: defaultInboxConfig(),
 		};
 
 		const t0 = performance.now();

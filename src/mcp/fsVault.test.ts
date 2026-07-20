@@ -58,6 +58,48 @@ describe("FsVault", () => {
 		expect(ok).toBe(true);
 	});
 
+	it("симлинк внутри vault, ведущий наружу, не пробивает песочницу", async () => {
+		// внешняя папка-жертва рядом с vault
+		const outside = path.join(path.dirname(root), `outside-${path.basename(root)}`);
+		await fs.mkdir(outside, { recursive: true });
+		await fs.writeFile(path.join(outside, "secret.md"), "secret\n", "utf8");
+		try {
+			try {
+				await fs.symlink(outside, path.join(root, "link"), "dir");
+			} catch {
+				return; // нет прав на симлинки (Windows CI) — тест не о том
+			}
+			// чтение и запись через симлинк-обход должны быть отвергнуты
+			await expect(vault.processFile("link/secret.md", () => "pwned")).rejects.toThrow(
+				/выходит за пределы/,
+			);
+			await expect(vault.readFile("link/secret.md")).rejects.toThrow(/выходит за пределы/);
+			// ...и файл снаружи не тронут
+			expect(await fs.readFile(path.join(outside, "secret.md"), "utf8")).toBe("secret\n");
+		} finally {
+			await fs.rm(outside, { recursive: true, force: true });
+		}
+	});
+
+	it("vault, сам являющийся симлинком, работает (realpath-корень)", async () => {
+		const linkRoot = path.join(path.dirname(root), `linkroot-${path.basename(root)}`);
+		try {
+			try {
+				await fs.symlink(root, linkRoot, "dir");
+			} catch {
+				return; // нет прав на симлинки
+			}
+			const linked = new FsVault(linkRoot);
+			const ok = await linked.processFile("Note.md", (c) => c + "via-link\n");
+			expect(ok).toBe(true);
+			await expect(linked.processFile("../escape.md", () => "x")).rejects.toThrow(
+				/выходит за пределы/,
+			);
+		} finally {
+			await fs.rm(linkRoot, { force: true });
+		}
+	});
+
 	it("ensureFile создаёт файл и родительские папки, существующий не трогает", async () => {
 		await vault.ensureFile("New/Folder/File.md");
 		expect(await readVaultFile(root, "New/Folder/File.md")).toBe("");

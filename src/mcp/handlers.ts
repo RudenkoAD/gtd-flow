@@ -101,7 +101,7 @@ function queryContext(session: GtdSession, filter: NamespaceFilter): QueryContex
 		tasks: session.allTasks,
 		today: session.today,
 		resolveDep: (id) => index.resolveDep(id),
-		settingsBits: defaultInboxConfig(undefined, session.settings.inboxIncludePlain),
+		settingsBits: defaultInboxConfig(session.settings.inboxIncludePlain),
 		namespace: filter,
 	};
 }
@@ -333,10 +333,9 @@ export async function addTask(
 	}
 
 	const fallback = nsCommonTarget(active, defs, NS_CONVENTION.inbox, session.settings.commonRoot);
+	// nsCommonTarget всегда непуст (пустой commonRoot ⇒ голое имя файла конвенции),
+	// поэтому отдельной проверки target === "" не нужно.
 	const target = captureTargetInNamespace(session.allTasks, active, defs, fallback);
-	if (target === "") {
-		throw new Error("no inbox target — set a non-empty commonRoot for the 'Общее' space");
-	}
 	if (!(await ensureCaptureFileNs(session.vault, target, active, defs))) {
 		throw new Error(`could not prepare inbox file '${target}'`);
 	}

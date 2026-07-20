@@ -133,7 +133,7 @@ export function ticklerStore(
 	return createQueryStore(
 		taskStore,
 		{ kind: "tickler" },
-		{ settingsBits: defaultInboxConfig([]), namespace$ },
+		{ settingsBits: defaultInboxConfig(), namespace$ },
 		debounceMs,
 	);
 }
@@ -149,7 +149,7 @@ export function calendarRangeStore(
 	return createQueryStore(
 		taskStore,
 		{ kind: "calendar-range", fromIso, toIso, placement },
-		{ settingsBits: defaultInboxConfig([]), namespace$ },
+		{ settingsBits: defaultInboxConfig(), namespace$ },
 		debounceMs,
 	);
 }
@@ -164,7 +164,7 @@ export function projectMembersStore(
 	return createQueryStore(
 		taskStore,
 		{ kind: "project-members", path },
-		{ settingsBits: defaultInboxConfig([]) },
+		{ settingsBits: defaultInboxConfig() },
 		debounceMs,
 	);
 }
@@ -177,7 +177,7 @@ export function templatesStore(
 	return createQueryStore(
 		taskStore,
 		{ kind: "all-templates" },
-		{ settingsBits: defaultInboxConfig([]), namespace$ },
+		{ settingsBits: defaultInboxConfig(), namespace$ },
 		debounceMs,
 	);
 }

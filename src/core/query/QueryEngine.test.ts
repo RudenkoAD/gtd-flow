@@ -58,7 +58,7 @@ function ctxOf(tasks: Task[]): QueryContext {
 
 /** Контекст со включённым plain-скоупом (inboxIncludePlain === true) — старое поведение. */
 function ctxOfInclude(tasks: Task[]): QueryContext {
-	return { ...ctxOf(tasks), settingsBits: defaultInboxConfig(undefined, true) };
+	return { ...ctxOf(tasks), settingsBits: defaultInboxConfig(true) };
 }
 
 function inboxKeys(tasks: Task[]): string[] {

@@ -93,4 +93,32 @@ describe("diffFile", () => {
 		const diff = diffFile([], []);
 		expect(diff).toEqual({ added: [], removed: [], changed: [] });
 	});
+
+	it("дубли ключей: правка одного близнеца не теряется", () => {
+		// две одинаковые id-less строки → один key; раньше Map.set ронял первого
+		const twinA = makeTask({ key: "t", lineStart: 0, rawLine: "- [ ] twin" });
+		const twinB = makeTask({ key: "t", lineStart: 1, rawLine: "- [ ] twin" });
+		const twinBEdited = makeTask({
+			key: "t",
+			lineStart: 1,
+			rawLine: "- [ ] twin 📅 2026-08-01",
+			due: "2026-08-01",
+		});
+
+		const diff = diffFile([twinA, twinB], [twinA, twinBEdited]);
+		expect(diff.added).toEqual([]);
+		expect(diff.removed).toEqual([]);
+		expect(diff.changed).toHaveLength(1);
+		expect(diff.changed[0]!.before.rawLine).toBe("- [ ] twin");
+		expect(diff.changed[0]!.after.rawLine).toBe("- [ ] twin 📅 2026-08-01");
+	});
+
+	it("дубли ключей: удаление одного близнеца — removed ровно один", () => {
+		const twinA = makeTask({ key: "t", lineStart: 0 });
+		const twinB = makeTask({ key: "t", lineStart: 1 });
+		const diff = diffFile([twinA, twinB], [twinA]);
+		expect(diff.added).toEqual([]);
+		expect(diff.changed).toEqual([]);
+		expect(diff.removed).toHaveLength(1);
+	});
 });

@@ -269,6 +269,6 @@ function ctx(today: IsoDate): QueryContext {
 		tasks: [],
 		today,
 		resolveDep: () => [],
-		settingsBits: defaultInboxConfig(undefined, false),
+		settingsBits: defaultInboxConfig(false),
 	};
 }

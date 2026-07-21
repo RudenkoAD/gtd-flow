@@ -282,6 +282,72 @@ describe("parseRule — every! (from-completion, §every!)", () => {
 	});
 });
 
+describe("parseRule — «when done» (Tasks-алиас every!, §every!)", () => {
+	it("хвост 'when done' даёт ровно тот же Rule, что префикс every!", () => {
+		expect(ok("every day when done")).toEqual(ok("every! day"));
+		expect(ok("every 3 weeks when done")).toEqual(ok("every! 3 weeks"));
+		expect(ok("every month when done")).toEqual(ok("every! month"));
+		expect(ok("every year when done")).toEqual(ok("every! year"));
+		expect(ok("every weekday when done")).toEqual(ok("every! weekday"));
+	});
+	it("устанавливает fromCompletion: true на всех частотах", () => {
+		expect(ok("every day when done")).toEqual({ freq: "daily", n: 1, fromCompletion: true });
+		expect(ok("every 3 weeks when done")).toEqual({
+			freq: "weekly",
+			n: 3,
+			byDay: [],
+			fromCompletion: true,
+		});
+		expect(ok("every month when done")).toEqual({ freq: "monthly", n: 1, fromCompletion: true });
+	});
+	it("регистронезависим (как остальные ключевые слова грамматики)", () => {
+		expect(ok("EVERY 3 DAYS WHEN DONE")).toEqual({ freq: "daily", n: 3, fromCompletion: true });
+		expect(ok("every Month When Done")).toEqual({ freq: "monthly", n: 1, fromCompletion: true });
+	});
+	it("те же guard'ы, что у every!: byDay-единицы и 'on'-клаузы несовместимы", () => {
+		bad("every week on tuesday when done"); // фиксированный день недели противоречит «от выполнения»
+		bad("every friday when done");
+		bad("every 2 tuesdays when done");
+		bad("every month on the 15th when done"); // день от выполнения — клауза запрещена
+		bad("every year on april 1 when done");
+	});
+	it("совместим с from/until в любом порядке (хвосты свободного порядка)", () => {
+		const expected: Rule = {
+			freq: "daily",
+			n: 3,
+			fromCompletion: true,
+			from: "2026-07-15",
+			until: "2026-12-31",
+		};
+		expect(ok("every 3 days when done from 2026-07-15 until 2026-12-31")).toEqual(expected);
+		expect(ok("every 3 days from 2026-07-15 when done until 2026-12-31")).toEqual(expected);
+		expect(ok("every 3 days from 2026-07-15 until 2026-12-31 when done")).toEqual(expected);
+	});
+	it("every! и 'when done' вместе — не ошибка (один и тот же флаг)", () => {
+		expect(ok("every! 3 days when done")).toEqual({ freq: "daily", n: 3, fromCompletion: true });
+		expect(ok("every! 3 days when done")).toEqual(ok("every! 3 days"));
+	});
+	it("'when' без 'done' и одинокий 'done' — ошибка", () => {
+		bad("every day when");
+		bad("every day when tomorrow");
+		bad("every day done");
+	});
+	it("повтор 'when done' — ошибка (как дубли at/from/until)", () => {
+		bad("every day when done when done");
+	});
+	it("'at' + 'when done' на daily — OK (событийное время совместимо с алиасом)", () => {
+		expect(ok("every day at 10:00 when done")).toEqual({
+			freq: "daily",
+			n: 1,
+			eventTime: "10:00",
+			fromCompletion: true,
+		});
+	});
+	it("'at' + 'when done' на дне недели — reject (byDay несовместим с «от выполнения»)", () => {
+		bad("every monday at 10:00 when done");
+	});
+});
+
 describe("parseRule — rejects", () => {
 	it("rejects empty and bare 'every'", () => {
 		bad("");

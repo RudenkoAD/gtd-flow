@@ -6,6 +6,7 @@
  */
 import type { IsoDate, Task } from "../../core/model/Task";
 import { parseTaskLine } from "../../core/parser/parseTaskLine";
+import { compare } from "../../core/recurrence/dateMath";
 import { isParseError, parseRule, type ParseError, type Rule } from "../../core/recurrence/grammar";
 import { nextOccurrence } from "../../core/recurrence/nextOccurrence";
 import { recurringTemplateTarget, type TemplateTarget } from "../common/taskActions";
@@ -41,8 +42,15 @@ export function buildTemplateVM(task: Task, today: IsoDate): TemplateVM {
 	const expired =
 		!isParseError(ruleParsed) &&
 		ruleParsed.until !== undefined &&
-		// anchor = from: при weekly n>1 «исчерпано ли до until» зависит от чётности недель
-		nextOccurrence(ruleParsed, today, ruleParsed.from) === null;
+		(ruleParsed.fromCompletion
+			? // «от выполнения» (§every!) по календарю не разворачивается — nextOccurrence
+				// для него ВСЕГДА null, поэтому календарная проверка ложно клеймила бы любой
+				// такой шаблон с until «истёкшим». Честно: серия исчерпана, лишь когда until
+				// уже в прошлом (в сам день until копия ещё может заспавниться — граница
+				// включительна, как в planFromCompletion).
+				compare(ruleParsed.until, today) < 0
+			: // anchor = from: при weekly n>1 «исчерпано ли до until» зависит от чётности недель
+				nextOccurrence(ruleParsed, today, ruleParsed.from) === null);
 
 	const badges: TemplateBadge[] = [];
 	if (paused) badges.push("paused");

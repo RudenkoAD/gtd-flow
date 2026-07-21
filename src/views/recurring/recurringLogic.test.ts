@@ -77,6 +77,26 @@ describe("buildTemplateVM", () => {
 		expect(vm.expired).toBe(false);
 	});
 
+	it("fromCompletion с until в будущем — не expired (nextOccurrence всегда null, но серия жива, §FIX-3)", () => {
+		const vm = buildTemplateVM(template({ recurrence: "every! 3 days until 2027-01-01" }), TODAY);
+		expect(vm.expired).toBe(false);
+		expect(vm.badges).toEqual([]);
+	});
+
+	it("fromCompletion с until в прошлом — expired (§FIX-3)", () => {
+		const vm = buildTemplateVM(template({ recurrence: "every! 3 days until 2026-01-01" }), TODAY);
+		expect(vm.expired).toBe(true);
+		expect(vm.badges).toEqual(["expired"]);
+	});
+
+	it("«when done»-алиас с until в будущем — не expired (та же ветка, что every!, §FIX-3)", () => {
+		const vm = buildTemplateVM(
+			template({ recurrence: "every 3 days when done until 2027-01-01" }),
+			TODAY,
+		);
+		expect(vm.expired).toBe(false);
+	});
+
 	it("пауза и expired складываются в порядке paused, error, expired", () => {
 		const vm = buildTemplateVM(
 			template({ statusChar: "-", recurrence: "every day until 2026-01-01" }),

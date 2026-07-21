@@ -200,7 +200,7 @@ export function planSpawns(input: SpawnPlanInput): SpawnPlanResult {
 				templateId,
 				occurrence,
 				childId,
-				instanceLine: buildInstanceLine(t.rawLine, occurrence, input.today, templateId, childId),
+				instanceLine: buildInstanceLine(t.rawLine, occurrence, input.today, templateId, childId, false),
 			});
 		}
 
@@ -255,8 +255,20 @@ function planFromCompletion(
 
 	let desired: IsoDate;
 	if (last === undefined) {
-		// bootstrap: первый спавн от 🔜 (если выставлен) либо сегодня
-		desired = task.nextSpawn ?? today;
+		if (task.nextSpawn !== null) {
+			// bootstrap с уже выставленным 🔜: курсор и есть плановая дата спавна —
+			// он авторитетнее фиксированной даты-поля (им дальше правят лишь from/until)
+			desired = task.nextSpawn;
+		} else {
+			// истинный бутстрап (ни копий, ни 🔜): нижняя граница — не раньше сегодня
+			// И не раньше фиксированной даты-поля шаблона (📅→⏳→🛫), перенесённой
+			// миграцией строки Tasks («when done» с 📅). Будущая дата откладывает
+			// первую копию до её наступления; прошлая инертна (max с сегодня). rule.from
+			// накладывает свою границу тем же клампом ниже — здесь его не дублируем.
+			desired = today;
+			const tplDate = task.due ?? task.scheduled ?? task.start;
+			if (tplDate !== null && compare(tplDate, desired) > 0) desired = tplDate;
+		}
 	} else if (last.done === null) {
 		// последняя копия не выполнена — ждём выполнения (ни спавна, ни курсора)
 		return;
@@ -301,7 +313,7 @@ function planFromCompletion(
 			templateId,
 			occurrence,
 			childId,
-			instanceLine: buildInstanceLine(task.rawLine, occurrence, today, templateId, childId),
+			instanceLine: buildInstanceLine(task.rawLine, occurrence, today, templateId, childId, true),
 		});
 	}
 	if (occurrence !== task.nextSpawn) cursorAdvances.push({ templateId, newCursor: occurrence });
@@ -339,6 +351,13 @@ const OFFSET_RE = new RegExp(
 	`(${DATE_FIELD_EMOJI.due}|${DATE_FIELD_EMOJI.scheduled}|${DATE_FIELD_EMOJI.start})${VS}\\s*([+-])(\\d+)d(?=\\s|$)`,
 	"gu",
 );
+/** Фиксированные дата-поля 🛫/⏳/📅 шаблона (значение — до следующего поля-эмодзи
+ * или конца строки, как RECURRENCE_RE): у копий «от выполнения» (§every!) их не
+ * наследуем — снимаются и «дата», и «дата HH:mm», и офсет ±Nd целиком. */
+const FROM_COMPLETION_DATE_RE = new RegExp(
+	`(?:${DATE_FIELD_EMOJI.due}|${DATE_FIELD_EMOJI.scheduled}|${DATE_FIELD_EMOJI.start})${VS}\\s*(?:(?!(?:${FIELD_EMOJI_ALT})).)*`,
+	"gu",
+);
 const PREFIX_RE = /^(\s*[-*+]\s*\[.\]\s*)(.*)$/u;
 
 function buildInstanceLine(
@@ -347,6 +366,7 @@ function buildInstanceLine(
 	today: IsoDate,
 	templateId: string,
 	childId: string,
+	fromCompletion: boolean,
 ): string {
 	// префикс «- [ ] » отделяем, чтобы не тронуть отступ коллапсом пробелов
 	const m = PREFIX_RE.exec(rawLine);
@@ -359,6 +379,14 @@ function buildInstanceLine(
 		.replace(ID_RE, "")
 		.replace(SPAWNED_FROM_RE, "")
 		.replace(CREATED_RE, "");
+
+	// Правила «от выполнения» (§every!): копия — недатированная inbox-строка (как
+	// у наших родных шаблонов). Фиксированные дата-поля шаблона 🛫/⏳/📅 — в т.ч.
+	// перенесённые миграцией строки Tasks («when done») — в копию НЕ тянем: иначе
+	// каждая копия несла бы одну и ту же замороженную дату и была бы вечно
+	// просрочена. Календарные правила не трогаем — их даты/офсеты разворачиваются
+	// от вхождения ниже (OFFSET_RE), fromCompletion туда не попадает.
+	if (fromCompletion) body = body.replace(FROM_COMPLETION_DATE_RE, "");
 
 	// офсеты разворачиваются от ДАТЫ ВХОЖДЕНИЯ, не от дня спавна:
 	// 🛫 -3d при вхождении 2026-07-31 → 🛫 2026-07-28, даже если спавн 2026-08-03

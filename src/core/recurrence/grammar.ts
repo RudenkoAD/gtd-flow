@@ -3,8 +3,9 @@
  *
  *   (every|every!) [N] (day|days|week|weeks|month|months|year|years|weekday|<weekday>)
  *             [on <weekday-list>] [on the <ordinal> | on the last day]
- *             [on <month-name> <day>] [at HH:mm[-HH:mm]]
- *             [from YYYY-MM-DD] [until YYYY-MM-DD]
+ *             [on <month-name> <day>]
+ *             [at HH:mm[-HH:mm]] [from YYYY-MM-DD] [until YYYY-MM-DD] [when done]
+ *             — хвосты at/from/until/when done свободного порядка, каждый ≤ 1 раза
  *
  * Префикс-модификатор «every!» (Todoist-подобный, ТЗ §every!) переключает правило
  * в режим «от выполнения»: следующее вхождение отсчитывается от ДАТЫ ВЫПОЛНЕНИЯ
@@ -17,6 +18,14 @@
  * не «выполняется»; см. валидацию в §события). Разворот по календарю
  * (nextOccurrence/occurrences) для таких правил не определён — там они дают
  * пусто/null, чтобы циклы не зацикливались; их движок — spawnPlan.
+ *
+ * Совместимость с плагином Tasks (миграция без переписывания строк): хвостовой
+ * суффикс «when done» (`every 3 weeks when done`) читается как АЛИАС префикса
+ * every! — тот же fromCompletion: true, те же guard'ы (byDay/on → отказ парсинга),
+ * те же правила для month/year (день/дата не указываются). Совместим с every!
+ * (один и тот же флаг — не ошибка) и с хвостами from/until в любом порядке.
+ * Каноническая ЗАПИСЬ остаётся every! — сериализации суффикса нет, сырой текст
+ * `when done` не переписывается (поле повтора хранится как есть).
  *
  * Хвост "at HH:mm[-HH:mm]" — время вхождения повторяющегося события календаря
  * (ТЗ §события): 'every tuesday at 19:00-20:30', 'every day at 09:00'. Для
@@ -49,10 +58,11 @@ export interface EventTime {
 // Хвостовые опции, общие для всех частот:
 // - from:  нижняя граница серии (включительно, §6) — вхождений раньше неё не бывает.
 // - until: верхняя граница (включительно). Обе опциональны и валидны на любом freq.
-// - fromCompletion: режим «от выполнения» (§every!). true ⇒ следующее вхождение
-//   считается от даты ✅ предыдущей копии (spawnPlan.nextFromCompletion), а не по
-//   календарю; ключ отсутствует у обычных правил (never `false`), чтобы round-trip
-//   тесты сравнивали ровно {freq,n,…} без лишних полей.
+// - fromCompletion: режим «от выполнения» (§every!). Ставится префиксом every!
+//   ЛИБО Tasks-суффиксом «when done» (алиас — тот же флаг). true ⇒ следующее
+//   вхождение считается от даты ✅ предыдущей копии (spawnPlan.nextFromCompletion),
+//   а не по календарю; ключ отсутствует у обычных правил (never `false`), чтобы
+//   round-trip тесты сравнивали ровно {freq,n,…} без лишних полей.
 type RuleTail = { from?: IsoDate; until?: IsoDate; fromCompletion?: true } & EventTime;
 export type Rule =
 	| ({ freq: "daily"; n: number } & RuleTail)
@@ -193,6 +203,10 @@ export function parseRule(text: string): Rule | ParseError {
 	let onDate: { month: number; day: number } | null = null;
 	let eventTime: string | undefined;
 	let eventTimeEnd: string | undefined;
+	// Суффикс «when done» — не более одного раза (как at/from/until). Отдельный от
+	// fromCompletion флаг: every! (префикс) + when done (суффикс) — легальное
+	// сочетание форм, а не дубль, поэтому дубль ловим по повтору СУФФИКСА.
+	let sawWhenDone = false;
 
 	while (i < tokens.length) {
 		const t = tokens[i];
@@ -239,6 +253,20 @@ export function parseRule(text: string): Rule | ParseError {
 			}
 			if (until !== undefined) return { error: "duplicate 'until'" };
 			until = dt;
+			i++;
+			continue;
+		}
+		if (t === "when") {
+			// Суффикс плагина Tasks «when done» — алиас префикса every! (§every!):
+			// тот же режим «от выполнения». Разбирается как обычный хвост, поэтому
+			// совместим с every! (один и тот же флаг — без ошибки) и со всеми
+			// хвостами (from/until/at) в любом порядке; guard'ы на byDay/on и
+			// month/year отрабатывают в switch ниже по общему флагу fromCompletion.
+			i++;
+			if (tokens[i] !== "done") return { error: "expected 'done' after 'when'" };
+			if (sawWhenDone) return { error: "duplicate 'when done'" };
+			sawWhenDone = true;
+			fromCompletion = true;
 			i++;
 			continue;
 		}
@@ -340,7 +368,7 @@ export function parseRule(text: string): Rule | ParseError {
 			// фиксированного дня, от которого считать (§every!).
 			if (fromCompletion) {
 				return {
-					error: `'every! ${unitTok}' is ambiguous — from-completion has no fixed weekday; use 'every! week' or 'every! N weeks'`,
+					error: `'every! ${unitTok}' / 'every ${unitTok} when done' is ambiguous — from-completion has no fixed weekday; use 'every! week' or 'every week when done'`,
 				};
 			}
 			if (onWeekdays !== null || onMonthDay !== null || onDate !== null) {
@@ -354,7 +382,7 @@ export function parseRule(text: string): Rule | ParseError {
 			// «every! week on tue» бессмысленно (от выполнения нет фиксированного дня)
 			if (fromCompletion && onWeekdays !== null) {
 				return {
-					error: "'every! week on <weekday>' is contradictory — from-completion has no fixed weekday; drop the 'on' clause",
+					error: "'every! week on <weekday>' / 'every week on <weekday> when done' is contradictory — from-completion has no fixed weekday; drop the 'on' clause",
 				};
 			}
 			return withTail({ freq: "weekly", n, byDay: onWeekdays ?? [] });
@@ -367,7 +395,7 @@ export function parseRule(text: string): Rule | ParseError {
 			if (fromCompletion) {
 				if (onMonthDay !== null) {
 					return {
-						error: "'every! month on the <day>' is contradictory — from-completion counts the day from the completion date; drop the 'on' clause",
+						error: "'every! month on the <day>' / 'every month on the <day> when done' is contradictory — from-completion counts the day from the completion date; drop the 'on' clause",
 					};
 				}
 				return withTail({ freq: "monthly", n });
@@ -384,7 +412,7 @@ export function parseRule(text: string): Rule | ParseError {
 			if (fromCompletion) {
 				if (onDate !== null) {
 					return {
-						error: "'every! year on <month> <day>' is contradictory — from-completion counts the date from the completion date; drop the 'on' clause",
+						error: "'every! year on <month> <day>' / 'every year on <month> <day> when done' is contradictory — from-completion counts the date from the completion date; drop the 'on' clause",
 					};
 				}
 				return withTail({ freq: "yearly", n });

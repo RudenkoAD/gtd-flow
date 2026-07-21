@@ -493,6 +493,18 @@ describe("серии событий с «every!» запрещены (§every!)"
 		expect(res).toEqual({ ok: false, reason: EVENT_COMPLETION_REASON });
 		expect(vault.files.get("GTD/Events.md")).toBe("- [ ] A 🔁 every day 🆔 ev1\n");
 	});
+
+	it("createEventSeries отклоняет Tasks-суффикс «when done» (алиас every!) — запрет по флагу, не по тексту", async () => {
+		const vault = new FakeVault();
+		const res = await createEventSeries({
+			vault,
+			eventsFile: "GTD/Events.md",
+			name: "Планёрка",
+			ruleText: "every 3 days when done",
+		});
+		expect(res).toEqual({ ok: false, reason: EVENT_COMPLETION_REASON });
+		expect(vault.files.has("GTD/Events.md")).toBe(false);
+	});
 });
 
 describe("копия вхождения серии — одноразовая строка с датой ЭТОГО вхождения", () => {

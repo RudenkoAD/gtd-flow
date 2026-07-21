@@ -130,6 +130,13 @@ export class EventSeriesModal extends Modal {
 				save.disabled = true;
 				return null;
 			}
+			// «every!» (от выполнения) — только для задач: событие не «выполняется» (§every!)
+			if (parsed.fromCompletion) {
+				feedback.setText("✕ «every!» — только для задач, не для событий");
+				feedback.style.color = "var(--text-error, var(--text-muted))";
+				save.disabled = true;
+				return null;
+			}
 			feedback.setText("✓ событие корректно");
 			feedback.style.color = "var(--text-success, var(--text-muted))";
 			save.disabled = false;

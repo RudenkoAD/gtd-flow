@@ -1,10 +1,22 @@
 /**
  * Мини-грамматика правил повторения (ТЗ §6):
  *
- *   every [N] (day|days|week|weeks|month|months|year|years|weekday|<weekday>)
+ *   (every|every!) [N] (day|days|week|weeks|month|months|year|years|weekday|<weekday>)
  *             [on <weekday-list>] [on the <ordinal> | on the last day]
  *             [on <month-name> <day>] [at HH:mm[-HH:mm]]
  *             [from YYYY-MM-DD] [until YYYY-MM-DD]
+ *
+ * Префикс-модификатор «every!» (Todoist-подобный, ТЗ §every!) переключает правило
+ * в режим «от выполнения»: следующее вхождение отсчитывается от ДАТЫ ВЫПОЛНЕНИЯ
+ * предыдущей копии, а не по календарной сетке (fromCompletion: true). Допустим для
+ * ВСЕХ частот, но НЕСОВМЕСТИМ с любой «on»-клаузой и с byDay-единицей (every! week
+ * on tue / every! friday бессмысленны — от выполнения нет фиксированного дня);
+ * monthly/yearly в этом режиме НЕ требуют и НЕ принимают день/дату (день считается
+ * от даты выполнения). from/until совместимы (until — верхняя граница как обычно;
+ * from — не раньше). Только для задач: серии СОБЫТИЙ с every! запрещены (событие
+ * не «выполняется»; см. валидацию в §события). Разворот по календарю
+ * (nextOccurrence/occurrences) для таких правил не определён — там они дают
+ * пусто/null, чтобы циклы не зацикливались; их движок — spawnPlan.
  *
  * Хвост "at HH:mm[-HH:mm]" — время вхождения повторяющегося события календаря
  * (ТЗ §события): 'every tuesday at 19:00-20:30', 'every day at 09:00'. Для
@@ -34,23 +46,26 @@ export interface EventTime {
 	eventTimeEnd?: string;
 }
 
-// from: нижняя граница серии (включительно, §6) — вхождений раньше неё не бывает.
-// until: верхняя граница (включительно). Обе опциональны и валидны на любом freq.
+// Хвостовые опции, общие для всех частот:
+// - from:  нижняя граница серии (включительно, §6) — вхождений раньше неё не бывает.
+// - until: верхняя граница (включительно). Обе опциональны и валидны на любом freq.
+// - fromCompletion: режим «от выполнения» (§every!). true ⇒ следующее вхождение
+//   считается от даты ✅ предыдущей копии (spawnPlan.nextFromCompletion), а не по
+//   календарю; ключ отсутствует у обычных правил (never `false`), чтобы round-trip
+//   тесты сравнивали ровно {freq,n,…} без лишних полей.
+type RuleTail = { from?: IsoDate; until?: IsoDate; fromCompletion?: true } & EventTime;
 export type Rule =
-	| ({ freq: "daily"; n: number; from?: IsoDate; until?: IsoDate } & EventTime)
-	| ({ freq: "weekdays"; from?: IsoDate; until?: IsoDate } & EventTime)
+	| ({ freq: "daily"; n: number } & RuleTail)
+	| ({ freq: "weekdays" } & RuleTail)
 	// byDay: 0=понедельник … 6=воскресенье (см. dateMath.dayOfWeek).
 	// byDay=[] легально («every week until …») — шаг от курсора без привязки к дню.
-	| ({ freq: "weekly"; n: number; byDay: number[]; from?: IsoDate; until?: IsoDate } & EventTime)
-	| ({ freq: "monthly"; n: number; day: number | "last"; from?: IsoDate; until?: IsoDate } & EventTime)
-	| ({
-			freq: "yearly";
-			n: number;
-			month: number;
-			day: number;
-			from?: IsoDate;
-			until?: IsoDate;
-	  } & EventTime);
+	| ({ freq: "weekly"; n: number; byDay: number[] } & RuleTail)
+	// day/month опциональны ТОЛЬКО ради fromCompletion (у every! month/year нет
+	// фиксированного дня — он от даты выполнения). Календарный парс их всегда
+	// заполняет, календарные потребители (nextOccurrence/isOccurrence) защищены
+	// ранним выходом на fromCompletion и точечными guard'ами.
+	| ({ freq: "monthly"; n: number; day?: number | "last" } & RuleTail)
+	| ({ freq: "yearly"; n: number; month?: number; day?: number } & RuleTail);
 
 export interface ParseError {
 	error: string;
@@ -128,8 +143,16 @@ export function parseRule(text: string): Rule | ParseError {
 	const tokens = text.trim().toLowerCase().split(/[\s,]+/).filter((t) => t.length > 0);
 	let i = 0;
 
-	if (tokens[i] !== "every") return { error: "rule must start with 'every'" };
-	i++;
+	// префикс: «every» (календарь) либо «every!» (от выполнения, §every!)
+	let fromCompletion = false;
+	if (tokens[i] === "every!") {
+		fromCompletion = true;
+		i++;
+	} else if (tokens[i] === "every") {
+		i++;
+	} else {
+		return { error: "rule must start with 'every' (or 'every!' for from-completion)" };
+	}
 
 	// необязательный интервал N
 	let n = 1;
@@ -287,13 +310,16 @@ export function parseRule(text: string): Rule | ParseError {
 		return { error: "'from' must not be after 'until'" };
 	}
 
-	// хвостовые опции (from + until + время вхождения) — единым спредом на любой freq
+	// хвостовые опции (from + until + время вхождения + fromCompletion) — единым
+	// спредом на любой freq. fromCompletion пишется только когда true: обычные
+	// правила остаются ровно {freq,n,…} (round-trip тесты сравнивают toEqual).
 	const withTail = (r: Rule): Rule => {
 		const out = { ...r };
 		if (from !== undefined) out.from = from;
 		if (until !== undefined) out.until = until;
 		if (eventTime !== undefined) out.eventTime = eventTime;
 		if (eventTimeEnd !== undefined) out.eventTimeEnd = eventTimeEnd;
+		if (fromCompletion) out.fromCompletion = true;
 		return out;
 	};
 
@@ -310,6 +336,13 @@ export function parseRule(text: string): Rule | ParseError {
 			}
 			return withTail({ freq: "weekdays" });
 		case "weekday-name":
+			// byDay-единица (every! friday) несовместима с «от выполнения»: нет
+			// фиксированного дня, от которого считать (§every!).
+			if (fromCompletion) {
+				return {
+					error: `'every! ${unitTok}' is ambiguous — from-completion has no fixed weekday; use 'every! week' or 'every! N weeks'`,
+				};
+			}
 			if (onWeekdays !== null || onMonthDay !== null || onDate !== null) {
 				return { error: `'every ${unitTok}' does not take an 'on' clause` };
 			}
@@ -318,12 +351,27 @@ export function parseRule(text: string): Rule | ParseError {
 			if (onMonthDay !== null || onDate !== null) {
 				return { error: "weekly rules take only 'on <weekday, ...>'" };
 			}
+			// «every! week on tue» бессмысленно (от выполнения нет фиксированного дня)
+			if (fromCompletion && onWeekdays !== null) {
+				return {
+					error: "'every! week on <weekday>' is contradictory — from-completion has no fixed weekday; drop the 'on' clause",
+				};
+			}
 			return withTail({ freq: "weekly", n, byDay: onWeekdays ?? [] });
 		case "monthly":
 			if (onWeekdays !== null || onDate !== null) {
 				return { error: "monthly rules take only 'on the <day>' / 'on the last day'" };
 			}
-			// день обязателен: Rule.monthly без day не представим
+			// «от выполнения»: день считается от даты ✅ — клауза дня не нужна и
+			// запрещена; календарный monthly же требует день (Rule без day не развернуть)
+			if (fromCompletion) {
+				if (onMonthDay !== null) {
+					return {
+						error: "'every! month on the <day>' is contradictory — from-completion counts the day from the completion date; drop the 'on' clause",
+					};
+				}
+				return withTail({ freq: "monthly", n });
+			}
 			if (onMonthDay === null) {
 				return { error: "monthly rule requires 'on the <day>' or 'on the last day'" };
 			}
@@ -331,6 +379,15 @@ export function parseRule(text: string): Rule | ParseError {
 		case "yearly":
 			if (onWeekdays !== null || onMonthDay !== null) {
 				return { error: "yearly rules take only 'on <month-name> <day>'" };
+			}
+			// «от выполнения»: месяц/день от даты ✅ — клауза даты не нужна и запрещена
+			if (fromCompletion) {
+				if (onDate !== null) {
+					return {
+						error: "'every! year on <month> <day>' is contradictory — from-completion counts the date from the completion date; drop the 'on' clause",
+					};
+				}
+				return withTail({ freq: "yearly", n });
 			}
 			if (onDate === null) return { error: "yearly rule requires 'on <month-name> <day>'" };
 			return withTail({ freq: "yearly", n, month: onDate.month, day: onDate.day });

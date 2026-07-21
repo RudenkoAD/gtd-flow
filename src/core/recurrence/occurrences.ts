@@ -74,6 +74,11 @@ export function expandOccurrences(
 ): IsoDate[] {
 	const out: IsoDate[] = [];
 	if (compare(fromIso, toIso) > 0 || cap <= 0) return out;
+	// Правила «от выполнения» (§every!) по календарю не разворачиваются: серии
+	// событий с every! запрещены, а если такое правило попало в файл руками —
+	// отдаём пусто (nextOccurrence для него и так вернул бы null, здесь — явно и
+	// без работы effectiveAnchor).
+	if (rule.fromCompletion) return out;
 	const anc = effectiveAnchor(rule, anchor);
 	let cur = nextOccurrence(rule, addDays(fromIso, -1), anc); // первое вхождение ≥ fromIso
 	while (cur !== null && compare(cur, toIso) <= 0 && out.length < cap) {

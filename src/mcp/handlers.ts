@@ -656,8 +656,15 @@ export async function addEvent(
 			}
 			ruleText = `${ruleText} at ${args.time!.trim()}`;
 		}
-		if (isParseError(parseRule(ruleText))) {
+		const parsedRule = parseRule(ruleText);
+		if (isParseError(parsedRule)) {
 			throw new Error(`invalid recurrence rule '${ruleText}'`);
+		}
+		// серии событий с «every!» запрещены — событие не «выполняется» (§every!)
+		if (parsedRule.fromCompletion) {
+			throw new Error(
+				`'every!' (from-completion) rules are for tasks only, not calendar events: '${ruleText}'`,
+			);
 		}
 		// авто-from как в UI: закрепляем фазу недель серии от даты создания (сегодня)
 		res = await createEventSeries({

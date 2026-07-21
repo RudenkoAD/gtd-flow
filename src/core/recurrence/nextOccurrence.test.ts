@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import fc from "fast-check";
 import { clampDay, compare, fromParts, weeksBetween } from "./dateMath";
 import type { Rule } from "./grammar";
-import { isOccurrence, nextOccurrence, snapWeekAnchor } from "./nextOccurrence";
+import { isOccurrence, nextFromCompletion, nextOccurrence, snapWeekAnchor } from "./nextOccurrence";
 
 // Календарные ориентиры 2026: 07-13 понедельник, 07-15 среда, 07-17 пятница,
 // 12-31 четверг. 2027 — невисокосный, 2028 — високосный.
@@ -545,5 +545,70 @@ describe("nextOccurrence — якорь ⇒ фаза недель кратна n
 			}),
 			{ numRuns: 400 },
 		);
+	});
+});
+
+describe("nextFromCompletion — интервал от даты выполнения (§every!)", () => {
+	it("daily / weekly / weekdays: сдвиг в днях от даты ✅", () => {
+		// 2026-07-15 — среда, 07-17 пятница, 07-18 суббота
+		expect(nextFromCompletion({ freq: "daily", n: 3, fromCompletion: true }, "2026-07-15")).toBe(
+			"2026-07-18",
+		);
+		expect(
+			nextFromCompletion({ freq: "weekly", n: 2, byDay: [], fromCompletion: true }, "2026-07-15"),
+		).toBe("2026-07-29");
+		// будний строго после: пятница → понедельник; суббота → понедельник
+		expect(nextFromCompletion({ freq: "weekdays", fromCompletion: true }, "2026-07-17")).toBe(
+			"2026-07-20",
+		);
+		expect(nextFromCompletion({ freq: "weekdays", fromCompletion: true }, "2026-07-18")).toBe(
+			"2026-07-20",
+		);
+	});
+	it("monthly: +n месяцев, день от даты ✅ с клампингом к длине месяца", () => {
+		expect(nextFromCompletion({ freq: "monthly", n: 1, fromCompletion: true }, "2026-07-15")).toBe(
+			"2026-08-15",
+		);
+		// 31 января + 1 месяц → 28 февраля (клампинг)
+		expect(nextFromCompletion({ freq: "monthly", n: 1, fromCompletion: true }, "2027-01-31")).toBe(
+			"2027-02-28",
+		);
+		// пересечение года
+		expect(nextFromCompletion({ freq: "monthly", n: 3, fromCompletion: true }, "2026-11-30")).toBe(
+			"2027-02-28",
+		);
+	});
+	it("yearly: +n лет, 29 февраля → 28 на невисокосном", () => {
+		expect(nextFromCompletion({ freq: "yearly", n: 1, fromCompletion: true }, "2026-07-15")).toBe(
+			"2027-07-15",
+		);
+		expect(nextFromCompletion({ freq: "yearly", n: 1, fromCompletion: true }, "2028-02-29")).toBe(
+			"2029-02-28",
+		);
+	});
+});
+
+describe("fromCompletion-правила не разворачиваются по календарю (§every!)", () => {
+	it("nextOccurrence возвращает null (сканирующие циклы не зацикливаются)", () => {
+		expect(nextOccurrence({ freq: "daily", n: 3, fromCompletion: true }, "2026-07-15")).toBeNull();
+		expect(
+			nextOccurrence({ freq: "monthly", n: 1, fromCompletion: true }, "2026-07-15"),
+		).toBeNull();
+	});
+	it("isOccurrence считает любую дату членом (в пределах from/until)", () => {
+		const rule: Rule = { freq: "daily", n: 3, fromCompletion: true };
+		expect(isOccurrence(rule, "2026-07-15")).toBe(true);
+		expect(isOccurrence(rule, "2026-07-16")).toBe(true);
+		// from/until по-прежнему ограничивают
+		const bounded: Rule = {
+			freq: "daily",
+			n: 3,
+			fromCompletion: true,
+			from: "2026-07-15",
+			until: "2026-07-20",
+		};
+		expect(isOccurrence(bounded, "2026-07-14")).toBe(false);
+		expect(isOccurrence(bounded, "2026-07-21")).toBe(false);
+		expect(isOccurrence(bounded, "2026-07-17")).toBe(true);
 	});
 });

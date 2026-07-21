@@ -18,13 +18,32 @@ import { ALL_FIELD_EMOJI, DATE_FIELD_EMOJI, VALUE_FIELD_EMOJI } from "../parser/
 import { addDays, compare } from "./dateMath";
 import type { ParseError, Rule } from "./grammar";
 import { isParseError } from "./grammar";
-import { MAX_ITERATIONS, isOccurrence, nextOccurrence } from "./nextOccurrence";
+import { MAX_ITERATIONS, isOccurrence, nextFromCompletion, nextOccurrence } from "./nextOccurrence";
+
+/**
+ * Одна заспавненная копия шаблона (её видит индекс) — данные, нужные планировщику
+ * «от выполнения» (§every!): дата вхождения и дата выполнения ✅ (null — не
+ * выполнена). Для календарных правил не используется. Собирает RecurrenceService
+ * из 🧬-копий по индексу.
+ */
+export interface SpawnedChild {
+	/** Дата вхождения копии (обычно из childId <tpl>-<YYYYMMDD>). */
+	occurrence: IsoDate;
+	/** ✅ дата выполнения либо null. */
+	done: IsoDate | null;
+}
 
 export interface TemplateInfo {
 	/** Задача-шаблон (container === "recurring"). */
 	task: Task;
 	/** Результат parseRule(task.recurrence). */
 	rule: Rule | ParseError;
+	/**
+	 * Заспавненные копии шаблона — ТОЛЬКО для правил «от выполнения» (§every!):
+	 * планировщик смотрит, выполнена ли последняя копия. Для календарных правил
+	 * игнорируется (dedup/курсор держат идемпотентность и без списка копий).
+	 */
+	children?: SpawnedChild[];
 }
 
 export interface PlannedSpawn {
@@ -103,6 +122,14 @@ export function planSpawns(input: SpawnPlanInput): SpawnPlanResult {
 			continue;
 		}
 		const rule = tpl.rule;
+
+		// Правила «от выполнения» (§every!) идут отдельной веткой: спавн НЕ по
+		// календарю, а по выполнению последней копии. Курсор 🔜 держится тем же
+		// механизмом cursorAdvances, членство isOccurrence не проверяется.
+		if (rule.fromCompletion) {
+			planFromCompletion(t, templateId, rule, tpl.children ?? [], input, spawns, cursorAdvances);
+			continue;
+		}
 
 		// Якорь чётности недель для weekly с n>1: rule.from (иных базовых дат у
 		// шаблона нет). Без from чётность держит сама цепочка курсоров — от члена
@@ -194,6 +221,90 @@ export function planSpawns(input: SpawnPlanInput): SpawnPlanResult {
 	}
 
 	return { spawns, cursorAdvances, errors };
+}
+
+/**
+ * Планирование одного шаблона «от выполнения» (§every!). Отсчёт НЕ по календарю:
+ *
+ *  • последняя (по дате вхождения) копия ВЫПОЛНЕНА (✅) → следующий спавн на дату
+ *    ✅ + интервал (nextFromCompletion). Дата в будущем — только двигаем курсор 🔜;
+ *    наступила/в прошлом — РОВНО ОДНА копия на сегодня (без ретроспективной пачки).
+ *  • последняя копия НЕ выполнена → ждём: ни новой копии, ни сдвига курсора.
+ *  • копий ещё нет (bootstrap) → первый спавн от 🔜/сегодня, как обычное правило.
+ *
+ * from — нижняя граница (не раньше); until — верхняя (исчерпание, курсор паркуется
+ * за until). Идемпотентность — тот же existingIds + файловый дедуп, что и у
+ * календарных правил: повторный проход не плодит дублей (childId стабилен).
+ */
+function planFromCompletion(
+	task: Task,
+	templateId: string,
+	rule: Rule,
+	children: readonly SpawnedChild[],
+	input: SpawnPlanInput,
+	spawns: PlannedSpawn[],
+	cursorAdvances: CursorAdvance[],
+): void {
+	const today = input.today;
+
+	// последняя по дате вхождения копия (её выполнение решает судьбу следующей)
+	let last: SpawnedChild | undefined;
+	for (const c of children) {
+		if (last === undefined || compare(c.occurrence, last.occurrence) > 0) last = c;
+	}
+
+	let desired: IsoDate;
+	if (last === undefined) {
+		// bootstrap: первый спавн от 🔜 (если выставлен) либо сегодня
+		desired = task.nextSpawn ?? today;
+	} else if (last.done === null) {
+		// последняя копия не выполнена — ждём выполнения (ни спавна, ни курсора)
+		return;
+	} else {
+		// выполнена — следующий отсчёт строго от даты ✅ + интервал
+		desired = nextFromCompletion(rule, last.done);
+	}
+
+	// нижняя граница from: не раньше неё
+	if (rule.from !== undefined && compare(desired, rule.from) < 0) desired = rule.from;
+
+	// верхняя граница until: правило исчерпано — паркуем курсор за until (идемпотентность,
+	// как у календарных правил), без спавна
+	if (rule.until !== undefined && compare(desired, rule.until) > 0) {
+		const parked = addDays(rule.until, 1);
+		if (parked !== task.nextSpawn) cursorAdvances.push({ templateId, newCursor: parked });
+		return;
+	}
+
+	// ещё не наступило — только держим курсор 🔜 = дата следующего планового спавна
+	if (compare(desired, today) > 0) {
+		if (desired !== task.nextSpawn) cursorAdvances.push({ templateId, newCursor: desired });
+		return;
+	}
+
+	// desired ≤ until (строка 273), но фактический спавн идёт на today — при запоздалом
+	// проходе today может уйти ЗА until. Тогда серия исчерпана: копию с датой позже until
+	// не создаём (симметрия с capUntil календарного пути), паркуем курсор за until.
+	if (rule.until !== undefined && compare(today, rule.until) > 0) {
+		const parked = addDays(rule.until, 1);
+		if (parked !== task.nextSpawn) cursorAdvances.push({ templateId, newCursor: parked });
+		return;
+	}
+
+	// пора: РОВНО ОДНА копия на сегодня (desired в прошлом — без ретроспективы,
+	// спавним сегодняшним днём). existingIds гасит повтор после реиндекса, файловый
+	// дедуп — до него; курсор встаёт на дату вхождения.
+	const occurrence = today;
+	const childId = makeChildId(templateId, occurrence);
+	if (!input.existingIds.has(childId)) {
+		spawns.push({
+			templateId,
+			occurrence,
+			childId,
+			instanceLine: buildInstanceLine(task.rawLine, occurrence, today, templateId, childId),
+		});
+	}
+	if (occurrence !== task.nextSpawn) cursorAdvances.push({ templateId, newCursor: occurrence });
 }
 
 // ---------------------------------------------------------------------------

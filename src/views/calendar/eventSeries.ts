@@ -26,6 +26,14 @@ export interface EventVaultPort {
 
 export type EventWriteResult = { ok: true } | { ok: false; reason: string };
 
+/**
+ * Причина отказа для серии-события с правилом «от выполнения» (§every!): событие
+ * не «выполняется», поэтому every! для событий бессмысленно. Строка показывается
+ * пользователю напрямую (Notice `GTD Flow: <reason>`), потому — читаемый текст, а
+ * не kebab-код. Общая точка для createEventSeries/copyEventSeries/editEventSeries.
+ */
+export const EVENT_COMPLETION_REASON = "«every!» — только для задач, не для событий";
+
 // ---------------------------------------------------------------------------
 // Чистые преобразования строки серии
 // ---------------------------------------------------------------------------
@@ -199,7 +207,10 @@ export async function createEventSeries(deps: {
 	/** Опциональное место 📍 (пусто/undefined — без поля). */
 	location?: string | null;
 }): Promise<EventWriteResult> {
-	if (isParseError(parseRule(deps.ruleText))) return { ok: false, reason: "invalid-rule" };
+	const parsedRule = parseRule(deps.ruleText);
+	if (isParseError(parsedRule)) return { ok: false, reason: "invalid-rule" };
+	// серии событий с «every!» запрещены — событие не «выполняется» (§every!)
+	if (parsedRule.fromCompletion) return { ok: false, reason: EVENT_COMPLETION_REASON };
 	const line = buildEventLine(deps.name, deps.ruleText, deps.location ?? null);
 	if (line === null) {
 		// buildEventLine отдаёт null по ДВУМ причинам: пустое имя ИЛИ недопустимое
@@ -279,7 +290,10 @@ export async function copyEventSeries(deps: {
 	/** Ленивый генератор 🆔 (тесты передают детерминированный). */
 	genId?: () => string;
 }): Promise<EventWriteResult> {
-	if (isParseError(parseRule(deps.ruleText))) return { ok: false, reason: "invalid-rule" };
+	const parsedRule = parseRule(deps.ruleText);
+	if (isParseError(parsedRule)) return { ok: false, reason: "invalid-rule" };
+	// серии событий с «every!» запрещены — событие не «выполняется» (§every!)
+	if (parsedRule.fromCompletion) return { ok: false, reason: EVENT_COMPLETION_REASON };
 	// пред-валидация имени и места ДО касания файла (различаем empty-name /
 	// invalid-location повторной сборкой без места — как createEventSeries)
 	if (buildEventLine(deps.name, deps.ruleText, deps.location ?? null) === null) {
@@ -335,7 +349,10 @@ export async function editEventSeries(deps: {
 	/** Опциональное место 📍 (пусто/null — снять поле). */
 	location?: string | null;
 }): Promise<EventWriteResult> {
-	if (isParseError(parseRule(deps.ruleText))) return { ok: false, reason: "invalid-rule" };
+	const parsedRule = parseRule(deps.ruleText);
+	if (isParseError(parsedRule)) return { ok: false, reason: "invalid-rule" };
+	// серии событий с «every!» запрещены — событие не «выполняется» (§every!)
+	if (parsedRule.fromCompletion) return { ok: false, reason: EVENT_COMPLETION_REASON };
 	if (buildEventLine(deps.name, deps.ruleText) === null) return { ok: false, reason: "empty-name" };
 	let failure: string | null = "file-not-found";
 	try {

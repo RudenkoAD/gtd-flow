@@ -2,7 +2,13 @@ import { describe, expect, it } from "vitest";
 import type { Task } from "../model/Task";
 import type { Rule } from "./grammar";
 import { parseRule } from "./grammar";
-import { makeChildId, planSpawns, type SpawnPlanInput, type TemplateInfo } from "./spawnPlan";
+import {
+	makeChildId,
+	planSpawns,
+	type SpawnedChild,
+	type SpawnPlanInput,
+	type TemplateInfo,
+} from "./spawnPlan";
 
 function makeTemplate(over: Partial<Task> = {}): Task {
 	return {
@@ -567,6 +573,197 @@ describe("planSpawns — weekly n>1 с from: чётность недель ку�
 		const res = plan([tpl(t)], { today: "2026-07-20" });
 		expect(res.spawns).toEqual([]);
 		expect(res.cursorAdvances).toEqual([{ templateId: "bw", newCursor: "2026-07-28" }]);
+	});
+});
+
+describe("planSpawns — от выполнения (§every!)", () => {
+	/** Шаблон «полить цветы» с правилом от выполнения; children задаются отдельно. */
+	function flowers(over: Partial<Task> = {}): Task {
+		return makeTemplate({
+			taskId: "flowers",
+			key: "id:flowers",
+			description: "Полить цветы",
+			recurrence: "every! 3 days",
+			rawLine: "- [ ] Полить цветы 🔁 every! 3 days 🆔 flowers 🔜 2026-07-15",
+			nextSpawn: "2026-07-15",
+			tags: [],
+			priority: "none",
+			...over,
+		});
+	}
+	function withChildren(task: Task, children: SpawnedChild[]): TemplateInfo {
+		return { task, rule: parseRule(task.recurrence ?? ""), children };
+	}
+
+	it("bootstrap без копий и без 🔜: одна копия сегодня, курсор = сегодня", () => {
+		const res = plan([withChildren(flowers({ nextSpawn: null }), [])], { today: "2026-07-15" });
+		expect(res.spawns.map((s) => s.occurrence)).toEqual(["2026-07-15"]);
+		expect(res.spawns[0]!.childId).toBe("flowers-20260715");
+		// копия — обычная задача: без 🔁/🔜/every!
+		expect(res.spawns[0]!.instanceLine).not.toContain("🔁");
+		expect(res.spawns[0]!.instanceLine).not.toContain("every!");
+		expect(res.spawns[0]!.instanceLine).not.toContain("🔜");
+		expect(res.cursorAdvances).toEqual([{ templateId: "flowers", newCursor: "2026-07-15" }]);
+	});
+
+	it("bootstrap с 🔜 в будущем: ждёт, курсор уже на месте (без сдвига)", () => {
+		const res = plan([withChildren(flowers({ nextSpawn: "2026-07-20" }), [])], {
+			today: "2026-07-15",
+		});
+		expect(res.spawns).toEqual([]);
+		expect(res.cursorAdvances).toEqual([]);
+	});
+
+	it("последняя копия выполнена вовремя: курсор 🔜 = дата ✅ + интервал, без спавна", () => {
+		// каскад из ТЗ: выполнил сегодня «every! 3 days» → 🔜 = сегодня+3
+		const res = plan([withChildren(flowers(), [{ occurrence: "2026-07-15", done: "2026-07-15" }])], {
+			today: "2026-07-15",
+		});
+		expect(res.spawns).toEqual([]);
+		expect(res.cursorAdvances).toEqual([{ templateId: "flowers", newCursor: "2026-07-18" }]);
+	});
+
+	it("наступил день следующего спавна: РОВНО ОДНА копия, курсор уже на дате", () => {
+		// прошлый проход выставил 🔜 = 2026-07-18; сегодня оно наступило
+		const res = plan(
+			[withChildren(flowers({ nextSpawn: "2026-07-18" }), [{ occurrence: "2026-07-15", done: "2026-07-15" }])],
+			{ today: "2026-07-18" },
+		);
+		expect(res.spawns.map((s) => s.occurrence)).toEqual(["2026-07-18"]);
+		expect(res.spawns[0]!.childId).toBe("flowers-20260718");
+		expect(res.cursorAdvances).toEqual([]); // 🔜 уже 2026-07-18
+	});
+
+	it("выполнена с опозданием: отсчёт от даты ✅, а не по календарю", () => {
+		// вхождение было 07-15, а выполнил только 07-20 → следующий = 07-23
+		const res = plan(
+			[withChildren(flowers({ nextSpawn: "2026-07-18" }), [{ occurrence: "2026-07-15", done: "2026-07-20" }])],
+			{ today: "2026-07-20" },
+		);
+		expect(res.spawns).toEqual([]);
+		expect(res.cursorAdvances).toEqual([{ templateId: "flowers", newCursor: "2026-07-23" }]);
+	});
+
+	it("последняя копия НЕ выполнена: новых не создаём, курсор не двигаем (сколько бы ни ждали)", () => {
+		const res = plan([withChildren(flowers(), [{ occurrence: "2026-07-15", done: null }])], {
+			today: "2026-07-30",
+		});
+		expect(res.spawns).toEqual([]);
+		expect(res.cursorAdvances).toEqual([]);
+	});
+
+	it("решает СВЕЖАЙШАЯ копия: новая невыполненная поверх старой выполненной — ждём", () => {
+		const res = plan(
+			[
+				withChildren(flowers({ nextSpawn: "2026-07-18" }), [
+					{ occurrence: "2026-07-15", done: "2026-07-15" },
+					{ occurrence: "2026-07-18", done: null },
+				]),
+			],
+			{ today: "2026-07-25" },
+		);
+		expect(res.spawns).toEqual([]);
+		expect(res.cursorAdvances).toEqual([]);
+	});
+
+	it("двойной проход идемпотентен: childId уже в existingIds → без дубля", () => {
+		const res = plan(
+			[withChildren(flowers({ nextSpawn: "2026-07-18" }), [{ occurrence: "2026-07-15", done: "2026-07-15" }])],
+			{ today: "2026-07-18", existingIds: new Set(["flowers-20260718"]) },
+		);
+		expect(res.spawns).toEqual([]);
+		expect(res.cursorAdvances).toEqual([]);
+	});
+
+	it("desired в прошлом (проспали день): спавним СЕГОДНЯ, без ретроспективной пачки", () => {
+		// выполнил 07-10, следующий плановый = 07-13, но проход только 07-20
+		const res = plan(
+			[withChildren(flowers({ nextSpawn: "2026-07-13" }), [{ occurrence: "2026-07-10", done: "2026-07-10" }])],
+			{ today: "2026-07-20", catchUp: "all" }, // даже 'all' не плодит пачку
+		);
+		expect(res.spawns.map((s) => s.occurrence)).toEqual(["2026-07-20"]);
+		expect(res.cursorAdvances).toEqual([{ templateId: "flowers", newCursor: "2026-07-20" }]);
+	});
+
+	it("until исчерпан: без спавна, курсор паркуется за until", () => {
+		const t = flowers({
+			recurrence: "every! 3 days until 2026-07-16",
+			rawLine: "- [ ] Полить цветы 🔁 every! 3 days until 2026-07-16 🆔 flowers 🔜 2026-07-15",
+		});
+		const res = plan([withChildren(t, [{ occurrence: "2026-07-15", done: "2026-07-15" }])], {
+			today: "2026-07-15",
+		});
+		expect(res.spawns).toEqual([]);
+		expect(res.cursorAdvances).toEqual([{ templateId: "flowers", newCursor: "2026-07-17" }]);
+	});
+
+	it("запоздалый проход не спавнит копию ПОЗЖЕ until (desired ≤ until, today > until) (regression)", () => {
+		// выполнил 07-10 → desired = 07-11 (≤ until 07-15), но проход только 07-21.
+		// Раньше occurrence = today = 07-21 спавнилась ЗА until; теперь серия исчерпана.
+		const t = flowers({
+			recurrence: "every! day until 2026-07-15",
+			rawLine: "- [ ] Полить цветы 🔁 every! day until 2026-07-15 🆔 flowers 🔜 2026-07-13",
+			nextSpawn: "2026-07-13",
+		});
+		const res = plan([withChildren(t, [{ occurrence: "2026-07-10", done: "2026-07-10" }])], {
+			today: "2026-07-21",
+		});
+		expect(res.spawns).toEqual([]);
+		expect(res.cursorAdvances).toEqual([{ templateId: "flowers", newCursor: "2026-07-16" }]);
+	});
+
+	it("однодневная задержка на границе until: desired = until, today = until+1 → без спавна (regression)", () => {
+		// выполнил 07-14 → desired = 07-15 = until; открыл на следующий день 07-16.
+		const t = flowers({
+			recurrence: "every! day until 2026-07-15",
+			rawLine: "- [ ] Полить цветы 🔁 every! day until 2026-07-15 🆔 flowers 🔜 2026-07-15",
+			nextSpawn: "2026-07-15",
+		});
+		const res = plan([withChildren(t, [{ occurrence: "2026-07-14", done: "2026-07-14" }])], {
+			today: "2026-07-16",
+		});
+		expect(res.spawns).toEqual([]);
+		expect(res.cursorAdvances).toEqual([{ templateId: "flowers", newCursor: "2026-07-16" }]);
+	});
+
+	it("проход ровно в день until при desired ≤ until: копия спавнится (граница включительна)", () => {
+		// выполнил 07-13 → desired = 07-14 ≤ until 07-15, проход в сам день until 07-15:
+		// today = until не превышает until → копия ещё создаётся (фикс не режет границу).
+		const t = flowers({
+			recurrence: "every! day until 2026-07-15",
+			rawLine: "- [ ] Полить цветы 🔁 every! day until 2026-07-15 🆔 flowers 🔜 2026-07-14",
+			nextSpawn: "2026-07-14",
+		});
+		const res = plan([withChildren(t, [{ occurrence: "2026-07-13", done: "2026-07-13" }])], {
+			today: "2026-07-15",
+		});
+		expect(res.spawns.map((s) => s.occurrence)).toEqual(["2026-07-15"]);
+		expect(res.cursorAdvances).toEqual([{ templateId: "flowers", newCursor: "2026-07-15" }]);
+	});
+
+	it("from в будущем (bootstrap): не спавнит, курсор паркуется на from", () => {
+		const t = flowers({
+			nextSpawn: null,
+			recurrence: "every! 3 days from 2026-08-01",
+			rawLine: "- [ ] Полить цветы 🔁 every! 3 days from 2026-08-01 🆔 flowers",
+		});
+		const res = plan([withChildren(t, [])], { today: "2026-07-15" });
+		expect(res.spawns).toEqual([]);
+		expect(res.cursorAdvances).toEqual([{ templateId: "flowers", newCursor: "2026-08-01" }]);
+	});
+
+	it("monthly every!: следующий = дата ✅ + месяц (с клампингом дня)", () => {
+		const t = flowers({
+			recurrence: "every! month",
+			rawLine: "- [ ] Фильтр 🔁 every! month 🆔 flowers 🔜 2027-01-31",
+			nextSpawn: "2027-01-31",
+		});
+		const res = plan([withChildren(t, [{ occurrence: "2027-01-31", done: "2027-01-31" }])], {
+			today: "2027-01-31",
+		});
+		expect(res.spawns).toEqual([]);
+		// 31 января + месяц → 28 февраля (клампинг)
+		expect(res.cursorAdvances).toEqual([{ templateId: "flowers", newCursor: "2027-02-28" }]);
 	});
 });
 

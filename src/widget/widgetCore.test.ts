@@ -480,6 +480,13 @@ describe("buildEditedLine — серия", () => {
 	it("вырожденный/битый интервал в правиле — invalid-time-range", () => {
 		expect(edit(SERIES, { timeRange: "20:00-19:00" }).error).toBe("invalid-time-range");
 	});
+
+	it("серия с «every!» (попала руками) — правку времени отклоняем (§every!)", () => {
+		// событий-серий с every! не бывает (создание запрещено), но если строка
+		// оказалась в файле — buildEditedLine не должен её «легализовать»
+		const line = "- [ ] Полив 🔁 every! 3 days";
+		expect(edit(line, { timeRange: "09:00" }).error).toBe("series-completion-not-allowed");
+	});
 });
 
 // Повторяющаяся ЗАДАЧА (Obsidian Tasks: 🔁 ВМЕСТЕ с полем-датой) — НЕ серия-событие.

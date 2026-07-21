@@ -25,6 +25,7 @@ import {
 	makeChildId,
 	planSpawns,
 	type PlannedSpawn,
+	type SpawnedChild,
 	type SpawnPlanResult,
 	type TemplateInfo,
 } from "../core/recurrence/spawnPlan";
@@ -123,6 +124,23 @@ function collectContentIds(content: string, filePath: string): Set<string> {
 		if (t !== null && t.taskId !== null) out.add(t.taskId);
 	}
 	return out;
+}
+
+/**
+ * Дата вхождения заспавненной копии для планировщика «от выполнения» (§every!):
+ * из childId <tpl>-<YYYYMMDD> (детерминированно), иначе — ➕/📅/✅ как фолбэк
+ * (копия, чей id пользователь переписал). null — опоры на дату нет (в расчёте
+ * «последней копии» не участвует).
+ */
+function childOccurrence(t: Task): IsoDate | null {
+	if (t.taskId !== null) {
+		const m = INSTANCE_ID_RE.exec(t.taskId);
+		if (m !== null) {
+			const occ: IsoDate = `${m[2]}-${m[3]}-${m[4]}`;
+			if (isValidIsoDate(occ)) return occ;
+		}
+	}
+	return t.created ?? t.due ?? t.done;
 }
 
 /** append блока строк в конец файла — той же формы, что WritebackService.moveLine. */
@@ -272,11 +290,25 @@ export class RecurrenceService implements RecurrencePort {
 		// templateId → задача-шаблон: нужна на фазе записи, чтобы развести спавны
 		// по входящим ПРОСТРАНСТВА каждого шаблона (spawnTargetOf).
 		const templateById = new Map<string, Task>();
+		// templateId → его заспавненные копии (🧬): нужны планировщику «от выполнения»
+		// (§every!), чтобы узнать, выполнена ли последняя копия. Собираем по всему
+		// индексу за один проход; для календарных правил не используется.
+		const childrenByTemplate = new Map<string, SpawnedChild[]>();
 		// 🆔, вписанные нами в прошлых проходах этой сессии, индекс мог ещё не
 		// увидеть (дебаунс) — держим занятыми, чтобы freshId не выдал дубликат
 		for (const injected of this.injectedIds.values()) existingIds.add(injected);
 		for (const t of index.all()) {
 			if (t.taskId !== null) existingIds.add(t.taskId);
+			// копия регулярного (🧬 → шаблон): запоминаем дату вхождения и ✅
+			if (t.spawnedFrom !== null) {
+				const occurrence = childOccurrence(t);
+				if (occurrence !== null) {
+					const child: SpawnedChild = { occurrence, done: t.done };
+					const list = childrenByTemplate.get(t.spawnedFrom);
+					if (list !== undefined) list.push(child);
+					else childrenByTemplate.set(t.spawnedFrom, [child]);
+				}
+			}
 			if (t.container !== "recurring") continue;
 			if (t.taskId === null) {
 				idless.push(t);
@@ -286,6 +318,14 @@ export class RecurrenceService implements RecurrencePort {
 				t.recurrence === null ? { error: "missing 🔁 rule" } : parseRule(t.recurrence);
 			templates.push({ task: t, rule });
 			templateById.set(t.taskId, t);
+		}
+
+		// привязать собранные копии к шаблонам (нужно правилам «от выполнения»);
+		// делается после полного прохода — копия могла встретиться раньше шаблона
+		for (const tpl of templates) {
+			if (tpl.task.taskId === null) continue;
+			const kids = childrenByTemplate.get(tpl.task.taskId);
+			if (kids !== undefined) tpl.children = kids;
 		}
 
 		// 1a. Ленивая инъекция 🆔 в шаблоны без него (ТЗ §6: детерминированный
@@ -662,8 +702,7 @@ export class RecurrenceService implements RecurrencePort {
 		// снап курсора — только при адресуемом шаблоне; черновик без 🆔 получит
 		// курсор bootstrap'ом первого прохода после вставки id
 		if (tpl.taskId !== null) {
-			// anchor = rule.from: чётность недель weekly-правил с n>1 закреплена якорем
-			const next = nextOccurrence(rule, this.deps.todayIso(), rule.from);
+			const next = this.cursorForRule(rule, this.deps.todayIso());
 			if (next !== null) {
 				await this.deps.dispatcher.dispatch({
 					type: "advance-cursor",
@@ -673,5 +712,19 @@ export class RecurrenceService implements RecurrencePort {
 			}
 		}
 		return { ok: true };
+	}
+
+	/**
+	 * Плановая дата курсора 🔜 после смены правила. Календарное — nextOccurrence
+	 * (anchor = rule.from: чётность недель weekly-правил с n>1). «От выполнения»
+	 * (§every!) не разворачивается по календарю, поэтому его следующий плановый
+	 * спавн = сегодня либо начало окна from (в пределах until: исчерпано → null);
+	 * фактическую дату дальше уточняет runPass по выполнению последней копии.
+	 */
+	private cursorForRule(rule: Rule, today: IsoDate): IsoDate | null {
+		if (!rule.fromCompletion) return nextOccurrence(rule, today, rule.from);
+		const base = rule.from !== undefined && compare(rule.from, today) > 0 ? rule.from : today;
+		if (rule.until !== undefined && compare(base, rule.until) > 0) return null;
+		return base;
 	}
 }

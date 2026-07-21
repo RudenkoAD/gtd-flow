@@ -573,6 +573,95 @@ describe("RecurrenceService: setRule", () => {
 	});
 });
 
+describe("RecurrenceService: правила «от выполнения» (§every!)", () => {
+	const FLOWERS = "- [ ] Полить цветы 🔁 every! 3 days 🆔 flowers";
+
+	/** Отметить копию выполненной в указанную дату (как это сделал бы пользователь). */
+	function complete(line: string, doneDate: string): string {
+		return line.replace("- [ ]", "- [x]") + ` ✅ ${doneDate}`;
+	}
+
+	it("полный цикл: bootstrap → выполнение → следующий спавн от даты ✅", async () => {
+		const { port, svc, sync, state } = makeHarness({ today: "2026-07-15" });
+		port.files.set(REC, `${FLOWERS}\n`);
+		sync();
+
+		// проход 1: bootstrap — одна копия сегодня, курсор встал на сегодня
+		const r1 = await svc.runPass();
+		expect(r1.spawned).toBe(1);
+		const copy = port.files.get(INBOX)!.trim();
+		expect(copy).toBe("- [ ] Полить цветы ➕ 2026-07-15 🧬 flowers 🆔 flowers-20260715");
+		expect(port.files.get(REC)).toContain("🔜 2026-07-15");
+
+		// пользователь выполнил копию сегодня же
+		port.files.set(INBOX, `${complete(copy, "2026-07-15")}\n`);
+		sync();
+
+		// проход 2: последняя копия выполнена → 🔜 = 2026-07-15 + 3 = 2026-07-18, без новой копии
+		const r2 = await svc.runPass();
+		expect(r2.spawned).toBe(0);
+		expect(port.files.get(REC)).toContain("🔜 2026-07-18");
+
+		// день следующего спавна наступил
+		state.today = "2026-07-18";
+		const r3 = await svc.runPass();
+		expect(r3.spawned).toBe(1);
+		expect(port.files.get(INBOX)).toContain("🆔 flowers-20260718");
+		// ровно одна новая копия — исходная выполненная на месте
+		expect(port.files.get(INBOX)!.split("🧬 flowers").length - 1).toBe(2);
+	});
+
+	it("невыполненная копия не плодит новые (сколько бы дней ни прошло) + двойной проход", async () => {
+		const { port, svc, sync, state } = makeHarness({ today: "2026-07-15" });
+		port.files.set(REC, `${FLOWERS}\n`);
+		sync();
+		await svc.runPass(); // копия на 2026-07-15, НЕ выполнена
+		sync();
+
+		// проход через неделю: копия всё ещё висит невыполненной → ноль новых
+		state.today = "2026-07-22";
+		const r = await svc.runPass();
+		expect(r.spawned).toBe(0);
+		expect(port.files.get(INBOX)!.split("🧬 flowers").length - 1).toBe(1); // ровно одна копия
+
+		// двойной проход подряд — тоже без дублей
+		sync();
+		const r2 = await svc.runPass();
+		expect(r2.spawned).toBe(0);
+		expect(port.files.get(INBOX)!.split("🧬 flowers").length - 1).toBe(1);
+	});
+
+	it("выполнение с опозданием: следующий отсчитывается от фактической даты ✅", async () => {
+		const { port, svc, sync, state } = makeHarness({ today: "2026-07-15" });
+		port.files.set(REC, `${FLOWERS}\n`);
+		sync();
+		const r1 = await svc.runPass();
+		const copy = port.files.get(INBOX)!.trim();
+		expect(r1.spawned).toBe(1);
+
+		// выполнил только 2026-07-20 (опоздал)
+		state.today = "2026-07-20";
+		port.files.set(INBOX, `${complete(copy, "2026-07-20")}\n`);
+		sync();
+
+		const r2 = await svc.runPass();
+		expect(r2.spawned).toBe(0);
+		// 2026-07-20 + 3 = 2026-07-23 (от выполнения, не от календарной сетки 07-15)
+		expect(port.files.get(REC)).toContain("🔜 2026-07-23");
+	});
+
+	it("setRule на «every!» снапит 🔜 на сегодня (первый спавн — следующим проходом)", async () => {
+		const { port, svc, sync } = makeHarness({ today: "2026-07-15" });
+		port.files.set(REC, "- [ ] Полить цветы 🆔 flowers\n");
+		sync();
+
+		const res = await svc.setRule("id:flowers", "every! 3 days");
+
+		expect(res).toEqual({ ok: true });
+		expect(port.files.get(REC)).toBe("- [ ] Полить цветы 🆔 flowers 🔁 every! 3 days 🔜 2026-07-15\n");
+	});
+});
+
 // ---------------------------------------------------------------------------
 // Спавн по пространству ШАБЛОНА (spawnTargetFor)
 // ---------------------------------------------------------------------------

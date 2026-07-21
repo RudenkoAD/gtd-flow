@@ -229,6 +229,59 @@ describe("parseRule — from clause (lower bound, §6)", () => {
 	});
 });
 
+describe("parseRule — every! (from-completion, §every!)", () => {
+	it("parses 'every!' on the simple frequencies", () => {
+		expect(ok("every! day")).toEqual({ freq: "daily", n: 1, fromCompletion: true });
+		expect(ok("every! 3 days")).toEqual({ freq: "daily", n: 3, fromCompletion: true });
+		expect(ok("every! week")).toEqual({ freq: "weekly", n: 1, byDay: [], fromCompletion: true });
+		expect(ok("every! 2 weeks")).toEqual({ freq: "weekly", n: 2, byDay: [], fromCompletion: true });
+		expect(ok("every! weekday")).toEqual({ freq: "weekdays", fromCompletion: true });
+	});
+	it("monthly/yearly with 'every!' take NO day/month clause (day comes from completion)", () => {
+		expect(ok("every! month")).toEqual({ freq: "monthly", n: 1, fromCompletion: true });
+		expect(ok("every! 3 months")).toEqual({ freq: "monthly", n: 3, fromCompletion: true });
+		expect(ok("every! year")).toEqual({ freq: "yearly", n: 1, fromCompletion: true });
+		expect(ok("every! 2 years")).toEqual({ freq: "yearly", n: 2, fromCompletion: true });
+	});
+	it("plain 'every' never carries a fromCompletion flag (round-trip stays minimal)", () => {
+		expect(ok("every day")).toEqual({ freq: "daily", n: 1 });
+		expect("fromCompletion" in ok("every day")).toBe(false);
+	});
+	it("is case-insensitive and whitespace-tolerant", () => {
+		expect(ok("EVERY! 3 DAYS")).toEqual({ freq: "daily", n: 3, fromCompletion: true });
+		expect(ok("  every!   month ")).toEqual({ freq: "monthly", n: 1, fromCompletion: true });
+	});
+	it("combines with from/until (lower/upper bounds still apply)", () => {
+		expect(ok("every! 3 days from 2026-07-15 until 2026-12-31")).toEqual({
+			freq: "daily",
+			n: 3,
+			fromCompletion: true,
+			from: "2026-07-15",
+			until: "2026-12-31",
+		});
+		expect(ok("every! 2 weeks until 2027-01-01")).toEqual({
+			freq: "weekly",
+			n: 2,
+			byDay: [],
+			fromCompletion: true,
+			until: "2027-01-01",
+		});
+	});
+	it("rejects byDay units and 'on' clauses (no fixed day when counting from completion)", () => {
+		bad("every! friday"); // byDay-единица бессмысленна от выполнения
+		bad("every! 2 tuesdays");
+		bad("every! week on tue"); // «какой день?» — осмысленная ошибка
+		bad("every! 2 weeks on mon, thu");
+		bad("every! month on the 15th"); // день от выполнения — клауза запрещена
+		bad("every! month on the last day");
+		bad("every! year on april 1");
+	});
+	it("rejects a bare 'every!' and unknown units", () => {
+		bad("every!");
+		bad("every! banana");
+	});
+});
+
 describe("parseRule — rejects", () => {
 	it("rejects empty and bare 'every'", () => {
 		bad("");

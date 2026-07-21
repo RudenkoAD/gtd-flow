@@ -94,6 +94,11 @@ function nextInPhase(anchorDate: IsoDate, step: number, after: IsoDate): IsoDate
 }
 
 export function nextOccurrence(rule: Rule, after: IsoDate, anchor?: IsoDate): IsoDate | null {
+	// Правила «от выполнения» (§every!) по календарной сетке не разворачиваются:
+	// их следующее вхождение = дата ✅ + интервал (nextFromCompletion), а не «после
+	// after». Возвращаем null, чтобы любые сканирующие циклы (occurrences, разворот
+	// событий) немедленно завершались, даже если такое правило попало в файл руками.
+	if (rule.fromCompletion) return null;
 	// клауза from (нижняя граница, §6): вхождений раньше from не бывает. Поднимаем
 	// курсор поиска до from−1 — «строго после» тогда впервые попадёт на дату ≥ from.
 	// until-семантику (верхняя граница) это не трогает — её держит capUntil.
@@ -167,11 +172,15 @@ export function nextOccurrence(rule: Rule, after: IsoDate, anchor?: IsoDate): Is
 		}
 
 		case "monthly": {
+			// day опционален только у fromCompletion (выше отсечён) — здесь всегда задан;
+			// guard страхует тип и вырожденный ручной ввод
+			if (rule.day === undefined) return null;
+			const ruleDay = rule.day;
 			const p = toParts(after);
 			let y = p.y;
 			let m = p.m;
 			for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
-				const dom = rule.day === "last" ? daysInMonth(y, m) : clampDay(y, m, rule.day);
+				const dom = ruleDay === "last" ? daysInMonth(y, m) : clampDay(y, m, ruleDay);
 				const cand = fromParts({ y, m, d: dom });
 				if (compare(cand, after) > 0) return capUntil(cand, rule.until);
 				m += rule.n;
@@ -182,10 +191,13 @@ export function nextOccurrence(rule: Rule, after: IsoDate, anchor?: IsoDate): Is
 		}
 
 		case "yearly": {
+			// month/day опциональны только у fromCompletion (выше отсечён) — здесь заданы
+			if (rule.month === undefined || rule.day === undefined) return null;
+			const { month, day } = rule;
 			let y = toParts(after).y;
 			for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
 				// 29 февраля на невисокосном году клампится к 28-му
-				const cand = fromParts({ y, m: rule.month, d: clampDay(y, rule.month, rule.day) });
+				const cand = fromParts({ y, m: month, d: clampDay(y, month, day) });
 				if (compare(cand, after) > 0) return capUntil(cand, rule.until);
 				y += rule.n;
 			}
@@ -195,18 +207,60 @@ export function nextOccurrence(rule: Rule, after: IsoDate, anchor?: IsoDate): Is
 }
 
 /**
+ * Следующее вхождение правила «от выполнения» (§every!): дата ВЫПОЛНЕНИЯ (✅)
+ * предыдущей копии + интервал частоты. В отличие от nextOccurrence, к календарной
+ * сетке НЕ привязано — просто «+N единиц» от completion (клампинг дня-месяца тут ни
+ * при чём для day/week; для month/year день берётся от completion и клампится к
+ * длине месяца). from/until здесь НЕ накладываются — их применяет вызыватель
+ * (spawnPlan). Единица берётся из freq; для monthly/yearly день/месяц правила
+ * игнорируются (у every! их нет). Вызывать только для rule.fromCompletion.
+ */
+export function nextFromCompletion(rule: Rule, completion: IsoDate): IsoDate {
+	switch (rule.freq) {
+		case "daily":
+			return addDays(completion, rule.n);
+		case "weekly":
+			return addDays(completion, 7 * rule.n);
+		case "weekdays": {
+			// ближайший будний (пн–пт) строго после даты выполнения
+			let d = addDays(completion, 1);
+			for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
+				if (dayOfWeek(d) <= 4) return d;
+				d = addDays(d, 1);
+			}
+			return d;
+		}
+		case "monthly": {
+			const p = toParts(completion);
+			let m = p.m + rule.n;
+			const y = p.y + Math.floor((m - 1) / 12);
+			m = ((m - 1) % 12) + 1;
+			return fromParts({ y, m, d: clampDay(y, m, p.d) });
+		}
+		case "yearly": {
+			const p = toParts(completion);
+			const y = p.y + rule.n;
+			return fromParts({ y, m: p.m, d: clampDay(y, p.m, p.d) });
+		}
+	}
+}
+
+/**
  * Тест членства даты в правиле — валидация курсора 🔜 (ТЗ §6).
  * Для правил без абсолютного якоря (daily, weekly без byDay) любая дата — член.
- * Для weekly с byDay и n>1 чётность недель проверяется ТОЛЬКО при известном
- * якоре (anchor: rule.from либо базовая дата серии): дата — член, если её неделя
- * отстоит от недели якоря на кратное n. Фаза считается от недели первого
- * вхождения (snapWeekAnchor), как и в nextOccurrence, — единая нормализация в
- * обоих местах держит isOccurrence консистентным с nextOccurrence. Без якоря
- * (anchor === undefined) — лишь структурная совместимость (день недели).
+ * Для правил «от выполнения» (§every!) членство не проверяется — любая дата в
+ * пределах from/until валидна (курсор такого правила = плановая дата спавна, а не
+ * структурный член сетки; см. spawnPlan). Для weekly с byDay и n>1 чётность недель
+ * проверяется ТОЛЬКО при известном якоре (anchor: rule.from либо базовая дата
+ * серии): дата — член, если её неделя отстоит от недели якоря на кратное n. Фаза
+ * считается от недели первого вхождения (snapWeekAnchor), как и в nextOccurrence, —
+ * единая нормализация в обоих местах держит isOccurrence консистентным с
+ * nextOccurrence. Без якоря (anchor === undefined) — лишь структурная совместимость.
  */
 export function isOccurrence(rule: Rule, date: IsoDate, anchor?: IsoDate): boolean {
 	if (rule.from !== undefined && compare(date, rule.from) < 0) return false;
 	if (rule.until !== undefined && compare(date, rule.until) > 0) return false;
+	if (rule.fromCompletion) return true; // любая дата валидна (членство не проверяем)
 	switch (rule.freq) {
 		case "daily": {
 			// фазовая проверка ТОЛЬКО при известном якоре и n>1 — зеркало nextOccurrence:
@@ -229,11 +283,13 @@ export function isOccurrence(rule: Rule, date: IsoDate, anchor?: IsoDate): boole
 			if (anchor === undefined || rule.n <= 1) return true;
 			return weeksBetween(date, snapWeekAnchor(anchor, rule.byDay)) % rule.n === 0;
 		case "monthly": {
+			if (rule.day === undefined) return false; // только fromCompletion (выше отсечён)
 			const p = toParts(date);
 			const dom = rule.day === "last" ? daysInMonth(p.y, p.m) : clampDay(p.y, p.m, rule.day);
 			return p.d === dom;
 		}
 		case "yearly": {
+			if (rule.month === undefined || rule.day === undefined) return false;
 			const p = toParts(date);
 			return p.m === rule.month && p.d === clampDay(p.y, rule.month, rule.day);
 		}

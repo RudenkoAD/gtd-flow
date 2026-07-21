@@ -144,7 +144,11 @@ function applySeriesTime(line: string, timeRange: string | null): EditResult {
 		const tail = pr.timeEnd !== null ? `${pr.time}-${pr.timeEnd}` : pr.time;
 		newRule = `${base} at ${tail}`;
 	}
-	if (isParseError(parseRule(newRule))) return err("invalid-rule");
+	const parsed = parseRule(newRule);
+	if (isParseError(parsed)) return err("invalid-rule");
+	// серия-СОБЫТИЕ с «every!» невозможна (событие не «выполняется», §every!):
+	// такая строка не должна создаваться, но если попала руками — правку отклоняем
+	if (parsed.fromCompletion) return err("series-completion-not-allowed");
 	// голый 🔁 без payload — дописать разделитель перед новым правилом
 	if (tok.gap === "" && tok.payload === "") tok.gap = " ";
 	tok.payload = newRule;

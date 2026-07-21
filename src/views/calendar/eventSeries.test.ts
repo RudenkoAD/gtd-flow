@@ -9,6 +9,7 @@ import {
 	createSingleEvent,
 	editEventLine,
 	editEventSeries,
+	EVENT_COMPLETION_REASON,
 	excludeEventOccurrence,
 	joinEventRule,
 	setEventLocation,
@@ -455,6 +456,42 @@ describe("copyEventSeries — копия серии со свежим 🆔 в т
 		expect(res).toEqual({ ok: false, reason: "invalid-location" });
 		expect(vault.writes).toBe(0);
 		expect(vault.files.get("GTD/Events.md")).toBe("- [ ] Тр 🔁 every tue at 19:00 🆔 ev1\n");
+	});
+});
+
+describe("серии событий с «every!» запрещены (§every!)", () => {
+	it("createEventSeries отклоняет every!-правило без записи", async () => {
+		const vault = new FakeVault();
+		const res = await createEventSeries({
+			vault,
+			eventsFile: "GTD/Events.md",
+			name: "Планёрка",
+			ruleText: "every! 3 days",
+		});
+		expect(res).toEqual({ ok: false, reason: EVENT_COMPLETION_REASON });
+		expect(vault.files.has("GTD/Events.md")).toBe(false);
+	});
+
+	it("copyEventSeries отклоняет every!-правило без записи", async () => {
+		const vault = new FakeVault();
+		const res = await copyEventSeries({
+			vault,
+			eventsFile: "GTD/Events.md",
+			name: "Планёрка",
+			ruleText: "every! week",
+			genId: () => "cpy1",
+		});
+		expect(res).toEqual({ ok: false, reason: EVENT_COMPLETION_REASON });
+		expect(vault.files.has("GTD/Events.md")).toBe(false);
+	});
+
+	it("editEventSeries отклоняет every!-правило без записи", async () => {
+		const vault = new FakeVault();
+		vault.files.set("GTD/Events.md", "- [ ] A 🔁 every day 🆔 ev1\n");
+		const task = taskFrom("- [ ] A 🔁 every day 🆔 ev1", "GTD/Events.md", 0);
+		const res = await editEventSeries({ vault, task, name: "A", ruleText: "every! month" });
+		expect(res).toEqual({ ok: false, reason: EVENT_COMPLETION_REASON });
+		expect(vault.files.get("GTD/Events.md")).toBe("- [ ] A 🔁 every day 🆔 ev1\n");
 	});
 });
 

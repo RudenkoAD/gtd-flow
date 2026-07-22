@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { BoardDef } from "../../core/board/boardFile";
+import { parseTaskLine } from "../../core/parser/parseTaskLine";
 import type { DiscoveredBoard } from "../../services/BoardService";
 import { makeTask } from "../../stores/testSupport";
 import { VIEW_TYPES } from "../registry";
@@ -94,6 +95,34 @@ describe("columnTaskLine", () => {
 	it("пустой match (fail-safe) → строка без тега", () => {
 		expect(columnTaskLine("задача", "")).toBe("- [ ] задача");
 		expect(columnTaskLine("задача", "   ")).toBe("- [ ] задача");
+	});
+
+	it("today включает NLP: 📅 перед тегом колонки", () => {
+		expect(columnTaskLine("завтра купить хлеб", "#kanban/home/todo", "2026-07-22")).toBe(
+			"- [ ] купить хлеб 📅 2026-07-23 #kanban/home/todo",
+		);
+	});
+
+	it("строка «📅 <дата> #тег» парсится: и дата, и тег колонки на месте", () => {
+		const line = columnTaskLine("завтра в 15 звонок", "#kanban/home/todo", "2026-07-22")!;
+		const t = parseTaskLine(line, {
+			filePath: "board.md",
+			lineStart: 0,
+			parentLine: null,
+			heading: null,
+			container: "board",
+			projectActive: true,
+		})!;
+		expect(t.description).toBe("звонок #kanban/home/todo");
+		expect(t.due).toBe("2026-07-23");
+		expect(t.dueTime).toBe("15:00");
+		expect(t.tags).toContain("#kanban/home/todo");
+	});
+
+	it("today=null — прежнее поведение без дат", () => {
+		expect(columnTaskLine("завтра купить", "#kanban/b/todo")).toBe(
+			"- [ ] завтра купить #kanban/b/todo",
+		);
 	});
 });
 

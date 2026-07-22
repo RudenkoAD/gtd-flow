@@ -15,7 +15,11 @@
 	import NamespaceSwitcher from "../common/NamespaceSwitcher.svelte";
 	import { namespaceLabel } from "../common/namespaceSwitcher";
 	import TaskCard from "../common/TaskCard.svelte";
-	import { captureTargetInNamespace, ensureCaptureFileNs } from "../common/taskActions";
+	import {
+		captureTargetInNamespace,
+		ensureCaptureFileNs,
+		nlCaptureHint,
+	} from "../common/taskActions";
 	import type { TaskMenuPorts } from "../common/taskMenu";
 	import VirtualList from "../common/VirtualList.svelte";
 	import type { DndPort } from "../dnd/types";
@@ -81,9 +85,11 @@
 
 	// --- быстрый ввод новой задачи (append в первый gtd-inbox файл, фолбэк <commonRoot>/Входящие.md) ---
 	let newTask = $state("");
+	// живая подсказка распознанной даты (NLP): «📅 чт 15 авг · 15:00» или null
+	const nlHint = $derived(nlCaptureHint(newTask, $today));
 
 	async function addTask(): Promise<void> {
-		const transform = inboxCaptureTransform(newTask);
+		const transform = inboxCaptureTransform(newTask, $today);
 		if (transform === null) return; // пусто после санитации — молча ничего
 		// цель захвата — В ЛОКАЛЬНОМ пространстве вида, В МОМЕНТ ввода: первый файл
 		// gtd-inbox этого пространства из живого индекса, иначе конвенционные
@@ -150,6 +156,9 @@
 			bind:value={newTask}
 			onkeydown={onNewTaskKeydown}
 		/>
+		{#if nlHint !== null}
+			<div class="gtd-nl-hint" aria-label="Распознанная дата">{nlHint}</div>
+		{/if}
 	</div>
 	{#if shown.length === 0}
 		<div class="gtd-inbox-empty">
@@ -209,6 +218,11 @@
 	}
 	.gtd-inbox-new-input {
 		width: 100%;
+	}
+	.gtd-nl-hint {
+		margin-top: 3px;
+		color: var(--text-muted);
+		font-size: var(--font-ui-smaller, 0.85em);
 	}
 	.gtd-inbox-empty {
 		padding: 24px 10px;

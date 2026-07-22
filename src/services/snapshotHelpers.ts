@@ -66,7 +66,11 @@ export function fileContextFromFrontmatter(
 ): FileContext {
 	const base = resolveContainer(path, fm);
 	const nsOverride = frontmatterNamespace(fm);
-	return nsOverride === null ? base : { ...base, nsOverride };
+	const withNs = nsOverride === null ? base : { ...base, nsOverride };
+	// gtd-external: true — файл-зеркало внешнего календаря (read-only). Флаг НЕ меняет
+	// контейнер (зеркало несёт и gtd-events: true → container "events" и подхватывается
+	// пайплайном событий), лишь помечает файл как READ-ONLY (защита write-back, меню).
+	return fm?.["gtd-external"] === true ? { ...withNs, external: true } : withNs;
 }
 
 /** frontmatter gtd-namespace → override пространства (перебивает папку). Только

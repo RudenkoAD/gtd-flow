@@ -177,7 +177,15 @@ export class IndexerService implements IndexFeed {
 				nsOverride: snap.context.nsOverride ?? null,
 			});
 			if (task === null) continue;
-			parsed.push(task.lineEnd === item.lineEnd ? task : { ...task, lineEnd: item.lineEnd });
+			// перенос lineEnd (многострочный пункт) + маркер external из контекста файла:
+			// зеркала внешних календарей (gtd-external) несут read-only-флаг на Task —
+			// его читают меню события и защита write-back (парсер о нём не знает).
+			const ext = snap.context.external === true;
+			const withMeta =
+				task.lineEnd === item.lineEnd && !ext
+					? task
+					: { ...task, lineEnd: item.lineEnd, ...(ext ? { external: true } : {}) };
+			parsed.push(withMeta);
 		}
 		return assignOccurrenceIndexes(parsed);
 	}

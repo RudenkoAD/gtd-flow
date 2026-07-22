@@ -27,9 +27,13 @@ async function bundle(): Promise<string> {
 
 interface WidgetApi {
 	computeWidgetData(input: unknown): Promise<string>;
-	buildCaptureLine(text: string, location?: string | null): string;
+	buildCaptureLine(text: string, location?: string | null, todayIso?: string | null): string;
 	captureTargetPath(dataJson: string | null, namespace?: string | null): string;
 	buildEditedLine(rawLine: string, edits: unknown): string;
+	parseNlDate(
+		text: string,
+		today: string,
+	): { title: string; date: string | null; time: string | null } | null;
 }
 
 describe("widget-core bundle в QuickJS-подобном контексте", () => {
@@ -56,6 +60,7 @@ describe("widget-core bundle в QuickJS-подобном контексте", ()
 		expect(typeof api.buildCaptureLine).toBe("function");
 		expect(typeof api.captureTargetPath).toBe("function");
 		expect(typeof api.buildEditedLine).toBe("function");
+		expect(typeof api.parseNlDate).toBe("function");
 
 		const json = await api.computeWidgetData({
 			files: {
@@ -94,6 +99,16 @@ describe("widget-core bundle в QuickJS-подобном контексте", ()
 		// синхронные экспорты тоже работают в этом контексте
 		expect(api.buildCaptureLine("купить хлеб")).toBe("- [ ] купить хлеб");
 		expect(api.captureTargetPath(null, null)).toBe("GTD/Входящие.md");
+
+		// NLP-даты работают из бандла: и напрямую, и через buildCaptureLine(todayIso)
+		expect(api.parseNlDate("завтра позвонить", "2026-07-20")).toEqual({
+			title: "позвонить",
+			date: "2026-07-21",
+			time: null,
+		});
+		expect(api.buildCaptureLine("завтра в 15 звонок", null, "2026-07-20")).toBe(
+			"- [ ] звонок 📅 2026-07-21 15:00",
+		);
 
 		// buildEditedLine — синхронная правка строки, JSON-результат
 		const edited = JSON.parse(api.buildEditedLine("- [ ] задача из виджета", { title: "переименовано" })) as {

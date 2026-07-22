@@ -226,7 +226,7 @@
 			{#if it.kind === "task"}
 				<EventChip ev={it.ev} {today} {dnd} {dispatcher} {app} {settings} {menuPorts} />
 			{:else if vault !== null}
-				<EventOccurrenceChip occ={it.occ} {app} {dispatcher} {vault} />
+				<EventOccurrenceChip occ={it.occ} {app} {dispatcher} {vault} {settings} />
 			{/if}
 		{/each}
 		<!-- маркер под всеми элементами (индекс == длине) и в пустой сегодняшний день -->

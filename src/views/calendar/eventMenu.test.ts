@@ -50,4 +50,19 @@ describe("buildEventMenuModel — модель пунктов меню собы�
 				expect(item.title.length).toBeGreaterThan(0);
 			}
 	});
+
+	it("внешнее событие (read-only): только «Копировать…» и «Открыть файл» — без правок/удаления/переноса", () => {
+		for (const kind of ["series", "single"] as const) {
+			const items = buildEventMenuModel(kind, true, true);
+			expect(items.map((i) => i.id)).toEqual<EventMenuItemId[]>([
+				kind === "series" ? "copy-occurrence" : "copy-single",
+				"open-file",
+			]);
+			expect(items[0]!.title).toBe("Копировать…");
+			expect(items[1]!.title).toBe("Открыть файл");
+			// НЕТ разрушительных/правящих пунктов
+			for (const id of ["edit-series", "location", "transfer", "delete-series", "delete-occurrence", "delete-single"])
+				expect(items.some((i) => i.id === id)).toBe(false);
+		}
+	});
 });

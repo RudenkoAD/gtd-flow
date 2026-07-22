@@ -44,7 +44,8 @@ export type EventMenuItemId =
 	| "copy-single"
 	| "delete-occurrence"
 	| "delete-series"
-	| "delete-single";
+	| "delete-single"
+	| "open-file";
 
 export interface EventMenuItemModel {
 	id: EventMenuItemId;
@@ -67,7 +68,17 @@ export interface EventMenuItemModel {
 export function buildEventMenuModel(
 	kind: "series" | "single",
 	hasLocation: boolean,
+	external = false,
 ): EventMenuItemModel[] {
+	// Внешний календарь (зеркало, gtd-external) — READ-ONLY: правка/удаление/перенос
+	// затёрлись бы синхронизацией, поэтому НЕ предлагаем их. Только «Копировать…»
+	// (создаёт НАШЕ одноразовое событие в обычном файле) и «Открыть файл».
+	if (external) {
+		return [
+			{ id: kind === "series" ? "copy-occurrence" : "copy-single", title: "Копировать…", icon: "copy" },
+			{ id: "open-file", title: "Открыть файл", icon: "file" },
+		];
+	}
 	const locationTitle = hasLocation ? "Изменить место…" : "Добавить место…";
 	if (kind === "series") {
 		return [
@@ -98,6 +109,13 @@ export interface EventMenuDeps {
 	app: App;
 	dispatcher: IntentDispatcher;
 	vault: EventVaultPort;
+	/** Строка события — из файла-зеркала внешнего календаря (read-only). Меняет
+	 *  меню на «Копировать…»/«Открыть файл». По умолчанию false (обычное событие). */
+	external?: boolean;
+	/** Целевой файл для «Копировать…» у ВНЕШНЕГО события: копия создаётся как НАШЕ
+	 *  одноразовое событие в обычном файле событий (не в зеркале). Для обычных
+	 *  событий не задаётся — копия ложится в тот же файл, что источник. */
+	copyTargetFile?: string;
 }
 
 /** Есть ли непустое 📍 у вхождения — влияет на подпись пункта места. */
@@ -188,6 +206,9 @@ function openTransfer(deps: EventMenuDeps): void {
  */
 function openCopyAsSingle(deps: EventMenuDeps, modalTitle: string): void {
 	const { occ, app, vault } = deps;
+	// У ВНЕШНЕГО события копия уходит в ОБЫЧНЫЙ файл событий (copyTargetFile), а не
+	// в зеркало (оно read-only). У обычного события — в тот же файл, что источник.
+	const eventsFile = deps.copyTargetFile ?? occ.task.filePath;
 	new SingleEventModal(
 		app,
 		{
@@ -200,7 +221,7 @@ function openCopyAsSingle(deps: EventMenuDeps, modalTitle: string): void {
 		(name, date, time, timeEnd, location) => {
 			void createSingleEvent({
 				vault,
-				eventsFile: occ.task.filePath,
+				eventsFile,
 				name,
 				date,
 				time,
@@ -212,6 +233,16 @@ function openCopyAsSingle(deps: EventMenuDeps, modalTitle: string): void {
 			});
 		},
 	).open();
+}
+
+/** «Открыть файл» (внешнее событие): открыть файл-зеркало в новой вкладке. */
+function openEventFile(deps: EventMenuDeps): void {
+	const file = deps.app.vault.getFileByPath(deps.occ.task.filePath);
+	if (file === null) {
+		new Notice("GTD Flow: файл события не найден");
+		return;
+	}
+	void deps.app.workspace.getLeaf(true).openFile(file);
 }
 
 /** Копировать серию: модал серии → НОВАЯ серия со свежим 🆔 в том же файле. */
@@ -291,6 +322,8 @@ function runEventMenuAction(id: EventMenuItemId, deps: EventMenuDeps): void {
 			return void deleteSeries(deps);
 		case "delete-single":
 			return void deleteSingle(deps);
+		case "open-file":
+			return openEventFile(deps);
 	}
 }
 
@@ -300,7 +333,7 @@ function runEventMenuAction(id: EventMenuItemId, deps: EventMenuDeps): void {
  * сделал preventDefault/stopPropagation события.
  */
 export function showEventMenu(evt: MouseEvent, deps: EventMenuDeps): void {
-	const model = buildEventMenuModel(deps.occ.kind, hasLocation(deps.occ));
+	const model = buildEventMenuModel(deps.occ.kind, hasLocation(deps.occ), deps.external === true);
 	const menu = new Menu();
 	for (const item of model) {
 		menu.addItem((mi) =>

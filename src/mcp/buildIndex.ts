@@ -27,17 +27,23 @@ export interface BuiltIndex {
 	boardPaths: string[];
 	/** Пути всех файлов-контейнеров gtd-project (для ProjectService.containerPaths). */
 	projectPaths: string[];
+	/** Пути всех READ-ONLY зеркал внешних календарей (gtd-external). Для read-only-
+	 *  защиты write-back в MCP-сессии: те же файлы, что помечены external в плагине
+	 *  (fileContextFromFrontmatter), но по пути — доступно и для файлов без задач. */
+	externalPaths: Set<string>;
 }
 
 export async function buildIndex(files: readonly VaultFile[], today: string): Promise<BuiltIndex> {
 	const snapshots: FileSnapshot[] = [];
 	const boardPaths: string[] = [];
 	const projectPaths: string[] = [];
+	const externalPaths = new Set<string>();
 	for (const file of files) {
 		const { data } = splitFrontmatter(file.content);
 		const context = fileContextFromFrontmatter(file.path, data);
 		if (context.container === "board") boardPaths.push(file.path);
 		if (context.container === "project") projectPaths.push(file.path);
+		if (context.external === true) externalPaths.add(file.path);
 		snapshots.push({
 			path: file.path,
 			content: file.content,
@@ -58,5 +64,5 @@ export async function buildIndex(files: readonly VaultFile[], today: string): Pr
 		chunkSize: Number.MAX_SAFE_INTEGER, // без уступок макротаске — не UI, скан разовый
 	});
 	await indexer.start();
-	return { feed: indexer, boardPaths, projectPaths };
+	return { feed: indexer, boardPaths, projectPaths, externalPaths };
 }

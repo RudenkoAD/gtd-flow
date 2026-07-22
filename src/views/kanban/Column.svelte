@@ -7,6 +7,7 @@
 	import type { GtdFlowSettings } from "../../settings/Settings";
 	import { confirm } from "../common/ConfirmModal";
 	import TaskCard from "../common/TaskCard.svelte";
+	import { nlCaptureHint } from "../common/taskActions";
 	import type { TaskMenuPorts } from "../common/taskMenu";
 	import { insertIndexByY, type FlatRect } from "../dnd/dndCore";
 	import type { DndPort } from "../dnd/types";
@@ -182,6 +183,8 @@
 	let addingTask = $state(false);
 	let newTaskText = $state("");
 	let addTaskInputEl: HTMLInputElement | null = $state(null);
+	// живая подсказка распознанной даты (NLP): «📅 чт 15 авг · 15:00» или null
+	const nlHint = $derived(nlCaptureHint(newTaskText, today));
 
 	$effect(() => {
 		if (addingTask && addTaskInputEl !== null) addTaskInputEl.focus();
@@ -195,7 +198,7 @@
 	async function commitAddTask(): Promise<void> {
 		// тег колонки метит строку (column.match) → задача ляжет в эту колонку; тег
 		// скрыт в отображении карточки (stripColumnTags). Пусто → остаёмся в поле.
-		const transform = columnCaptureTransform(newTaskText, column.match);
+		const transform = columnCaptureTransform(newTaskText, column.match, today);
 		if (transform === null) return;
 		const entered = newTaskText;
 		newTaskText = ""; // очистка сразу — серийный ввод, фокус остаётся на input
@@ -287,6 +290,9 @@
 					onkeydown={onAddTaskKeydown}
 					onblur={cancelAddTask}
 				/>
+				{#if nlHint !== null}
+					<div class="gtd-nl-hint" aria-label="Распознанная дата">{nlHint}</div>
+				{/if}
 			</div>
 		{:else}
 			<button class="gtd-kanban-add-task" title="Добавить задачу" onclick={() => (addingTask = true)}>
@@ -391,6 +397,11 @@
 	}
 	.gtd-kanban-add-task-input {
 		width: 100%;
+	}
+	.gtd-nl-hint {
+		margin-top: 3px;
+		color: var(--text-muted);
+		font-size: var(--font-ui-smaller, 0.85em);
 	}
 	.gtd-kanban-col-empty {
 		padding: 12px 10px;

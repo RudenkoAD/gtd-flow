@@ -43,6 +43,12 @@ export function registerCommands(plugin: GtdFlowPlugin): void {
 	});
 
 	plugin.addCommand({
+		id: "sync-external-calendars",
+		name: "Синхронизировать внешние календари",
+		callback: () => void syncExternalCalendars(plugin),
+	});
+
+	plugin.addCommand({
 		id: "card-at-cursor",
 		name: "Карточка задачи под курсором",
 		editorCallback: (editor, ctx) => void cardAtCursor(plugin, editor, ctx.file?.path ?? null),
@@ -163,6 +169,16 @@ async function capture(plugin: GtdFlowPlugin, text: string): Promise<void> {
 // ---------------------------------------------------------------------------
 // Проход регулярных
 // ---------------------------------------------------------------------------
+
+async function syncExternalCalendars(plugin: GtdFlowPlugin): Promise<void> {
+	if (plugin.settings.externalCalendars.length === 0) {
+		new Notice("GTD Flow: внешние календари не настроены");
+		return;
+	}
+	new Notice("GTD Flow: синхронизация внешних календарей…");
+	await plugin.sync.syncAll();
+	new Notice("GTD Flow: синхронизация внешних календарей завершена");
+}
 
 async function runRecurrencePass(plugin: GtdFlowPlugin): Promise<void> {
 	try {

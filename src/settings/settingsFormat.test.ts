@@ -2,9 +2,10 @@
  * settingsFormat: текст полей вкладки настроек — ручной ввод, поэтому мусор,
  * CRLF, лишние пробелы и частично невалидные строки — штатный вход.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "./Settings";
 import {
+	commitSubName,
 	formatDeferPresets,
 	formatNamespaces,
 	formatPathList,
@@ -12,6 +13,7 @@ import {
 	parseIntInRange,
 	parseNamespaces,
 	parsePathList,
+	planSubNameCommit,
 	reorderCalendarPlacement,
 } from "./settingsFormat";
 
@@ -144,5 +146,83 @@ describe("reorderCalendarPlacement", () => {
 	it("нормализует руками правленный data.json: дубликаты и пропуски", () => {
 		expect(reorderCalendarPlacement(["due", "due"], "scheduled")).toEqual(["scheduled", "due", "start"]);
 		expect(reorderCalendarPlacement([], "start")).toEqual(["start", "due", "scheduled"]);
+	});
+});
+
+describe("planSubNameCommit", () => {
+	it("имя не менялось → renamed=false (зеркало не трогаем)", () => {
+		expect(planSubNameCommit("Луна", "Луна")).toEqual({ value: "Луна", renamed: false });
+	});
+
+	it("только краевые пробелы → не изменение, но значение обрезается", () => {
+		expect(planSubNameCommit("Луна", "  Луна ")).toEqual({ value: "Луна", renamed: false });
+	});
+
+	it("имя изменилось → renamed=true, значение обрезано", () => {
+		expect(planSubNameCommit("Новый календарь", "  Луна  ")).toEqual({ value: "Луна", renamed: true });
+	});
+
+	it("очистка в пусто → renamed=true, value пустой (строка покажет «(без имени)»)", () => {
+		expect(planSubNameCommit("Луна", "")).toEqual({ value: "", renamed: true });
+		expect(planSubNameCommit("Луна", "   ")).toEqual({ value: "", renamed: true });
+	});
+
+	it("пустое → пустое → не изменение", () => {
+		expect(planSubNameCommit("", "  ")).toEqual({ value: "", renamed: false });
+	});
+});
+
+describe("commitSubName", () => {
+	it("переименование: deleteMirror СТАРОГО имени ровно раз, save раз, sub.name обновлён, true", async () => {
+		const sub = { name: "Новый календарь" };
+		const deleteMirror = vi.fn(async () => undefined);
+		const save = vi.fn(async () => undefined);
+
+		const renamed = await commitSubName(sub, "  Луна  ", { deleteMirror, save });
+
+		expect(renamed).toBe(true);
+		expect(deleteMirror).toHaveBeenCalledTimes(1);
+		expect(deleteMirror).toHaveBeenCalledWith("Новый календарь"); // старое, не новое
+		expect(save).toHaveBeenCalledTimes(1);
+		expect(sub.name).toBe("Луна"); // записано обрезанное новое имя
+	});
+
+	it("зеркало удаляется ДО мутации sub.name (порт видит старое имя)", async () => {
+		const sub = { name: "Старое" };
+		let nameAtDelete: string | null = null;
+		const deleteMirror = vi.fn(async () => {
+			nameAtDelete = sub.name;
+		});
+		const save = vi.fn(async () => undefined);
+
+		await commitSubName(sub, "Новое", { deleteMirror, save });
+
+		expect(nameAtDelete).toBe("Старое");
+	});
+
+	it("имя не изменилось: ни deleteMirror, ни save, sub.name как был, false", async () => {
+		const sub = { name: "Луна" };
+		const deleteMirror = vi.fn(async () => undefined);
+		const save = vi.fn(async () => undefined);
+
+		const renamed = await commitSubName(sub, "  Луна ", { deleteMirror, save });
+
+		expect(renamed).toBe(false);
+		expect(deleteMirror).not.toHaveBeenCalled();
+		expect(save).not.toHaveBeenCalled();
+		expect(sub.name).toBe("Луна");
+	});
+
+	it("очистка в пусто — тоже переименование: deleteMirror старого раз, sub.name пуст", async () => {
+		const sub = { name: "Луна" };
+		const deleteMirror = vi.fn(async () => undefined);
+		const save = vi.fn(async () => undefined);
+
+		const renamed = await commitSubName(sub, "   ", { deleteMirror, save });
+
+		expect(renamed).toBe(true);
+		expect(deleteMirror).toHaveBeenCalledTimes(1);
+		expect(deleteMirror).toHaveBeenCalledWith("Луна");
+		expect(sub.name).toBe("");
 	});
 });

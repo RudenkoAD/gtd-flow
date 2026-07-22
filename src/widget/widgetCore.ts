@@ -48,7 +48,7 @@ import {
 } from "../views/calendar/calendarLogic";
 import { minutesToTime, timeToMinutes } from "../views/calendar/timeGrid";
 import { addDaysIso } from "../views/common/dates";
-import { quickCaptureLine } from "../views/common/taskActions";
+import { quickCaptureLineNl } from "../views/common/taskActions";
 import { buildWidgetIndex, errorMessage } from "./widgetIndex";
 import {
 	fileNsLabel,
@@ -323,16 +323,27 @@ function sortTodayItems(items: WidgetTodayItem[]): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Строка захвата `- [ ] <текст>[ 📍 <место>]` для быстрого ввода из виджета.
- * Текст санируется тем же quickCaptureLine, что и захват плагина (схлопывание
- * пробелов, срез уже набранного префикса `- [x] `); эмодзи в тексте сохраняются
- * дословно (рядовой ввод их не содержит). Пустой текст — ОШИБКА (throw): виджету
- * нечего писать. Непустое место дописывается полем 📍 через setValueField ядра;
- * недопустимое место (эмодзи поля в значении) не роняет захват — строка
+ * Строка захвата `- [ ] <текст>[ 📅 <дата> …][ 📍 <место>]` для быстрого ввода из
+ * виджета. Текст санируется тем же quickCaptureLine, что и захват плагина
+ * (схлопывание пробелов, срез уже набранного префикса `- [x] `); эмодзи в тексте
+ * сохраняются дословно (рядовой ввод их не содержит). Пустой текст — ОШИБКА (throw):
+ * виджету нечего писать. Непустое место дописывается полем 📍 через setValueField
+ * ядра; недопустимое место (эмодзи поля в значении) не роняет захват — строка
  * возвращается без 📍 (та же терпимость, что у quickAddLine календаря).
+ *
+ * `todayIso` (опц., 'YYYY-MM-DD') включает распознавание русских дат (parseNlDate
+ * ядра): «завтра в 15 позвонить маме» → задача «позвонить маме» с 📅 +время. БЕЗ
+ * аргумента поведение прежнее (Android-мост, не передающий дату, не ломается);
+ * невалидная строка даты тихо отключает NLP. Слово в кавычках («"завтра"») — escape:
+ * кавычки снимаются, дата не парсится.
  */
-export function buildCaptureLine(text: string, location?: string | null): string {
-	const line = quickCaptureLine(typeof text === "string" ? text : "");
+export function buildCaptureLine(
+	text: string,
+	location?: string | null,
+	todayIso?: string | null,
+): string {
+	const today = typeof todayIso === "string" ? todayIso : null;
+	const line = quickCaptureLineNl(typeof text === "string" ? text : "", today);
 	if (line === null) throw new Error("empty capture text");
 	const loc = typeof location === "string" ? location.trim() : "";
 	if (loc === "") return line;
@@ -366,6 +377,10 @@ export function captureTargetPath(dataJson: string | null, namespace?: string | 
 // buildEditedLine — синхронная правка строки для шторки деталей (см. widgetEditLine).
 // Ре-экспорт из entry делает его глобалом GtdWidgetCore.buildEditedLine в бандле.
 export { buildEditedLine, type LineEdits } from "./widgetEditLine";
+
+// parseNlDate — чистый распознаватель русских дат (для шторок/капчера Android):
+// глобал GtdWidgetCore.parseNlDate. Тот же модуль ядра, что и в quickCaptureLineNl.
+export { parseNlDate, type NlDateResult } from "../core/parser/nlDate";
 
 // re-export для удобства потребителей бандла/тестов (тип sentinel «Общее»)
 export { DEFAULT_NS };

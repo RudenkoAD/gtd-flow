@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { Platform, type App } from "obsidian";
+	import { NS_CONVENTION, nsTargetPath, resolveNamespace } from "../../core/namespace/namespace";
 	import type { IntentDispatcher } from "../../services/WritebackService";
+	import type { GtdFlowSettings } from "../../settings/Settings";
 	import { obsidianTooltip } from "../common/tooltip";
 	import type { DndPort } from "../dnd/types";
 	import { VIEW_TYPES } from "../registry";
@@ -14,6 +16,7 @@
 		app,
 		dispatcher,
 		vault,
+		settings,
 		block = null,
 		dnd = null,
 	}: {
@@ -21,11 +24,24 @@
 		app: App;
 		dispatcher: IntentDispatcher;
 		vault: EventVaultPort;
+		/** Настройки — для цели «Копировать…» у внешнего события (файл событий пространства). */
+		settings: GtdFlowSettings;
 		/** Геометрия для тайм-сетки; null — обычный chip (месяц/неделя/агенда/«Весь день»). */
 		block?: TimedBlock | null;
 		/** DnD-порт: непусто только в блоках тайм-сетки — там вхождение можно тянуть. */
 		dnd?: DndPort | null;
 	} = $props();
+
+	/** Событие из файла-зеркала внешнего календаря (gtd-external): read-only —
+	 *  приглушённый вид, метка 🔗, меню без правок/удаления/переноса. */
+	const external = $derived(occ.task.external === true);
+	/** Цель «Копировать…» у внешнего события: файл событий ПРОСТРАНСТВА зеркала —
+	 *  <root>/События.md (именованное) или settings.eventsFile («Общее»). Копия —
+	 *  наше одноразовое событие в обычном файле (зеркало не трогаем). */
+	const copyTargetFile = $derived.by(() => {
+		const ns = resolveNamespace(occ.task.filePath, occ.task.nsOverride ?? null, settings.namespaces);
+		return nsTargetPath(ns, settings.namespaces, NS_CONVENTION.events, settings.eventsFile);
+	});
 
 	/** Корневой элемент — призрак drag'а и якорь времени (верх блока = время начала). */
 	let rootEl = $state<HTMLElement | null>(null);
@@ -43,19 +59,24 @@
 	/** Короткий блок (≤30 мин): шапка времени прячется — место названию
 	 *  (та же логика, что у блоков задач; время остаётся в title-подсказке). */
 	const compact = $derived(block !== null && block.endMin - block.startMin <= 30);
-	/** Одиночный маркер: серия — ⟳, одноразовое событие — ◇. */
-	const mark = $derived(isSeries ? "⟳" : "◇");
-	const markLabel = $derived(isSeries ? "Повторяющееся событие" : "Событие");
+	/** Одиночный маркер: внешнее — 🔗, серия — ⟳, одноразовое событие — ◇. */
+	const mark = $derived(external ? "🔗" : isSeries ? "⟳" : "◇");
+	const markLabel = $derived(
+		external ? "Внешнее событие" : isSeries ? "Повторяющееся событие" : "Событие",
+	);
 	/** Провенанс переноса у одноразового: подсказка «перенесено из серии». */
 	const movedFromSeries = $derived(!isSeries && occ.task.spawnedFrom !== null);
+	const tooltipPrefix = $derived(
+		external
+			? "Внешнее событие: "
+			: isSeries
+				? "Повторяющееся событие: "
+				: movedFromSeries
+					? "Событие (перенесено из серии): "
+					: "Событие: ",
+	);
 	const tooltip = $derived(
-		(isSeries
-			? "Повторяющееся событие: "
-			: movedFromSeries
-				? "Событие (перенесено из серии): "
-				: "Событие: ") +
-			occ.title +
-			(compact && occ.time !== null ? ` (${rangeLabel ?? occ.time})` : ""),
+		tooltipPrefix + occ.title + (compact && occ.time !== null ? ` (${rangeLabel ?? occ.time})` : ""),
 	);
 	/** Место события (📍): непустой текст или null. */
 	const locationText = $derived(
@@ -66,8 +87,9 @@
 	 *  снимается (см. разметку), чтобы не было двойной подсказки; без места —
 	 *  null, и работает прежний native title. */
 	const eventTooltip = $derived(locationText === null ? null : `${tooltip}\n📍 ${locationText}`);
-	/** Тянуть можно только блок тайм-сетки на десктопе (как чипы задач, ТЗ §8). */
-	const draggable = $derived(block !== null && dnd !== null && !Platform.isPhone);
+	/** Тянуть можно только блок тайм-сетки на десктопе (как чипы задач, ТЗ §8).
+	 *  Внешнее событие тянуть нельзя — перенос затёрся бы синхронизацией (read-only). */
+	const draggable = $derived(block !== null && dnd !== null && !Platform.isPhone && !external);
 
 	/** Начало drag блока-вхождения: призрак — весь блок, время при drop — по его верху. */
 	function onPointerDown(e: PointerEvent): void {
@@ -90,7 +112,7 @@
 	function onContextMenu(e: MouseEvent): void {
 		e.preventDefault();
 		e.stopPropagation();
-		showEventMenu(e, { occ, app, dispatcher, vault });
+		showEventMenu(e, { occ, app, dispatcher, vault, external, copyTargetFile });
 	}
 </script>
 
@@ -99,6 +121,7 @@
 	class="gtd-cal-chip gtd-cal-event"
 	class:is-block={block !== null}
 	class:is-single={!isSeries}
+	class:is-external={external}
 	class:is-draggable={draggable}
 	bind:this={rootEl}
 	style={block !== null ? `top:${block.topPct}%; height:${block.heightPct}%; left:${leftPct}%; width:${widthPct}%` : ""}
@@ -160,6 +183,12 @@
 	/* одноразовое событие: сплошная рамка отличает его от пунктирной серии */
 	.gtd-cal-event.is-single {
 		border-style: solid;
+	}
+	/* внешнее событие (зеркало, read-only): скромный отличитель — приглушённый вид
+	   (метка 🔗 несёт основной сигнал, дизайн-систему не изобретаем) */
+	.gtd-cal-event.is-external {
+		opacity: 0.8;
+		border-style: dotted;
 	}
 	.gtd-tg-ev-range {
 		flex: none;

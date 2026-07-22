@@ -5,9 +5,9 @@
  */
 import type { BoardColumnModel, DiscoveredBoard } from "../../services/BoardService";
 import type { SetDate } from "../../core/intents/Intent";
-import type { Task } from "../../core/model/Task";
+import type { IsoDate, Task } from "../../core/model/Task";
 import { appendLine } from "../calendar/calendarLogic";
-import { quickCaptureLine } from "../common/taskActions";
+import { quickCaptureLineNl } from "../common/taskActions";
 import { VIEW_TYPES } from "../registry";
 
 /**
@@ -53,15 +53,21 @@ export function buildColumnVMs(columns: readonly BoardColumnModel[]): ColumnVM[]
 // ---------------------------------------------------------------------------
 
 /**
- * Строка задачи для колонки: та же санитация быстрого ввода, что во Входящих
- * (quickCaptureLine → `- [ ] <текст>`), плюс тег-матч колонки в конце. Строка
- * пишется В ФАЙЛ ДОСКИ, поэтому по filePath уже принадлежит доске
- * (belongsToBoard), а тег кладёт её в нужную колонку (resolveColumn); сам тег
- * скрыт в отображении карточки (stripColumnTags). Пустой ввод → null (не пишем).
- * Пустой match (fail-safe: у колонок доски он всегда валиден) → строка без тега.
+ * Строка задачи для колонки: та же санитация быстрого ввода, что во Входящих, плюс
+ * распознавание русских дат (quickCaptureLineNl → `- [ ] <текст>[ 📅 …]`) и тег-матч
+ * колонки в конце. `today` (IsoDate) включает NLP; null/пропуск — без дат. Строка
+ * пишется В ФАЙЛ ДОСКИ, поэтому по filePath уже принадлежит доске (belongsToBoard),
+ * а тег кладёт её в нужную колонку (resolveColumn); тег после поля 📅 остаётся
+ * отдельным text-сегментом (payload даты не тянет #тег), сам тег скрыт в отображении
+ * карточки (stripColumnTags). Пустой ввод → null (не пишем). Пустой match
+ * (fail-safe: у колонок доски он всегда валиден) → строка без тега.
  */
-export function columnTaskLine(text: string, columnMatch: string): string | null {
-	const base = quickCaptureLine(text);
+export function columnTaskLine(
+	text: string,
+	columnMatch: string,
+	today: IsoDate | null = null,
+): string | null {
+	const base = quickCaptureLineNl(text, today);
 	if (base === null) return null;
 	const tag = columnMatch.trim();
 	return tag === "" ? base : `${base} ${tag}`;
@@ -82,8 +88,9 @@ export interface BoardWritePort {
 export function columnCaptureTransform(
 	text: string,
 	columnMatch: string,
+	today: IsoDate | null = null,
 ): ((content: string) => string) | null {
-	const line = columnTaskLine(text, columnMatch);
+	const line = columnTaskLine(text, columnMatch, today);
 	if (line === null) return null;
 	return (content) => appendLine(content, line);
 }

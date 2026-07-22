@@ -403,3 +403,34 @@ describe("подписки", () => {
 		expect(notified).toBe(0);
 	});
 });
+
+describe("зеркала внешних календарей (gtd-external + gtd-events)", () => {
+	it("индексируются как события (container events) и несут маркер external", async () => {
+		const snap = mkSnap(
+			"GTD/External/Google.md",
+			"- [ ] Внешняя встреча 📅 2026-07-20 10:00-11:00 🆔 ext1",
+			{ container: "events", external: true },
+		);
+		const { indexer } = makeIndexer({ initialScan: () => scanOf(snap) });
+		await indexer.start();
+
+		const tasks = indexer.getIndex().fileTasks("GTD/External/Google.md");
+		expect(tasks).toHaveLength(1);
+		// подхватывается пайплайном событий БЕЗ изменений (container events) …
+		expect(tasks[0]!.container).toBe("events");
+		// … и несёт read-only маркер (для меню/защиты write-back)
+		expect(tasks[0]!.external).toBe(true);
+		expect(tasks[0]!.due).toBe("2026-07-20");
+	});
+
+	it("обычный файл событий БЕЗ gtd-external — external не проставлен", async () => {
+		const snap = mkSnap("GTD/Events.md", "- [ ] Своё событие 📅 2026-07-20 🆔 own1", {
+			container: "events",
+		});
+		const { indexer } = makeIndexer({ initialScan: () => scanOf(snap) });
+		await indexer.start();
+		const t = indexer.getIndex().fileTasks("GTD/Events.md")[0]!;
+		expect(t.container).toBe("events");
+		expect(t.external).toBeUndefined();
+	});
+});

@@ -1,4 +1,4 @@
-import { Notice, Plugin, WorkspaceLeaf } from "obsidian";
+import { Notice, Plugin, requestUrl, WorkspaceLeaf } from "obsidian";
 import { writable, type Writable } from "svelte/store";
 import { VIEW_META, VIEW_TYPES, type GtdViewKind } from "./views/registry";
 import { DEFAULT_SETTINGS, defaultUnderCommonRoot, type GtdFlowSettings } from "./settings/Settings";
@@ -23,6 +23,7 @@ import { PromoteService } from "./services/PromoteService";
 import { ProjectService } from "./services/ProjectService";
 import { CardService } from "./services/CardService";
 import { DayStatusService } from "./services/DayStatusService";
+import { SyncService, type SyncResult } from "./sync/SyncService";
 import { registerCommands } from "./commands";
 import type { IsoDate } from "./core/model/Task";
 import { createTaskStore, type TaskStore } from "./stores/taskStore";
@@ -50,6 +51,7 @@ export default class GtdFlowPlugin extends Plugin {
 	projects!: ProjectService;
 	cards!: CardService;
 	dayStatus!: DayStatusService;
+	sync!: SyncService;
 	/**
 	 * ГЛОБАЛЬНЫЙ дефолт активного пространства (store). С итерации 2 фидбека виды
 	 * переключаются ПОФАЙЛОВО и на него НЕ подписаны — он лишь задаёт стартовое
@@ -91,6 +93,11 @@ export default class GtdFlowPlugin extends Plugin {
 			write: this.vaultAdapter,
 			feed: this.indexer,
 			autoInjectId: this.settings.autoInjectId,
+			// зеркала внешних календарей (gtd-external) — read-only: их перезаписывает
+			// синхронизация, ручная правка затёрлась бы. frontmatter читаем напрямую
+			// (авторитетно, не зависит от отставания индекса); правки идут после старта,
+			// когда кэш метаданных уже зарезолвлен.
+			readOnlyFile: (path) => metadata.frontmatter(path)?.["gtd-external"] === true,
 		});
 		this.boards = new BoardService({
 			feed: this.indexer,
@@ -254,6 +261,41 @@ export default class GtdFlowPlugin extends Plugin {
 			},
 		});
 		this.dayStatus.start();
+		// Зеркалирование внешних iCal-календарей (§внешние календари). Порты — обёртки
+		// над obsidian (requestUrl — не fetch: CORS; vault для записи целиком). Таймер
+		// стартует ниже, после layout-ready (см. .then); чистится в onunload.
+		this.sync = new SyncService({
+			fetch: async (url) => {
+				const res = await requestUrl({ url, method: "GET", throw: true });
+				return res.text;
+			},
+			vault: {
+				read: (path) => this.vaultAdapter.readFile(path),
+				write: async (path, content) => {
+					const existing = this.app.vault.getFileByPath(path);
+					if (existing === null) {
+						const dir = path.split("/").slice(0, -1).join("/");
+						if (dir !== "" && this.app.vault.getAbstractFileByPath(dir) === null)
+							await this.app.vault.createFolder(dir).catch(() => undefined);
+						await this.app.vault.create(path, content);
+					} else {
+						await this.app.vault.modify(existing, content);
+					}
+				},
+				// удаление осиротевшего зеркала (подписку удалили/переименовали) — в
+				// СИСТЕМНУЮ корзину (trash второй аргумент true): удалили зря — восстановимо
+				delete: async (path) => {
+					const file = this.app.vault.getFileByPath(path);
+					if (file !== null) await this.app.vault.trash(file, true);
+				},
+			},
+			clock: { now: () => new Date() },
+			subscriptions: () => this.settings.externalCalendars,
+			namespaces: () => this.settings.namespaces,
+			commonRoot: () => this.settings.commonRoot,
+			intervalMin: () => this.settings.externalSyncIntervalMin,
+			onResult: (id, result) => this.recordSyncResult(id, result),
+		});
 		registerCommands(this);
 		this.addSettingTab(new GtdSettingsTab(this.app, this));
 		// Первичная сборка — вне критического пути старта, строго после
@@ -273,6 +315,9 @@ export default class GtdFlowPlugin extends Plugin {
 			// онбординг — тоже строго после резолва кэша: обратный fm-индекс уже полон,
 			// иначе «чистое хранилище» ложно определилось бы на пустом кэше
 			this.maybeOnboard(metadata);
+			// поллинг внешних календарей — после layout-ready + резолва кэша (frontmatter
+			// зеркал уже читается для read-only-защиты); стартовая синхронизация внутри start()
+			this.sync.start();
 			// .catch: rejection скана не должен пропадать беззвучно
 			return this.indexer.start().catch((e: unknown) => console.error("GTD Flow: сбой первичной сборки индекса", e));
 		});
@@ -325,6 +370,23 @@ export default class GtdFlowPlugin extends Plugin {
 		void this.projects.flushPending();
 		this.taskStore.dispose();
 		this.indexer.dispose();
+		this.sync.dispose();
+	}
+
+	/** Записать статус синхронизации подписки (SyncService.onResult) + персист, если
+	 *  что-то изменилось (лишний saveData будит sync-клиент data.json впустую). */
+	private recordSyncResult(id: string, result: SyncResult): void {
+		const sub = this.settings.externalCalendars.find((s) => s.id === id);
+		if (sub === undefined) return;
+		if (result.ok) {
+			if (sub.lastSyncAt === result.at && sub.lastError === null) return;
+			sub.lastSyncAt = result.at;
+			sub.lastError = null;
+		} else {
+			if (sub.lastError === result.error) return;
+			sub.lastError = result.error;
+		}
+		void this.saveSettings();
 	}
 
 	/** Открыть (или показать существующий) вид в основной области. */

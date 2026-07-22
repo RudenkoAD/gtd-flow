@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { EXTERNAL_READONLY_REASON } from "../services/WritebackService";
 import { loadSettings } from "./config";
 import { FsVault } from "./fsVault";
 import {
@@ -485,5 +486,66 @@ describe("MCP handlers", () => {
 		expect(sprint.total).toBe(2);
 		const todo = sprint.columns.find((c: any) => c.id === "todo");
 		expect(todo.count).toBe(1);
+	});
+});
+
+// --- FIX-1: MCP не должен мутировать read-only зеркала внешних календарей ---
+
+const EXT_FILES: Record<string, string> = {
+	".obsidian/plugins/gtd-flow/data.json": JSON.stringify({
+		commonRoot: "GTD",
+		eventsFile: "GTD/Events.md",
+		autoInjectId: true,
+		namespaces: [{ name: "Работа", root: "Работа" }],
+		activeNamespace: "Общее",
+	}),
+	// обычный файл — для «ленивой» проверки, что не-external пишутся как раньше
+	"GTD/Inbox.md": `---\ngtd-inbox: true\n---\n- [ ] Обычная задача 🆔 norm1\n`,
+	// зеркало внешнего календаря: gtd-events + gtd-external, событие с 🆔
+	"GTD/External/Google-abc123.md": `---\ngtd-events: true\ngtd-external: true\n---\n- [ ] Внешняя встреча 📅 2026-07-25 🆔 extmir1\n`,
+	// доска — цель move_card
+	"Работа/Доски/Спринт.md": `---\ngtd-board: true\nid: sprint\nname: Спринт\ncolumns:\n  - {id: todo, name: Очередь, match: "#kanban/sprint/todo"}\n  - {id: done, name: Готово, match: "#kanban/sprint/done"}\n---\n- [ ] Задача A #kanban/sprint/todo 🆔 card01\n`,
+};
+
+const MIRROR_PATH = "GTD/External/Google-abc123.md";
+
+describe("MCP read-only защита зеркал внешних календарей (FIX-1)", () => {
+	let root: string;
+	beforeEach(async () => {
+		root = await makeVault(EXT_FILES);
+	});
+	afterEach(async () => {
+		await removeVault(root);
+	});
+
+	it("update_task по 🆔 из зеркала → отказ read-only, файл не тронут", async () => {
+		const s = await session(root);
+		const before = await readVaultFile(root, MIRROR_PATH);
+		const res = (await updateTask(s, { id: "extmir1", done: true })) as any;
+		expect(res.ok).toBe(false);
+		expect(res.failed.some((f: any) => f.reason === EXTERNAL_READONLY_REASON)).toBe(true);
+		expect(await readVaultFile(root, MIRROR_PATH)).toBe(before); // ноль записей
+	});
+
+	it("delete_task по 🆔 из зеркала → ошибка read-only", async () => {
+		const s = await session(root);
+		await expect(deleteTask(s, { id: "extmir1" })).rejects.toThrow(EXTERNAL_READONLY_REASON);
+		expect(await readVaultFile(root, MIRROR_PATH)).toContain("extmir1"); // строка на месте
+	});
+
+	it("move_card карточки из зеркала → ошибка read-only", async () => {
+		const s = await session(root);
+		await expect(
+			moveCard(s, { board: "Спринт", id: "extmir1", column: "done" }),
+		).rejects.toThrow(EXTERNAL_READONLY_REASON);
+	});
+
+	it("обычный (не-external) файл пишется как раньше — защита не задевает", async () => {
+		const s = await session(root);
+		const res = (await updateTask(s, { id: "norm1", done: true })) as any;
+		expect(res.ok).toBe(true);
+		expect(await readVaultFile(root, "GTD/Inbox.md")).toMatch(
+			/- \[x\] Обычная задача 🆔 norm1 ✅/,
+		);
 	});
 });

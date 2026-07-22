@@ -13,7 +13,9 @@ import {
 	ensureCaptureFileNs,
 	findTaskAtLine,
 	moveTaskToTemplates,
+	nlCaptureHint,
 	quickCaptureLine,
+	quickCaptureLineNl,
 	recurringFilePaths,
 	recurringFilePathsInNamespace,
 	recurringTemplateTarget,
@@ -49,6 +51,64 @@ describe("quickCaptureLine: санитация быстрого ввода", () 
 
 	it("минус-текст не принимается за префикс", () => {
 		expect(quickCaptureLine("-5 градусов утром")).toBe("- [ ] -5 градусов утром");
+	});
+});
+
+describe("quickCaptureLineNl: быстрый ввод с NLP-датами", () => {
+	const WED = "2026-07-22"; // среда
+
+	it("today=null — полное соответствие quickCaptureLine (без дат)", () => {
+		expect(quickCaptureLineNl("завтра встреча", null)).toBe("- [ ] завтра встреча");
+		expect(quickCaptureLineNl("  ", null)).toBeNull();
+	});
+
+	it("дата+время → 📅 <дата> HH:mm", () => {
+		expect(quickCaptureLineNl("завтра в 15 позвонить маме", WED)).toBe(
+			"- [ ] позвонить маме 📅 2026-07-23 15:00",
+		);
+	});
+
+	it("интервал → 📅 <дата> HH:mm-HH:mm", () => {
+		expect(quickCaptureLineNl("с 14 до 16 совещание", WED)).toBe(
+			"- [ ] совещание 📅 2026-07-22 14:00-16:00",
+		);
+	});
+
+	it("только дата → 📅 без времени", () => {
+		expect(quickCaptureLineNl("через 3 дня отчёт", WED)).toBe("- [ ] отчёт 📅 2026-07-25");
+	});
+
+	it("нет выражения → обычная строка", () => {
+		expect(quickCaptureLineNl("купить молоко", WED)).toBe("- [ ] купить молоко");
+	});
+
+	it("escape: слово в кавычках → без даты, кавычки сняты", () => {
+		expect(quickCaptureLineNl('"завтра" встреча', WED)).toBe("- [ ] завтра встреча");
+	});
+
+	it("пустой title после вырезания → берём исходный текст как есть", () => {
+		expect(quickCaptureLineNl("завтра", WED)).toBe("- [ ] завтра");
+	});
+});
+
+describe("nlCaptureHint: живая подсказка распознанной даты", () => {
+	const WED = "2026-07-22"; // среда
+
+	it("дата + время — «📅 чт 23 июл · 15:00»", () => {
+		expect(nlCaptureHint("завтра в 15 позвонить", WED)).toBe("📅 чт 23 июл · 15:00");
+	});
+
+	it("только дата — без времени", () => {
+		expect(nlCaptureHint("15 августа поездка", WED)).toBe("📅 сб 15 авг");
+	});
+
+	it("интервал — en-dash", () => {
+		expect(nlCaptureHint("с 14 до 16 совещание", WED)).toBe("📅 ср 22 июл · 14:00–16:00");
+	});
+
+	it("нет даты / только escape → null (подсказки нет)", () => {
+		expect(nlCaptureHint("купить молоко", WED)).toBeNull();
+		expect(nlCaptureHint('"завтра" купить', WED)).toBeNull();
 	});
 });
 

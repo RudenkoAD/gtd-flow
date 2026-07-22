@@ -4,9 +4,9 @@
  * Плюс быстрый ввод новой задачи (санитация + append) — обе логики чистые,
  * без obsidian, тестируются в node.
  */
-import type { Task } from "../../core/model/Task";
+import type { IsoDate, Task } from "../../core/model/Task";
 import { appendLine } from "../calendar/calendarLogic";
-import { quickCaptureLine } from "../common/taskActions";
+import { quickCaptureLineNl } from "../common/taskActions";
 
 export function filterTasks(tasks: readonly Task[], query: string): readonly Task[] {
 	const q = query.trim().toLowerCase();
@@ -28,12 +28,17 @@ export interface InboxWritePort {
 
 /**
  * Быстрый ввод во «Входящих»: та же санитация, что у палитры
- * (taskActions.quickCaptureLine → единый формат `- [ ] <текст>`), затем append
- * строки в конец файла. Пустой/невалидный ввод → null: вызывающий ничего не
+ * (taskActions.quickCaptureLine → единый формат `- [ ] <текст>`) плюс
+ * распознавание русских дат (quickCaptureLineNl: «завтра в 15 …» → 📅 +время),
+ * затем append строки в конец файла. `today` (IsoDate) включает NLP; null/пропуск —
+ * старое поведение без дат. Пустой/невалидный ввод → null: вызывающий ничего не
  * пишет и не чистит поле. Возврат — трансформ для VaultAdapter.processFile.
  */
-export function inboxCaptureTransform(text: string): ((content: string) => string) | null {
-	const line = quickCaptureLine(text);
+export function inboxCaptureTransform(
+	text: string,
+	today: IsoDate | null = null,
+): ((content: string) => string) | null {
+	const line = quickCaptureLineNl(text, today);
 	if (line === null) return null;
 	return (content) => appendLine(content, line);
 }

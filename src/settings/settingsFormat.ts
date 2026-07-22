@@ -121,3 +121,48 @@ export function reorderCalendarPlacement(current: readonly CalendarField[], prim
 	}
 	return [primary, ...rest];
 }
+
+// ── Внешние календари: коммит имени подписки по blur/Enter ──────────────────
+
+export interface SubNameCommitPlan {
+	/** Значение для записи в sub.name (обрезано). Пустое допустимо — строка
+	 *  подписки покажет «(без имени)». */
+	value: string;
+	/** Изменилось ли имя (сравнение по trim): true — зеркало под старым именем
+	 *  осиротело (подлежит удалению) и строку надо перерисовать. */
+	renamed: boolean;
+}
+
+/**
+ * Решение о коммите имени подписки (blur/Enter, а НЕ на каждую букву). Сравнение
+ * по trim: правка одних лишь краевых пробелов изменением не считается
+ * (renamed=false), а очистка имени в пусто — считается (renamed=true: старое
+ * зеркало осиротело). Значение всегда обрезается.
+ */
+export function planSubNameCommit(oldName: string, input: string): SubNameCommitPlan {
+	const value = input.trim();
+	return { value, renamed: value !== oldName.trim() };
+}
+
+/**
+ * Коммит имени подписки. При реальном переименовании: удалить зеркало СТАРОГО
+ * имени РОВНО РАЗ (deleteMirror — до мутации, путь считается от старого имени),
+ * записать новое имя, сохранить; вернуть true (вызыватель тогда перерисует
+ * строку — заголовок и статус). Без изменений — ни удаления, ни записи (не будим
+ * saveData и не трогаем зеркало впустую), вернуть false. IO приходит портами —
+ * тестируется без DOM/obsidian. Это ключ к фиксу «фокус теряется после первой
+ * буквы»: раньше эта чистка зеркала шла на КАЖДЫЙ input-event.
+ */
+export async function commitSubName(
+	sub: { name: string },
+	input: string,
+	ports: { deleteMirror: (oldName: string) => Promise<void>; save: () => Promise<void> },
+): Promise<boolean> {
+	const { value, renamed } = planSubNameCommit(sub.name, input);
+	if (!renamed) return false;
+	const oldName = sub.name; // зеркало под СТАРЫМ именем — удаляем ДО мутации sub.name
+	await ports.deleteMirror(oldName);
+	sub.name = value;
+	await ports.save();
+	return true;
+}

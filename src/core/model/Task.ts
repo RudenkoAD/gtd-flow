@@ -55,6 +55,11 @@ export interface FileContext {
 	 *  вычислении пространства (см. core/namespace/resolveNamespace). Отсутствует
 	 *  (ключ опущен), когда override не задан или его значение — не строка/пусто. */
 	nsOverride?: string | null;
+	/** Файл — зеркало внешнего календаря (frontmatter gtd-external: true). Такие
+	 *  файлы READ-ONLY: перезаписываются синхронизацией, поэтому write-back в них
+	 *  отказан, а меню события предлагает лишь «Копировать»/«Открыть файл». Опущен
+	 *  (не true), когда файл не внешний. */
+	external?: boolean;
 }
 
 export interface Task {
@@ -147,6 +152,10 @@ export interface Task {
 	 *  на границе фильтрации (зависит от списка корней-настройки). Опционально —
 	 *  фикстуры/синтетические задачи без контекста файла его не задают. */
 	nsOverride?: string | null;
+	/** Файл — зеркало внешнего календаря (frontmatter gtd-external: true). Проставляет
+	 *  индексатор из FileContext.external. READ-ONLY-маркер для меню события и защиты
+	 *  write-back; опущен (не true) у обычных файлов. */
+	external?: boolean;
 }
 
 /** Дата-офсет вида "-3d"/"+14d" в шаблонах регулярного ящика (ТЗ §6). */

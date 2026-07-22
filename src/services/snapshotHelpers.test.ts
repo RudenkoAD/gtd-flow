@@ -122,6 +122,20 @@ describe("fileContextFromFrontmatter", () => {
 		expect(fileContextFromFrontmatter("e.md", { "gtd-events": "yes" }).container).toBe("plain");
 	});
 
+	it("gtd-external + gtd-events — контейнер ОСТАЁТСЯ events (зеркало в пайплайне событий), external=true", () => {
+		const ctx = fileContextFromFrontmatter("ext.md", { "gtd-events": true, "gtd-external": true });
+		// зеркало внешнего календаря подхватывается пайплайном событий БЕЗ изменений
+		expect(ctx.container).toBe("events");
+		expect(ctx.external).toBe(true);
+	});
+
+	it("gtd-external — только read-only маркер; false/мусор → ключ external опущен", () => {
+		expect(fileContextFromFrontmatter("x.md", { "gtd-external": true }).external).toBe(true);
+		expect(fileContextFromFrontmatter("x.md", {})).not.toHaveProperty("external");
+		expect(fileContextFromFrontmatter("x.md", { "gtd-external": false })).not.toHaveProperty("external");
+		expect(fileContextFromFrontmatter("x.md", { "gtd-external": "yes" })).not.toHaveProperty("external");
+	});
+
 	it("gtd-archive: true — archive; false/мусор — plain", () => {
 		expect(fileContextFromFrontmatter("a.md", { "gtd-archive": true }).container).toBe("archive");
 		expect(fileContextFromFrontmatter("a.md", { "gtd-archive": false }).container).toBe("plain");

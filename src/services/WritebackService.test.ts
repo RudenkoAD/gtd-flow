@@ -4,7 +4,7 @@ import type { Task } from "../core/model/Task";
 import { parseTaskLine } from "../core/parser/parseTaskLine";
 import { computeKey } from "../core/parser/taskKey";
 import { FakeFeed } from "../stores/testSupport";
-import { WritebackService, type WritePort } from "./WritebackService";
+import { EXTERNAL_READONLY_REASON, WritebackService, type WritePort } from "./WritebackService";
 
 // --- фейковый порт записи поверх in-memory Map ---
 
@@ -976,5 +976,109 @@ describe("WritebackService: dispatchMany (атомарный пакет одно
 
 		expect(res).toEqual({ ok: false, reason: "batch-not-single-line", opIndex: 1 });
 		expect(port.writes).toHaveLength(0);
+	});
+});
+
+describe("WritebackService: read-only защита зеркал внешних календарей", () => {
+	const MIRROR = "GTD/External/Google.md";
+
+	/** Сервис, где MIRROR помечен read-only (как gtd-external файл). */
+	function makeGuarded() {
+		const port = new FakePort();
+		const feed = new FakeFeed();
+		const svc = new WritebackService({
+			write: port,
+			feed,
+			autoInjectId: true,
+			readOnlyFile: (path) => path === MIRROR,
+		});
+		return { port, feed, svc };
+	}
+
+	it("правка строки в файле-зеркале отклоняется, файл не трогается", async () => {
+		const { port, feed, svc } = makeGuarded();
+		const ev = parseLine(MIRROR, "- [ ] Внешнее 📅 2026-07-06 🆔 ext1", 0);
+		feed.replaceFile(MIRROR, [ev]);
+		port.files.set(MIRROR, "- [ ] Внешнее 📅 2026-07-06 🆔 ext1\n");
+
+		const res = await svc.dispatch({ type: "set-date", key: ev.key, field: "due", date: "2026-08-01" });
+
+		expect(res).toEqual({ ok: false, reason: EXTERNAL_READONLY_REASON });
+		expect(port.calls).toBe(0); // до processFile даже не дошли
+		expect(port.writes).toHaveLength(0);
+	});
+
+	it("удаление строки зеркала отклоняется", async () => {
+		const { port, feed, svc } = makeGuarded();
+		const ev = parseLine(MIRROR, "- [ ] Внешнее 📅 2026-07-06 🆔 ext1", 0);
+		feed.replaceFile(MIRROR, [ev]);
+		port.files.set(MIRROR, "- [ ] Внешнее 📅 2026-07-06 🆔 ext1\n");
+
+		const res = await svc.dispatch({ type: "delete-line", key: ev.key });
+		expect(res).toEqual({ ok: false, reason: EXTERNAL_READONLY_REASON });
+		expect(port.calls).toBe(0);
+	});
+
+	it("move-line отклоняется и когда цель — зеркало, и когда источник — зеркало", async () => {
+		const { port, feed, svc } = makeGuarded();
+		// источник — обычный файл, цель — зеркало
+		const t = parseLine(INBOX, "- [ ] Задача 🆔 t1", 0);
+		const ev = parseLine(MIRROR, "- [ ] Внешнее 📅 2026-07-06 🆔 ext1", 0);
+		feed.replaceFile(INBOX, [t]);
+		feed.replaceFile(MIRROR, [ev]);
+		port.files.set(INBOX, "- [ ] Задача 🆔 t1\n");
+		port.files.set(MIRROR, "- [ ] Внешнее 📅 2026-07-06 🆔 ext1\n");
+
+		const intoMirror = await svc.dispatch({ type: "move-line", key: t.key, toFile: MIRROR });
+		expect(intoMirror).toEqual({ ok: false, reason: EXTERNAL_READONLY_REASON });
+
+		const outOfMirror = await svc.dispatch({ type: "move-line", key: ev.key, toFile: INBOX });
+		expect(outOfMirror).toEqual({ ok: false, reason: EXTERNAL_READONLY_REASON });
+		expect(port.writes).toHaveLength(0);
+	});
+
+	it("правки обычных файлов не затронуты защитой", async () => {
+		const { port, feed, svc } = makeGuarded();
+		const t = parseLine(INBOX, "- [ ] Задача 🆔 t1", 0);
+		feed.replaceFile(INBOX, [t]);
+		port.files.set(INBOX, "- [ ] Задача 🆔 t1\n");
+
+		const res = await svc.dispatch({ type: "set-priority", key: t.key, priority: "high" });
+		expect(res).toEqual({ ok: true });
+		expect(port.files.get(INBOX)).toContain("⏫");
+	});
+
+	// FIX-1: file-адресуемые интенты, направленные в зеркало, тоже отклоняются
+	it("spawn-instances в файл-зеркало отклоняется (file-адресуемый интент)", async () => {
+		const { port, svc } = makeGuarded();
+		port.files.set(MIRROR, "- [ ] Внешнее 📅 2026-07-06 🆔 ext1\n");
+		const res = await svc.dispatch({
+			type: "spawn-instances",
+			file: MIRROR,
+			lines: ["- [ ] копия"],
+		});
+		expect(res).toEqual({ ok: false, reason: EXTERNAL_READONLY_REASON });
+		expect(port.calls).toBe(0); // до processFile не дошли
+	});
+
+	it("интент проекта (set-project-status), нацеленный в зеркало, отклоняется", async () => {
+		const { svc } = makeGuarded();
+		const res = await svc.dispatch({
+			type: "set-project-status",
+			projectPath: MIRROR,
+			status: "archived",
+		});
+		expect(res).toEqual({ ok: false, reason: EXTERNAL_READONLY_REASON });
+	});
+
+	it("file-адресуемый интент в ОБЫЧНЫЙ файл гардом не блокируется", async () => {
+		const { svc } = makeGuarded();
+		const res = await svc.dispatch({
+			type: "spawn-instances",
+			file: INBOX,
+			lines: ["- [ ] копия"],
+		});
+		// не read-only: гард пропускает; дальше — штатный этап реализации
+		expect(res).toEqual({ ok: false, reason: "not-implemented-stage" });
 	});
 });

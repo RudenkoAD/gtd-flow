@@ -44,13 +44,18 @@ export interface SessionDeps {
 export async function openSession(deps: SessionDeps): Promise<GtdSession> {
 	const { vault, settings, today } = deps;
 	const files = await vault.listMarkdownFiles();
-	const { feed, boardPaths, projectPaths } = await buildIndex(files, today);
+	const { feed, boardPaths, projectPaths, externalPaths } = await buildIndex(files, today);
 
 	const writeback = new WritebackService({
 		write: vault,
 		feed,
 		autoInjectId: settings.autoInjectId,
 		genId: deps.genId,
+		// зеркала внешних календарей (gtd-external) — READ-ONLY, как в плагине: их
+		// перезаписывает синхронизация, ручная/агентская правка затёрлась бы. Набор
+		// путей взят из того же скана, что построил индекс (externalPaths) — согласован
+		// по построению и покрывает даже пустые зеркала без задач.
+		readOnlyFile: (path) => externalPaths.has(path),
 	});
 
 	const patchFrontmatter = async (

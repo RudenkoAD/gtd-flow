@@ -15,6 +15,26 @@ export interface DeferPreset {
 	offsetDays: number;
 }
 
+/**
+ * Подписка на внешний iCal-календарь (§внешние календари). Материализуется в
+ * файл-зеркало `<корень пространства>/External/<имя>.md`. Персистится в data.json.
+ * lastSyncAt/lastError — статус последней синхронизации (обновляет SyncService).
+ */
+export interface ExternalCalendarSub {
+	/** Стабильный внутренний id (ключ статуса/удаления); не меняется при правках. */
+	id: string;
+	/** Отображаемое имя (frontmatter, заголовок, имя файла-зеркала). */
+	name: string;
+	/** Секретный/публичный адрес .ics-ленты. Хранится локально в data.json. */
+	url: string;
+	/** Пространство подписки: DEFAULT_NS («Общее») или имя именованного пространства. */
+	namespace: string;
+	/** Epoch-мс последней УСПЕШНОЙ синхронизации; null — ещё не синхронизировалась. */
+	lastSyncAt: number | null;
+	/** Текст последней ошибки (сеть/разбор) или null — последняя попытка успешна. */
+	lastError: string | null;
+}
+
 export interface GtdFlowSettings {
 	/** Корневая папка «Общего» — «дом» для файлов, создаваемых в пространстве «Общее»
 	 *  (по конвенции NS_CONVENTION от этой папки, ровно как именованное пространство
@@ -78,6 +98,11 @@ export interface GtdFlowSettings {
 	 *  последний выбор пользователя переживает перезапуск. В UI настроек НЕ показывается —
 	 *  меняется только кликом по переключателю в сетке. Дефолт — «Задача». */
 	lastQuickAddKind: QuickAddKind;
+	/** Подписки на внешние iCal-календари (§внешние календари). Массив заменяется
+	 *  целиком при слиянии (см. mergeSettings). Пусто — фича неактивна. */
+	externalCalendars: ExternalCalendarSub[];
+	/** Интервал поллинга внешних календарей в минутах (min 1, дефолт 5). */
+	externalSyncIntervalMin: number;
 }
 
 export const DEFAULT_SETTINGS: GtdFlowSettings = {
@@ -115,6 +140,8 @@ export const DEFAULT_SETTINGS: GtdFlowSettings = {
 	namespaces: [],
 	activeNamespace: DEFAULT_NS,
 	lastQuickAddKind: "task",
+	externalCalendars: [],
+	externalSyncIntervalMin: 5,
 };
 
 /**

@@ -18,6 +18,14 @@ import type { IndexFeed } from "./types";
 export type IntentResult = { ok: true } | { ok: false; reason: string };
 
 /**
+ * Причина отказа записи в файл-зеркало внешнего календаря (gtd-external): такие
+ * файлы READ-ONLY — их перезаписывает синхронизация, ручная правка затёрлась бы.
+ * Читаемая строка (показывается пользователю как `GTD Flow: <reason>`), а не код.
+ */
+export const EXTERNAL_READONLY_REASON =
+	"внешний календарь только для чтения (правки затрутся синхронизацией)";
+
+/**
  * Итог пакетной правки одной строки (dispatchMany): всё-или-ничего.
  * opIndex — индекс интента, чей трансформ упал (виновник); -1 — сбой уровня
  * локализации/файла (строка не найдена, протухший индекс, файла нет) — тогда
@@ -41,6 +49,10 @@ export interface WritebackDeps {
 	autoInjectId: boolean;
 	/** Генератор 🆔; по умолчанию 6 символов base36. */
 	genId?: () => string;
+	/** Файл только для чтения (зеркало внешнего календаря, gtd-external): запись в
+	 *  него отклоняется с EXTERNAL_READONLY_REASON. Отсутствует ⇒ защита выключена
+	 *  (обратная совместимость; фикстуры/тесты без внешних файлов). */
+	readOnlyFile?: (path: string) => boolean;
 }
 
 /** Всё, что нужно для локализации строки: 🆔, нормализованное описание, подсказка. */
@@ -306,6 +318,31 @@ function childBlockLength(lines: readonly string[], idx: number): number {
 	return n;
 }
 
+/**
+ * Целевой файл FILE-адресуемого интента (пишет прямо в named-файл/контейнер), либо
+ * null для key-адресуемых. Для единой read-only-проверки в начале dispatch: без неё
+ * spawn-instances (копии регулярных) и графовые/статусные интенты проекта могли бы
+ * писать в external-файл. move-line проверяется отдельно (у него И источник по key,
+ * И цель toFile). Синхронизировать при добавлении новых file-адресуемых интентов.
+ */
+function fileTargetPath(intent: Intent): string | null {
+	switch (intent.type) {
+		case "spawn-instances":
+			return intent.file;
+		case "reorder":
+			return intent.boardPath;
+		case "add-node":
+		case "connect-edge":
+		case "disconnect-edge":
+		case "delete-node":
+		case "move-node":
+		case "set-project-status":
+			return intent.projectPath;
+		default:
+			return null;
+	}
+}
+
 /** Сколько id-less строк с этим описанием в содержимом файла (для сверки
  *  content-key локализации со знанием индекса — fail-closed при расхождении). */
 function countIdlessMatches(lines: readonly string[], filePath: string, description: string): number {
@@ -346,7 +383,45 @@ export class WritebackService implements IntentDispatcher {
 		return task?.taskId ?? this.injectedIds.get(key) ?? null;
 	}
 
+	/** Файл под read-only-защитой (зеркало внешнего календаря)? */
+	private isReadOnly(path: string): boolean {
+		return this.deps.readOnlyFile !== undefined && this.deps.readOnlyFile(path);
+	}
+
+	/**
+	 * Причина отказа, если интент писал бы в файл-зеркало внешнего календаря, иначе
+	 * null. move-line защищает И источник, И цель (нельзя ни утащить строку зеркала,
+	 * ни дописать в зеркало); advance-cursor — все носители шаблона; прочие интенты
+	 * адресуются по key одной задаче. Защита едина для dispatch и dispatchMany.
+	 */
+	private readOnlyReason(intent: Intent): string | null {
+		if (this.deps.readOnlyFile === undefined) return null;
+		const index = this.deps.feed.getIndex();
+		if (intent.type === "move-line") {
+			const src = index.get(intent.key);
+			if (src !== undefined && this.isReadOnly(src.filePath)) return EXTERNAL_READONLY_REASON;
+			return this.isReadOnly(intent.toFile) ? EXTERNAL_READONLY_REASON : null;
+		}
+		if (intent.type === "advance-cursor") {
+			for (const c of index.resolveDep(intent.templateId))
+				if (this.isReadOnly(c.filePath)) return EXTERNAL_READONLY_REASON;
+			return null;
+		}
+		// file-адресуемые интенты (spawn-instances, графовые/статусные проекта, reorder):
+		// пишут прямо в named-файл — проверяем его путь единообразно в начале dispatch.
+		const target = fileTargetPath(intent);
+		if (target !== null) return this.isReadOnly(target) ? EXTERNAL_READONLY_REASON : null;
+		const key = (intent as { key?: string }).key;
+		if (typeof key === "string") {
+			const t = index.get(key);
+			if (t !== undefined && this.isReadOnly(t.filePath)) return EXTERNAL_READONLY_REASON;
+		}
+		return null;
+	}
+
 	async dispatch(intent: Intent): Promise<IntentResult> {
+		const readOnly = this.readOnlyReason(intent);
+		if (readOnly !== null) return { ok: false, reason: readOnly };
 		try {
 			if (KEYED_LINE_TYPES.has(intent.type)) {
 				// сужение через has() TS не выводит — но у всех KEYED_LINE_TYPES есть key
@@ -398,6 +473,10 @@ export class WritebackService implements IntentDispatcher {
 				return { ok: false, reason: "batch-not-single-line", opIndex: intents.indexOf(it) };
 			}
 		}
+		// read-only-защита зеркал: пакет адресован одной задаче (единый key) —
+		// проверяем её файл (dispatch для length===1 защищён своей веткой выше)
+		const readOnly = this.readOnlyReason(intents[0]!);
+		if (readOnly !== null) return { ok: false, reason: readOnly, opIndex: -1 };
 		try {
 			const task = this.deps.feed.getIndex().get(key);
 			if (task === undefined) {

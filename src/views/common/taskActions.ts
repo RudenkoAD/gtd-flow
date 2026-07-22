@@ -4,14 +4,17 @@
  * Ноль импортов obsidian — тестируется в голом node; запись идёт через
  * структурные порты, совместимые с VaultAdapter, и IntentDispatcher.
  */
-import type { Task } from "../../core/model/Task";
+import type { IsoDate, Task } from "../../core/model/Task";
 import {
 	DEFAULT_NS,
 	type NamespaceDef,
 	resolveNamespace,
 } from "../../core/namespace/namespace";
+import { parseNlDate } from "../../core/parser/nlDate";
 import { parseTaskLine } from "../../core/parser/parseTaskLine";
+import { setField } from "../../core/parser/serializeTaskLine";
 import type { IntentDispatcher, IntentResult } from "../../services/WritebackService";
+import { dayOfWeekSun0 } from "./dates";
 
 // ---------------------------------------------------------------------------
 // Быстрый ввод
@@ -29,6 +32,87 @@ export function quickCaptureLine(text: string): string | null {
 	const body = collapsed.replace(/^[-*+]\s+\[.\]\s*/, "").trim();
 	if (body === "") return null;
 	return `- [ ] ${body}`;
+}
+
+// ---------------------------------------------------------------------------
+// NLP-даты в быстром вводе («завтра в 15 позвонить маме» → 📅 <завтра> 15:00)
+// ---------------------------------------------------------------------------
+
+/** Разложить 'HH:mm' | 'HH:mm-HH:mm' на пару начало/конец для setField. */
+function splitNlTime(time: string | null): { time: string | null; timeEnd: string | null } {
+	if (time === null) return { time: null, timeEnd: null };
+	const dash = time.indexOf("-");
+	if (dash === -1) return { time, timeEnd: null };
+	return { time: time.slice(0, dash), timeEnd: time.slice(dash + 1) };
+}
+
+/** Дописать 📅 <дата>[ время] в строку захвата (ядро setField). Битая пара
+ *  времени не роняет захват — тогда пишем только дату. */
+function applyNlCapture(line: string, date: IsoDate, time: string | null): string {
+	const { time: t, timeEnd } = splitNlTime(time);
+	try {
+		return setField(line, "due", date, t, timeEnd);
+	} catch {
+		try {
+			return setField(line, "due", date);
+		} catch {
+			return line;
+		}
+	}
+}
+
+/**
+ * Быстрый ввод с распознаванием русских дат: прогнать parseNlDate(text, today) и,
+ * если распознано датное выражение, вернуть `- [ ] <title>` с полем 📅 (+время).
+ * today === null отключает NLP (полное соответствие старому quickCaptureLine —
+ * для календарной сетки, где дата/время уже из слота). Пустой title → null.
+ * Escape-путь: датное слово в кавычках («"завтра"») → кавычки снимаются, дата НЕ
+ * ставится (parseNlDate вернёт date: null).
+ */
+export function quickCaptureLineNl(text: string, today: IsoDate | null): string | null {
+	if (today === null) return quickCaptureLine(text);
+	const res = parseNlDate(text, today);
+	const base = quickCaptureLine(res !== null ? res.title : text);
+	if (base === null) return null;
+	if (res === null || res.date === null) return base;
+	return applyNlCapture(base, res.date, res.time);
+}
+
+const NL_WEEKDAYS_SHORT = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"] as const;
+const NL_MONTHS_SHORT = [
+	"янв",
+	"фев",
+	"мар",
+	"апр",
+	"май",
+	"июн",
+	"июл",
+	"авг",
+	"сен",
+	"окт",
+	"ноя",
+	"дек",
+] as const;
+
+/**
+ * Живая подсказка распознанной даты для поля быстрого ввода: «📅 чт 15 авг · 15:00»
+ * (интервал через en-dash — консистентно с agendaTimeLabel). null — если дата не
+ * распознана (или сработал только escape): подсказку не показываем.
+ */
+export function nlCaptureHint(text: string, today: IsoDate): string | null {
+	const res = parseNlDate(text, today);
+	if (res === null || res.date === null) return null;
+	const wd = NL_WEEKDAYS_SHORT[dayOfWeekSun0(res.date)] ?? "?";
+	const day = Number(res.date.slice(8, 10));
+	const mon = NL_MONTHS_SHORT[Number(res.date.slice(5, 7)) - 1] ?? "?";
+	let label = `📅 ${wd} ${day} ${mon}`;
+	if (res.time !== null) {
+		const dash = res.time.indexOf("-");
+		const timeLabel =
+			dash === -1 ? res.time : `${res.time.slice(0, dash)}–${res.time.slice(dash + 1)}`;
+		label += ` · ${timeLabel}`;
+	}
+	return label;
 }
 
 // ---------------------------------------------------------------------------

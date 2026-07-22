@@ -5,9 +5,11 @@
  */
 import { PluginSettingTab, Setting, type App } from "obsidian";
 import type GtdFlowPlugin from "../main";
-import type { CalendarField } from "./Settings";
+import { DEFAULT_NS } from "../core/namespace/namespace";
+import type { CalendarField, ExternalCalendarSub } from "./Settings";
 import {
 	CALENDAR_FIELDS,
+	commitSubName,
 	formatDeferPresets,
 	formatNamespaces,
 	parseDeferPresets,
@@ -48,6 +50,7 @@ export class GtdSettingsTab extends PluginSettingTab {
 		this.sectionNamespaces(containerEl);
 		this.sectionProjects(containerEl);
 		this.sectionCalendar(containerEl);
+		this.sectionExternal(containerEl);
 		this.sectionDefer(containerEl);
 		this.sectionRecurring(containerEl);
 		this.sectionCards(containerEl);
@@ -247,6 +250,157 @@ export class GtdSettingsTab extends PluginSettingTab {
 					await this.save();
 				});
 			});
+	}
+
+	// ── Внешние календари (ICS) ───────────────────────────────────────────────
+
+	private sectionExternal(el: HTMLElement): void {
+		new Setting(el).setName("Внешние календари").setHeading();
+
+		new Setting(el).setName("Подписки на iCal-ленты (ICS)").setDesc(
+			"Секретный адрес Google Calendar, published-ссылка Outlook или любой .ics-URL " +
+				"материализуются в файлы-зеркала «<корень пространства>/External/<имя>.md» и " +
+				"появляются в календаре/агенде/виджетах как обычные события. Зеркала — только для " +
+				"чтения (перезаписываются синхронизацией); окно развёртки: 14 дней назад и 92 вперёд.",
+		);
+
+		this.intSetting(
+			new Setting(el)
+				.setName("Интервал синхронизации, мин")
+				.setDesc("Как часто опрашивать ленты (минимум 1). Изменение применяется сразу."),
+			{
+				min: 1,
+				max: 1440,
+				get: () => this.plugin.settings.externalSyncIntervalMin,
+				set: (v) => {
+					this.plugin.settings.externalSyncIntervalMin = v;
+					this.plugin.sync.restart();
+				},
+			},
+		);
+
+		const subs = this.plugin.settings.externalCalendars;
+		if (subs.length === 0) {
+			el.createDiv({ cls: "setting-item-description", text: "Подписок пока нет." });
+		}
+		for (const sub of subs) this.renderExternalSub(el, sub);
+
+		new Setting(el)
+			.addButton((b) =>
+				b
+					.setButtonText("Синхронизировать сейчас")
+					.setDisabled(subs.length === 0)
+					.onClick(async () => {
+						await this.plugin.sync.syncAll();
+						this.display();
+					}),
+			)
+			.addButton((b) =>
+				b
+					.setButtonText("Добавить подписку")
+					.setCta()
+					.onClick(async () => {
+						subs.push({
+							id: genSubId(),
+							name: "Новый календарь",
+							url: "",
+							namespace: DEFAULT_NS,
+							lastSyncAt: null,
+							lastError: null,
+						});
+						await this.save();
+						this.display();
+					}),
+			);
+	}
+
+	/** Одна подписка: имя + пространство + статус + кнопки (строка 1), адрес ленты
+	 *  с предупреждением о секретности (строка 2). */
+	private renderExternalSub(el: HTMLElement, sub: ExternalCalendarSub): void {
+		const row = new Setting(el)
+			.setName(sub.name.trim() === "" ? "(без имени)" : sub.name)
+			.setDesc(formatSyncStatus(sub));
+
+		row.addText((t) => {
+			t.setPlaceholder("Имя");
+			t.setValue(sub.name);
+			// Коммит по blur/Enter, НЕ на каждую букву. Раньше onChange на КАЖДЫЙ символ
+			// звал deleteMirror(старое имя) → app.vault.trash зеркала; эта мутация
+			// хранилища на первом же символе провоцировала пересоздание инпута и потерю
+			// фокуса («Луна» → «Л»). Теперь во время набора не происходит НИЧЕГО; на
+			// blur/Enter, если имя реально изменилось — удалить старое зеркало (ровно раз),
+			// сохранить и перерисовать строку (заголовок «(без имени)»/имя и статус).
+			commitOnBlur(t.inputEl, async () => {
+				const renamed = await commitSubName(sub, t.getValue(), {
+					// commitSubName читает старое имя из sub.name ДО мутации — зеркало
+					// удаляется по старому пути (id+старое имя), детерминированно и один раз.
+					deleteMirror: (oldName) => this.plugin.sync.deleteMirror({ ...sub, name: oldName }),
+					save: () => this.save(),
+				});
+				if (renamed) this.display();
+				else t.setValue(sub.name); // нормализовать отображение (trim), фокус свободен
+			});
+		});
+
+		row.addDropdown((dd) => {
+			dd.addOption(DEFAULT_NS, "Общее");
+			for (const ns of this.plugin.settings.namespaces) dd.addOption(ns.name, ns.name);
+			// персистнутое пространство могло исчезнуть из списка — откат к «Общему»
+			const known =
+				sub.namespace === DEFAULT_NS ||
+				this.plugin.settings.namespaces.some((n) => n.name === sub.namespace);
+			dd.setValue(known ? sub.namespace : DEFAULT_NS);
+			dd.onChange(async (v) => {
+				sub.namespace = v;
+				await this.save();
+			});
+		});
+
+		row.addExtraButton((b) =>
+			b
+				.setIcon("refresh-cw")
+				.setTooltip("Синхронизировать сейчас")
+				.onClick(async () => {
+					await this.plugin.sync.syncById(sub.id);
+					this.display();
+				}),
+		);
+		row.addExtraButton((b) =>
+			b
+				.setIcon("trash")
+				.setTooltip("Удалить подписку")
+				.onClick(async () => {
+					// сперва убрать файл-зеркало (в корзину), пока подписка ещё в списке —
+					// путь считается от её id+имени; иначе зеркало осиротело бы в хранилище
+					await this.plugin.sync.deleteMirror(sub);
+					const subs = this.plugin.settings.externalCalendars;
+					const i = subs.indexOf(sub);
+					if (i >= 0) subs.splice(i, 1);
+					await this.save();
+					this.display();
+				}),
+		);
+
+		const urlSetting = new Setting(el).setName("Адрес ленты (.ics)").setDesc(
+			"Поддерживаются http(s):// и webcal:// (кнопки «Подписаться» Apple/Google — " +
+				"webcal автоматически заменяется на https). Внимание: секретный ICS-адрес — это " +
+				"доступ к вашему календарю на ЧТЕНИЕ. Храните его как пароль; он лежит локально в data.json.",
+		);
+		urlSetting.addText((t) => {
+			t.setPlaceholder("https://…/basic.ics");
+			t.setValue(sub.url);
+			t.inputEl.style.width = "100%";
+			// Коммит по blur/Enter (как имя): во время набора не пишем в data.json.
+			// Без this.display() — чтобы поле не мигало; статус обновит следующий синк.
+			commitOnBlur(t.inputEl, async () => {
+				const next = t.getValue().trim();
+				t.setValue(next); // показать нормализованное значение (blur — фокус свободен)
+				if (next === sub.url) return; // без изменений — не будим saveData впустую
+				sub.url = next;
+				await this.save();
+			});
+		});
+		urlSetting.settingEl.style.paddingTop = "0";
 	}
 
 	// ── Отложенные ──────────────────────────────────────────────────────────
@@ -486,4 +640,35 @@ export class GtdSettingsTab extends PluginSettingTab {
 			});
 		});
 	}
+}
+
+/** Короткий стабильный id новой подписки (время + случайный хвост). */
+function genSubId(): string {
+	return `ext-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/**
+ * Навесить коммит-по-потере-фокуса (+Enter) на текстовый инпут: во время набора
+ * НИЧЕГО не сохраняется, изменения фиксируются на blur или по Enter (Enter лишь
+ * снимает фокус — единый путь коммита через blur). Так поля «имя» и «адрес ленты»
+ * подписок не пересоздаются на каждый символ и не теряют фокус (ср. числовые поля,
+ * которые пишут валидное значение сразу, но откатывают мусор на blur — intSetting).
+ */
+function commitOnBlur(inputEl: HTMLInputElement, commit: () => void | Promise<void>): void {
+	inputEl.addEventListener("blur", () => void commit());
+	inputEl.addEventListener("keydown", (e) => {
+		if (e.key === "Enter") {
+			e.preventDefault();
+			inputEl.blur();
+		}
+	});
+}
+
+/** Человекочитаемый статус подписки для описания строки. */
+function formatSyncStatus(sub: ExternalCalendarSub): string {
+	if (sub.lastError !== null) return `⚠ ошибка: ${sub.lastError}`;
+	if (sub.lastSyncAt === null) return "ещё не синхронизировалось";
+	const d = new Date(sub.lastSyncAt);
+	const p = (n: number): string => String(n).padStart(2, "0");
+	return `обновлено ${p(d.getHours())}:${p(d.getMinutes())} ${p(d.getDate())}.${p(d.getMonth() + 1)}`;
 }

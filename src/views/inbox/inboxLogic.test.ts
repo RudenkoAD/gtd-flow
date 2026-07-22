@@ -56,4 +56,15 @@ describe("inboxCaptureTransform", () => {
 		// уже набранный пользователем чекбокс не даёт двойного префикса
 		expect(inboxCaptureTransform("- [x] сделано")!("")).toBe("- [ ] сделано\n");
 	});
+
+	it("today включает NLP: «завтра в 15 …» → 📅 +время", () => {
+		expect(inboxCaptureTransform("завтра в 15 позвонить маме", "2026-07-22")!("")).toBe(
+			"- [ ] позвонить маме 📅 2026-07-23 15:00\n",
+		);
+	});
+
+	it("без today (или null) — дата не парсится (обратная совместимость)", () => {
+		expect(inboxCaptureTransform("завтра встреча")!("")).toBe("- [ ] завтра встреча\n");
+		expect(inboxCaptureTransform("завтра встреча", null)!("")).toBe("- [ ] завтра встреча\n");
+	});
 });

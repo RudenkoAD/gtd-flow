@@ -272,6 +272,30 @@ describe("buildCaptureLine", () => {
 	it("недопустимое место (эмодзи поля) не роняет захват — строка без 📍", () => {
 		expect(buildCaptureLine("встреча", "офис 📅")).toBe("- [ ] встреча");
 	});
+
+	it("todayIso включает NLP: «завтра в 15 …» → 📅 +время", () => {
+		expect(buildCaptureLine("завтра в 15 позвонить маме", null, TODAY)).toBe(
+			"- [ ] позвонить маме 📅 2026-07-21 15:00",
+		);
+	});
+
+	it("todayIso + место: 📅 и 📍 вместе", () => {
+		expect(buildCaptureLine("завтра встреча", "офис", TODAY)).toBe(
+			"- [ ] встреча 📅 2026-07-21 📍 офис",
+		);
+	});
+
+	it("БЕЗ todayIso дата не парсится (обратная совместимость)", () => {
+		expect(buildCaptureLine("завтра встреча")).toBe("- [ ] завтра встреча");
+	});
+
+	it("escape в кавычках — дата не ставится, кавычки сняты", () => {
+		expect(buildCaptureLine('"завтра" встреча', null, TODAY)).toBe("- [ ] завтра встреча");
+	});
+
+	it("невалидный todayIso тихо отключает NLP", () => {
+		expect(buildCaptureLine("завтра встреча", null, "не-дата")).toBe("- [ ] завтра встреча");
+	});
 });
 
 describe("captureTargetPath", () => {

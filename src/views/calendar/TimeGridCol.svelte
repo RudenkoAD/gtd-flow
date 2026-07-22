@@ -307,7 +307,7 @@
 	{/each}
 	{#each eventBlocks as eb (eb.occ.task.key)}
 		{#if vault !== null}
-			<EventOccurrenceChip occ={eb.occ} block={eb.block} {app} {dispatcher} {vault} {dnd} />
+			<EventOccurrenceChip occ={eb.occ} block={eb.block} {app} {dispatcher} {vault} {dnd} {settings} />
 		{/if}
 	{/each}
 	{#if nowMinutes !== null && date === today}

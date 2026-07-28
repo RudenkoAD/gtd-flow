@@ -8,8 +8,6 @@
  * резолверу файл. Классы ниже — инертные болванки на случай импорта без мока.
  */
 
-/* eslint-disable @typescript-eslint/no-extraneous-class */
-
 export class Modal {
 	constructor(public app: unknown) {}
 	open(): void {}

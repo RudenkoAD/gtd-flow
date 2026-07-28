@@ -6,6 +6,7 @@
 	import type { GtdFlowSettings } from "../../settings/Settings";
 	import type { TaskStore } from "../../stores/taskStore";
 	import type { TaskMenuPorts } from "../common/taskMenu";
+	import { runAction } from "../common/runAction";
 	import type { DndPort } from "../dnd/types";
 	import Column from "./Column.svelte";
 	// Общий переключатель пространств из views/common (создаётся параллельной зоной;
@@ -30,9 +31,10 @@
 		taskStore,
 		dispatcher,
 		settings,
+		settingsRevision,
 		app,
 		activeNamespace$,
-		namespaces,
+		namespaces: _namespaces,
 		setActiveNamespace,
 		boards,
 		dnd,
@@ -44,6 +46,7 @@
 		taskStore: TaskStore;
 		dispatcher: IntentDispatcher;
 		settings: GtdFlowSettings;
+		settingsRevision: Readable<number>;
 		app: App;
 		/** Реактивное ЛОКАЛЬНОЕ активное пространство вида (per-tab, см. GtdView). */
 		activeNamespace$: Readable<string>;
@@ -76,13 +79,18 @@
 	const activeNs = activeNamespace$;
 	// switcher виден только при настроенных пространствах (ТЗ, обратная совместимость);
 	// метка активного для пустых состояний (DEFAULT_NS → «Общее»).
-	const hasNamespaces = $derived(namespaces.length >= 1);
+	const liveNamespaces = $derived.by(() => {
+		void $settingsRevision;
+		return settings.namespaces;
+	});
+	const hasNamespaces = $derived(liveNamespaces.length >= 1);
 	const activeLabel = $derived(namespaceLabel($activeNs));
 
 	// настройка появится в SettingsTab позже; поле читаем опционально
-	// svelte-ignore state_referenced_locally
-	const defaultBoardPath =
-		(settings as GtdFlowSettings & { defaultBoardPath?: string }).defaultBoardPath ?? null;
+	const defaultBoardPath = $derived.by(() => {
+		void $settingsRevision;
+		return settings.defaultBoardPath || null;
+	});
 
 	let selectedPath = $state<string | null>(null);
 
@@ -95,7 +103,7 @@
 
 	// фильтр discovery — ЛОКАЛЬНОЕ пространство вида (не активное глобальное):
 	// список досок и модель режутся пространством этой вкладки
-	const nsFilter = $derived<NamespaceFilter>({ active: $activeNs, defs: namespaces });
+	const nsFilter = $derived<NamespaceFilter>({ active: $activeNs, defs: liveNamespaces });
 	const discovery = $derived.by(() => {
 		void $epoch; // доски живут в индексе — пересканируем на каждую его смену
 		return boards === null ? { boards: [], errors: [] } : boards.discoverBoards(nsFilter);
@@ -140,10 +148,14 @@
 			cancelAddCol();
 			return;
 		}
-		const res = await boards.addColumn(shownPath, name);
-		if (res.ok) cancelAddCol();
-		// при отказе input остаётся с текстом — можно поправить имя и повторить
-		else new Notice(`GTD Flow: не удалось создать колонку (${res.reason ?? "unknown"})`);
+		try {
+			const res = await boards.addColumn(shownPath, name);
+			if (res.ok) cancelAddCol();
+			// при отказе input остаётся с текстом — можно поправить имя и повторить
+			else new Notice(`GTD Flow: не удалось создать колонку (${res.reason ?? "unknown"})`);
+		} catch (error) {
+			new Notice(`GTD Flow: не удалось создать колонку: ${String(error)}`);
+		}
 	}
 
 	function onAddColKeydown(e: KeyboardEvent): void {
@@ -208,23 +220,23 @@
 			// «Общее» в один ряд с именованными под корнем «Общего»).
 			const dir = nsCommonTarget(
 				$activeNs,
-				namespaces,
+				liveNamespaces,
 				NS_CONVENTION.boardsDir,
 				settings.commonRoot,
 			);
 			// уникализуем путь по реальным файлам хранилища: createBoard не должен
 			// дописать флаг доски в чужую заметку с тем же именем
 			const path = uniqueBoardPath(dir, name, (p) => app.vault.getFileByPath(p) !== null);
-			void svc.createBoard(path, name).then((res) => {
-				if (!res.ok || res.path === undefined) {
-					new Notice(`GTD Flow: не удалось создать доску (${res.reason ?? "unknown"})`);
-					return;
-				}
+			void (async () => {
+				const res = await runAction("не удалось создать доску", () =>
+					svc.createBoard(path, name),
+				);
+				if (res === null || !res.ok || res.path === undefined) return;
 				// выбрать созданную доску; она появится в списке после реиндекса
 				// (файл виден discovery по frontmatter-флагу даже без задач)
 				selectedPath = res.path;
 				persist({ boardPath: res.path });
-			});
+			})();
 		}).open();
 	}
 
@@ -234,16 +246,16 @@
 		const path = shownPath;
 		const current = discovery.boards.find((b) => b.path === path)?.def.name ?? "";
 		new TextPromptModal(app, "Переименовать доску", current, "Название доски", (name) => {
-			void svc.renameBoard(path, name).then((res) => {
-				if (!res.ok) new Notice(`GTD Flow: не удалось переименовать доску (${res.reason ?? "unknown"})`);
-			});
+			void runAction("не удалось переименовать доску", () => svc.renameBoard(path, name));
 		}).open();
 	}
 
 	function openBoardMenu(e: MouseEvent): void {
 		if (boards === null || shownPath === null) return;
 		const menu = new Menu();
-		menu.addItem((i) => i.setTitle("Переименовать доску…").setIcon("pencil").onClick(promptRenameBoard));
+		menu.addItem((i) =>
+			i.setTitle("Переименовать доску…").setIcon("pencil").onClick(promptRenameBoard),
+		);
 		menu.showAtMouseEvent(e);
 	}
 </script>
@@ -252,7 +264,11 @@
 	<div class="gtd-kanban-header">
 		{#if hasNamespaces}
 			<!-- Глобальный переключатель пространства; виден только при настроенных пространствах -->
-			<NamespaceSwitcher active={activeNamespace$} {namespaces} setActive={setActiveNamespace} />
+			<NamespaceSwitcher
+				active={activeNamespace$}
+				namespaces={liveNamespaces}
+				setActive={setActiveNamespace}
+			/>
 		{/if}
 		<select
 			class="dropdown gtd-kanban-select"
@@ -271,7 +287,12 @@
 			</button>
 		{/if}
 		{#if boards !== null && shownPath !== null}
-			<button class="gtd-kanban-board-menu" title="Меню доски" aria-label="Меню доски" onclick={openBoardMenu}>
+			<button
+				class="gtd-kanban-board-menu"
+				title="Меню доски"
+				aria-label="Меню доски"
+				onclick={openBoardMenu}
+			>
 				⋯
 			</button>
 		{/if}
@@ -289,7 +310,9 @@
 		<div class="gtd-kanban-empty">Kanban не подключён (сервис досок недоступен)</div>
 	{:else if model === null}
 		<div class="gtd-kanban-empty">
-			<p>{hasNamespaces ? `В пространстве «${activeLabel}» досок нет.` : "Досок пока нет."}</p>
+			<p>
+				{hasNamespaces ? `В пространстве «${activeLabel}» досок нет.` : "Досок пока нет."}
+			</p>
 			<button class="mod-cta gtd-kanban-create-board" onclick={promptCreateBoard}>
 				＋ Создать доску
 			</button>
@@ -301,7 +324,7 @@
 					{column}
 					boardPath={model.path}
 					def={model.def}
-					boards={boards}
+					{boards}
 					{dnd}
 					{dispatcher}
 					{app}

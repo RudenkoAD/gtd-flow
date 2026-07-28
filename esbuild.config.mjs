@@ -34,7 +34,7 @@ const context = await esbuild.context({
 	],
 	format: "cjs",
 	target: "es2020",
-	logLevel: "info",
+	logLevel: prod ? "silent" : "info",
 	sourcemap: prod ? false : "inline",
 	treeShaking: true,
 	outfile: "main.js",
@@ -49,8 +49,25 @@ const context = await esbuild.context({
 });
 
 if (prod) {
-	await context.rebuild();
-	process.exit(0);
+	const result = await context.rebuild();
+	if (result.warnings.length > 0) {
+		const formatted = await esbuild.formatMessages(result.warnings, {
+			kind: "warning",
+			color: process.stderr.isTTY,
+		});
+		for (const warning of formatted) process.stderr.write(warning);
+	}
+	const projectWarnings = result.warnings.filter((warning) => {
+		const file = warning.location?.file?.replaceAll("\\", "/");
+		return file?.startsWith("src/") || file?.includes("/src/");
+	});
+	if (projectWarnings.length > 0) {
+		console.error(
+			`production build rejected ${projectWarnings.length} project-authored Svelte warning(s)`,
+		);
+		process.exit(1);
+	}
+	await context.dispose();
 } else {
 	await context.watch();
 }

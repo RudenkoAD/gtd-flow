@@ -89,7 +89,10 @@ export function parseBoardFrontmatter(fm: Record<string, unknown>): BoardDef | B
 	let groupBy: GroupBy = "tag";
 	if (rawGroupBy !== undefined && rawGroupBy !== null) {
 		if (rawGroupBy === "tag" || rawGroupBy === "status") groupBy = rawGroupBy;
-		else messages.push(`board: 'group-by' must be 'tag' or 'status', got ${JSON.stringify(rawGroupBy)}`);
+		else
+			messages.push(
+				`board: 'group-by' must be 'tag' or 'status', got ${JSON.stringify(rawGroupBy)}`,
+			);
 	}
 
 	const rawScope = fm["scope"];

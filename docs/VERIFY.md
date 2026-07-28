@@ -6,9 +6,15 @@
 
 ## Подготовка
 
-1. Соберите плагин: `npm i && npm run build` (появится свежий `main.js`).
-2. Откройте папку `test-vault/` этого репозитория как vault
-   (или сгенерируйте большое хранилище: `node scripts/gen-test-vault.mjs <папка>`).
+1. Перед первым browser-прогоном установите закреплённый Chromium:
+   `npx playwright install chromium`. Затем запустите полный локальный gate:
+   `npm ci && npm run verify` (lint/format, coverage, Svelte compiler и semantic
+   checks, mounted browser/axe tests, typecheck и production-сборка).
+2. Создайте **новую** папку тестового vault:
+   `node scripts/gen-test-vault.mjs ../gtd-flow-test-vault --files 100 --tasks 20`,
+   затем откройте её в Obsidian. Генератор откажется использовать существующую папку.
+   `--force` разрешён только для ранее сгенерированного vault с маркером
+   `.gtd-flow-test-vault`; никогда не направляйте его в реальный vault.
 3. Подложите плагин символической ссылкой, чтобы пересборка подхватывалась сама:
    - Windows (cmd от администратора не нужен для junction):
      `mklink /J "<vault>\.obsidian\plugins\gtd-flow" "D:\projects\claude_home\calendar_app"`
@@ -40,7 +46,7 @@
 
 ## 2. Регулярные
 
-Шаблоны — в `test-vault/GTD/Recurring.md` (`rev-week`, `rev-prio`, пауза `park-permit`).
+Шаблоны — в `GTD/Recurring.md` сгенерированного vault (`rev-week`, `rev-prio`, пауза `park-permit`).
 
 - [ ] Первый запуск: после полной загрузки у шаблонов без `🔜` курсор проставился сам
       (bootstrap, без ретроспективных копий).
@@ -60,7 +66,7 @@
 
 ## 3. Проекты (граф)
 
-Проект — `test-vault/Projects/Ремонт кухни.md`.
+Проект — `Projects/Ремонт кухни.md` сгенерированного vault.
 
 - [ ] Откройте файл проекта → вид «GTD: Проект». **Ожидаемо:** граф: «Обмерить кухню»
       (done, зелёный), «Собрать сметы»/«Выбрать технику» готовы/в работе, «Заказать
@@ -79,11 +85,12 @@
 
 ## 4. Kanban / Календарь
 
-Доска — `test-vault/Boards/Работа.md`.
+Доска — `Boards/Работа.md` сгенерированного vault.
 
-- [ ] Drag карточки между колонками «К работе» → «В работе». **Ожидаемо:** в строке тег
-      сменился на `#kanban/work/doing`, порядок в frontmatter `order` обновился; статус-
-      колонка («Готово», `match: "status:done"`) при дропе ставит `[x]` + `✅`.
+- [ ] Drag карточки между колонками «К работе» → «В работе» → «Готово».
+      **Ожидаемо:** в строке меняется только тег колонки
+      (`#kanban/work/todo` → `#kanban/work/doing` → `#kanban/work/done`), порядок в
+      frontmatter `order` обновляется, а checkbox-статус и дата завершения не меняются.
 - [ ] Drag внутри колонки — меняется только порядок (frontmatter), строки задач нетронуты.
 - [ ] Календарь: перетащите «Продлить страховку» (📅 2026-07-20) на другой день.
       **Ожидаемо:** `📅` в `GTD/Inbox.md` сменился; во «Входящих»/доске карточка согласована.
@@ -138,4 +145,8 @@
 
 - [ ] `npx vitest run` — весь набор зелёный (property round-trip сериализатора,
       клампинг дат повторов, циклы графа, дедуп, полночь, перф-смоук 10k задач).
+- [ ] `npm run test:coverage` — весь набор зелёный и обязательные пороги покрытия
+      для `core`, `services` и MCP не снижены.
+- [ ] `npm run check:svelte:semantic && npm run test:browser` — semantic Svelte
+      check, mounted Chromium-компоненты и axe не находят ошибок.
 - [ ] `npm run build` — purity-проверка ядра + typecheck + production-сборка без ошибок.

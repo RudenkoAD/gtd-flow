@@ -16,6 +16,8 @@
 		type PlacedEvent,
 	} from "./calendarLogic";
 	import { minutesToTime } from "./timeGrid";
+	import { surfaceKeyboardAction } from "./calendarKeyboard";
+	import { reportAsync } from "../common/runAction";
 
 	let {
 		date,
@@ -77,7 +79,8 @@
 		/** Инлайн-создание СОБЫТИЯ «Весь день» с датой этого дня (сегмент «Событие»
 		 *  переключателя). location — из поля «Место» (📍) или null. null-колбэк —
 		 *  переключатель скрыт, ввод создаёт только задачи. */
-		onQuickAddEvent?: ((date: IsoDate, text: string, location: string | null) => Promise<void>) | null;
+		onQuickAddEvent?:
+			((date: IsoDate, text: string, location: string | null) => Promise<void>) | null;
 		/** ПКМ по пустому месту — создать повторяющееся событие (time=null для дня). */
 		onCreateEvent?: ((date: IsoDate, time: string | null) => void) | null;
 		/** Липкое положение переключателя «Задача | Событие» (общее для всех сеток вида). */
@@ -126,7 +129,9 @@
 	function onCellClick(e: MouseEvent): void {
 		if (
 			e.target instanceof Element &&
-			e.target.closest(".gtd-cal-chip, .gtd-cal-statusband, button, input, a, select, textarea")
+			e.target.closest(
+				".gtd-cal-chip, .gtd-cal-statusband, button, input, a, select, textarea",
+			)
 		)
 			return;
 		adding = true;
@@ -138,7 +143,9 @@
 		if (onCreateEvent === null) return;
 		if (
 			e.target instanceof Element &&
-			e.target.closest(".gtd-cal-chip, .gtd-cal-statusband, button, input, a, select, textarea")
+			e.target.closest(
+				".gtd-cal-chip, .gtd-cal-statusband, button, input, a, select, textarea",
+			)
 		)
 			return;
 		e.preventDefault();
@@ -150,6 +157,36 @@
 				.onClick(() => onCreateEvent?.(date, null)),
 		);
 		menu.showAtMouseEvent(e);
+	}
+
+	/** Клавиатурный эквивалент контекстного меню: меню привязываем к центру ячейки,
+	 * а не к давно прошедшей позиции мыши. */
+	function openContextMenuFromKeyboard(): void {
+		if (cellEl === null) return;
+		const rect = cellEl.getBoundingClientRect();
+		onCellContextMenu(
+			new MouseEvent("contextmenu", {
+				bubbles: true,
+				clientX: rect.left + rect.width / 2,
+				clientY: rect.top + rect.height / 2,
+			}),
+		);
+	}
+
+	/** Ячейка была pointer-only. Enter/Space открывают быстрый ввод, а клавиша
+	 * меню (или Shift+F10) даёт тот же путь к повторяющемуся событию, что ПКМ. */
+	function onCellKeydown(e: KeyboardEvent): void {
+		if (e.target !== e.currentTarget) return;
+		const action = surfaceKeyboardAction(e.key, e.shiftKey);
+		if (action === "quick-add") {
+			e.preventDefault();
+			adding = true;
+			return;
+		}
+		if (action === "menu") {
+			e.preventDefault();
+			openContextMenuFromKeyboard();
+		}
 	}
 
 	function focusInput(el: HTMLInputElement): void {
@@ -176,14 +213,33 @@
 	function submitDraft(): void {
 		const text = draft;
 		const kind = quickAddKind;
-		const location = locationDraft.trim() === "" ? null : locationDraft.trim();
+		const locationText = locationDraft;
+		const location = locationText.trim() === "" ? null : locationText.trim();
 		cancelDraft();
 		if (text.trim() === "") return;
 		// «Событие» → инлайн-создание события «Весь день»; иначе — задача (как прежде).
 		// Место (📍) идёт в обе ветки: у события — в createSingleEvent, у задачи — полем
 		// 📍 строки (quickAddLine).
-		if (kind === "event" && onQuickAddEvent !== null) void onQuickAddEvent(date, text, location);
-		else void onQuickAdd(date, text, location);
+		const action =
+			kind === "event" && onQuickAddEvent !== null
+				? () => onQuickAddEvent(date, text, location)
+				: () => onQuickAdd(date, text, location);
+		reportAsync(
+			kind === "event" ? "не удалось создать событие" : "не удалось добавить задачу",
+			async () => {
+				try {
+					await action();
+				} catch (error) {
+					// Do not clobber a newer draft opened while the write was pending.
+					if (!adding) {
+						adding = true;
+						draft = text;
+						locationDraft = locationText;
+					}
+					throw error;
+				}
+			},
+		);
 	}
 </script>
 
@@ -195,7 +251,6 @@
 	</div>
 {/snippet}
 
-<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
 <div
 	class="gtd-cal-cell"
 	class:is-muted={muted}
@@ -204,8 +259,12 @@
 	class:has-status={statusColor !== null}
 	style={statusColor !== null ? `--gtd-ds-color: ${statusColor}` : undefined}
 	bind:this={cellEl}
+	role="gridcell"
+	tabindex="0"
+	aria-label={`День ${date}. Enter — новая задача, Shift+F10 — меню события`}
 	onclick={onCellClick}
 	oncontextmenu={onCellContextMenu}
+	onkeydown={onCellKeydown}
 >
 	<!-- полоса-статус: цель клика/протяжки покраски (data-gtd-ds-date), подпись статуса -->
 	<div
@@ -237,7 +296,9 @@
 					class="gtd-cal-quickadd"
 					type="text"
 					placeholder={quickAddKind === "event" ? "Новое событие…" : "Новая задача…"}
-					aria-label="{quickAddKind === 'event' ? 'Новое событие' : 'Новая задача'} на {date}"
+					aria-label="{quickAddKind === 'event'
+						? 'Новое событие'
+						: 'Новая задача'} на {date}"
 					bind:value={draft}
 					use:focusInput
 					onkeydown={(e) => {

@@ -4,7 +4,8 @@
  * Точная калька mcp/buildIndex (тот же IndexerService, тот же scanSnapshotListItems,
  * тот же fileContextFromFrontmatter — значит occurrenceIndex-дизамбигуация, парсинг
  * и раскладка byId/byFile идентичны плагину/серверу), но БЕЗ fs и БЕЗ библиотеки
- * `yaml`: файлы приходят из входа, frontmatter снимается лёгким parseWidgetFrontmatter.
+ * `yaml`: файлы приходят из входа, а ограниченный читатель передаёт скаляры в
+ * общую с MCP семантическую проекцию container-frontmatter.
  * Это держит бандл чистым для QuickJS (ни node builtins, ни npm-зависимостей).
  *
  * Скан разовый, синхронный: NOOP-события, фиксированные часы (today из входа),
@@ -13,11 +14,11 @@
  * (не-строка в значении и т.п.) изолируется и уходит в errors, не роняя весь скан.
  */
 import { IndexerService } from "../services/IndexerService";
-import { fileContextFromFrontmatter } from "../services/snapshotHelpers";
+import { fileContextFromContainerFrontmatter } from "../core/frontmatter/containerFrontmatter";
 import type { ClockPort, FileSnapshot, IndexFeed, VaultEvents } from "../services/types";
 import type { Task } from "../core/model/Task";
 import { scanSnapshotListItems } from "../mcp/scanFile";
-import { parseWidgetFrontmatter } from "./widgetFrontmatter";
+import { parseWidgetContainerFrontmatter } from "./widgetFrontmatter";
 
 const NOOP_EVENTS: VaultEvents = {
 	onChanged: () => () => undefined,
@@ -48,8 +49,8 @@ export async function buildWidgetIndex(
 			if (typeof content !== "string") {
 				throw new Error("содержимое файла не строка");
 			}
-			const data = parseWidgetFrontmatter(content);
-			const context = fileContextFromFrontmatter(path, data);
+			const frontmatter = parseWidgetContainerFrontmatter(content);
+			const context = fileContextFromContainerFrontmatter(path, frontmatter);
 			snapshots.push({
 				path,
 				content,
@@ -65,7 +66,6 @@ export async function buildWidgetIndex(
 	const indexer = new IndexerService({
 		events: NOOP_EVENTS,
 		clock,
-		// eslint-disable-next-line @typescript-eslint/require-await
 		initialScan: async function* () {
 			for (const snap of snapshots) yield snap;
 		},

@@ -34,14 +34,7 @@ export type GtdState =
  *               себя как "plain"; служит целью записи быстрого ввода, см. captureTargets).
  */
 export type ContainerKind =
-	| "plain"
-	| "board"
-	| "project"
-	| "recurring"
-	| "card"
-	| "events"
-	| "archive"
-	| "inbox";
+	"plain" | "board" | "project" | "recurring" | "card" | "events" | "archive" | "inbox";
 
 export type ProjectStatus = "active" | "on-hold" | "done" | "archived";
 

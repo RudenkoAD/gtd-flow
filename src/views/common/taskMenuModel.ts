@@ -16,14 +16,7 @@ import { PRIORITY_LABELS, PRIORITY_ORDER } from "./cardFormat";
 import { addDaysIso } from "./dates";
 
 export type MenuSection =
-	| "status"
-	| "priority"
-	| "schedule"
-	| "defer"
-	| "location"
-	| "move"
-	| "card"
-	| "nav";
+	"status" | "priority" | "schedule" | "defer" | "location" | "move" | "card" | "nav";
 
 export type MenuAction =
 	| { kind: "intent"; intent: Intent }

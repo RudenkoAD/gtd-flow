@@ -9,14 +9,13 @@
 	import TaskCard from "../common/TaskCard.svelte";
 	import { nlCaptureHint } from "../common/taskActions";
 	import type { TaskMenuPorts } from "../common/taskMenu";
+	import { runAction } from "../common/runAction";
 	import { insertIndexByY, type FlatRect } from "../dnd/dndCore";
 	import type { DndPort } from "../dnd/types";
 	import { VIEW_TYPES } from "../registry";
 	import {
 		columnCaptureTransform,
 		isFromTickler,
-		moveRefusalNotice,
-		returnFromTicklerIntent,
 		type BoardWritePort,
 		type ColumnVM,
 	} from "./kanbanLogic";
@@ -74,22 +73,20 @@
 			el: colEl,
 			accepts: (p) => p.taskKey !== "",
 			drop: async (p, ctx) => {
-				// Карточка ПРИШЛА ИЗ ОТЛОЖЕННЫХ: положить на доску мало — пока стоит 🛫,
-				// задача остаётся отложенной (isDeferred) и на доске скрыта = «исчезла».
-				// Снимаем 🛫 тем же интентом, что «Вернуть во входящие» из меню тикля.
-				// ПОРЯДОК ВАЖЕН: 🛫 снимаем ДО moveCard — снятие поля не меняет
-				// content-key (описание нетронуто), а тег колонки меняет; при
-				// выключенном autoInjectId обратный порядок терял бы адресацию (ревью).
-				if (isFromTickler(p.sourceViewType)) {
-					const clr = await dispatcher.dispatch(returnFromTicklerIntent(p.taskKey));
-					if (clr.ok) new Notice("Возвращена из отложенных");
-					else {
-						new Notice(`GTD Flow: ${clr.reason}`);
-						return; // карточка остаётся в тикле — не раскладываем наполовину
-					}
+				const index = dropIndex(ctx.clientY);
+				// Tickler → Kanban — не два независимых dispatch: сервис сохраняет
+				// исходный 🛫, компенсирует провал движения и возвращает его при
+				// неуспехе. Поэтому задача не исчезает из обоих представлений.
+				const res = await runAction("не удалось перенести карточку", () =>
+					isFromTickler(p.sourceViewType)
+						? boards.moveCardFromTickler(boardPath, def, p.taskKey, column.id, index)
+						: boards.moveCard(boardPath, def, p.taskKey, column.id, index),
+				);
+				if (res === null || !res.ok) {
+					return;
 				}
-				const res = await boards.moveCard(boardPath, def, p.taskKey, column.id, dropIndex(ctx.clientY));
-				if (!res.ok) new Notice(moveRefusalNotice(res.reason));
+				if (isFromTickler(p.sourceViewType))
+					new Notice("Возвращена из отложенных и перенесена на доску");
 			},
 		});
 	});
@@ -97,8 +94,13 @@
 	function onCardPointerDown(e: PointerEvent, taskKey: string): void {
 		if (!cardDraggable || dnd === null || e.button !== 0) return;
 		// клики по контролам карточки (чекбокс, меню) — не начало drag
-		if (e.target instanceof Element && e.target.closest("input, button, a, select, textarea")) return;
-		dnd.startDrag({ taskKey, sourceViewType: VIEW_TYPES.kanban }, e, e.currentTarget as HTMLElement);
+		if (e.target instanceof Element && e.target.closest("input, button, a, select, textarea"))
+			return;
+		dnd.startDrag(
+			{ taskKey, sourceViewType: VIEW_TYPES.kanban },
+			e,
+			e.currentTarget as HTMLElement,
+		);
 	}
 
 	// --- переименование колонки: дабл-клик по заголовку ---
@@ -126,8 +128,15 @@
 		renaming = false;
 		const name = renameValue.trim();
 		if (name === "" || name === column.name) return;
-		const res = await boards.renameColumn(boardPath, column.id, name);
-		if (!res.ok) new Notice(`GTD Flow: не удалось переименовать колонку (${res.reason ?? "unknown"})`);
+		try {
+			const res = await boards.renameColumn(boardPath, column.id, name);
+			if (!res.ok)
+				new Notice(
+					`GTD Flow: не удалось переименовать колонку (${res.reason ?? "unknown"})`,
+				);
+		} catch (error) {
+			new Notice(`GTD Flow: не удалось переименовать колонку: ${String(error)}`);
+		}
 	}
 
 	function onRenameKeydown(e: KeyboardEvent): void {
@@ -148,32 +157,55 @@
 	}
 
 	async function moveCol(dir: -1 | 1): Promise<void> {
-		const res = await boards.moveColumn(boardPath, column.id, dir);
-		if (!res.ok) new Notice(`GTD Flow: не удалось переставить колонку (${res.reason ?? "unknown"})`);
+		try {
+			const res = await boards.moveColumn(boardPath, column.id, dir);
+			if (!res.ok)
+				new Notice(`GTD Flow: не удалось переставить колонку (${res.reason ?? "unknown"})`);
+		} catch (error) {
+			new Notice(`GTD Flow: не удалось переставить колонку: ${String(error)}`);
+		}
 	}
 
 	async function deleteCol(): Promise<void> {
-		const ok = await confirm(
-			app,
-			"Удалить колонку",
-			`Колонка «${column.name}» будет убрана с доски. Теги карточек (${column.match}) ` +
-				`останутся в задачах — карточки просто перестанут показываться на доске.`,
-			"Удалить",
-		);
-		if (!ok) return;
-		const res = await boards.deleteColumn(boardPath, column.id);
-		if (!res.ok) new Notice(`GTD Flow: не удалось удалить колонку (${res.reason ?? "unknown"})`);
+		try {
+			const ok = await confirm(
+				app,
+				"Удалить колонку",
+				`Колонка «${column.name}» будет убрана с доски. Теги карточек (${column.match}) ` +
+					`останутся в задачах — карточки просто перестанут показываться на доске.`,
+				"Удалить",
+			);
+			if (!ok) return;
+			const res = await boards.deleteColumn(boardPath, column.id);
+			if (!res.ok)
+				new Notice(`GTD Flow: не удалось удалить колонку (${res.reason ?? "unknown"})`);
+		} catch (error) {
+			new Notice(`GTD Flow: не удалось удалить колонку: ${String(error)}`);
+		}
 	}
 
 	function openColMenu(e: MouseEvent): void {
 		e.stopPropagation(); // не даём клику дойти до заголовка (dblclick-переименование)
 		const menu = new Menu();
 		menu.addItem((i) => i.setTitle("Переименовать").setIcon("pencil").onClick(startRename));
-		menu.addItem((i) => i.setTitle("Влево").setIcon("arrow-left").onClick(() => void moveCol(-1)));
-		menu.addItem((i) => i.setTitle("Вправо").setIcon("arrow-right").onClick(() => void moveCol(1)));
+		menu.addItem((i) =>
+			i
+				.setTitle("Влево")
+				.setIcon("arrow-left")
+				.onClick(() => void moveCol(-1)),
+		);
+		menu.addItem((i) =>
+			i
+				.setTitle("Вправо")
+				.setIcon("arrow-right")
+				.onClick(() => void moveCol(1)),
+		);
 		menu.addSeparator();
 		menu.addItem((i) =>
-			i.setTitle("Удалить колонку…").setIcon("trash").setWarning(true).onClick(() => void deleteCol()),
+			i
+				.setTitle("Удалить колонку…")
+				.setIcon("trash")
+				.onClick(() => void deleteCol()),
 		);
 		menu.showAtMouseEvent(e);
 	}
@@ -274,7 +306,15 @@
 					class:is-draggable={cardDraggable}
 					onpointerdown={(e) => onCardPointerDown(e, task.key)}
 				>
-					<TaskCard {task} {dispatcher} {app} {settings} {today} {menuPorts} inBoard={true} />
+					<TaskCard
+						{task}
+						{dispatcher}
+						{app}
+						{settings}
+						{today}
+						{menuPorts}
+						inBoard={true}
+					/>
 				</div>
 			{/each}
 		</div>
@@ -295,7 +335,11 @@
 				{/if}
 			</div>
 		{:else}
-			<button class="gtd-kanban-add-task" title="Добавить задачу" onclick={() => (addingTask = true)}>
+			<button
+				class="gtd-kanban-add-task"
+				title="Добавить задачу"
+				onclick={() => (addingTask = true)}
+			>
 				＋ Задача
 			</button>
 		{/if}

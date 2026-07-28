@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { Notice, type App } from "obsidian";
 	import { derived, get, type Readable } from "svelte/store";
+	import type { Task } from "../../core/model/Task";
 	import {
 		NS_CONVENTION,
 		nsCommonTarget,
@@ -30,17 +31,20 @@
 		taskStore,
 		dispatcher,
 		settings,
+		settingsRevision,
 		app,
 		dnd = null,
 		menuPorts = null,
 		vault,
 		activeNamespace,
-		namespaces,
+		namespaces: _namespaces,
 		setActiveNamespace,
 	}: {
 		taskStore: TaskStore;
 		dispatcher: IntentDispatcher;
 		settings: GtdFlowSettings;
+		/** Обновляется после saveSettings; settings мутируются in-place. */
+		settingsRevision: Readable<number>;
 		app: App;
 		/** null — drag выключен (телефон / сервис недоступен). */
 		dnd?: DndPort | null;
@@ -56,32 +60,43 @@
 		setActiveNamespace: (name: string) => void;
 	} = $props();
 
+	/** Список может быть заменён при миграции настроек, поэтому не держим
+	 * монтировочный снимок props.namespaces. */
+	const liveNamespaces = $derived.by(() => {
+		void $settingsRevision;
+		return settings.namespaces;
+	});
 	// Фильтр пространства для inboxStore: derive из ЛОКАЛЬНОГО пространства вида +
 	// список корней. Смена инвалидирует мемо-ключ стора (ось nsKey) и пере-рендерит
 	// подпиской — эпоху индекса это не бампает (см. память проекта).
 	// svelte-ignore state_referenced_locally
 	const namespace$: Readable<NamespaceFilter> = derived(activeNamespace, (a) => ({
 		active: a,
-		defs: namespaces,
+		defs: liveNamespaces,
 	}));
 
 	// props фиксированы на время монтирования (вид пересоздаётся с leaf) —
 	// одноразовый снимок при инициализации намеренный
-	// svelte-ignore state_referenced_locally
-	const tasks = inboxStore(
-		taskStore,
-		defaultInboxConfig([], settings.inboxIncludePlain),
-		settings.debounceMs.queryRecompute,
-		namespace$,
-	);
+	let tasks = $state<Task[]>([]);
+	$effect(() => {
+		void $settingsRevision;
+		const store = inboxStore(
+			taskStore,
+			() => defaultInboxConfig(settings.inboxIncludePlain),
+			settings.debounceMs.queryRecompute,
+			namespace$,
+			settingsRevision,
+		);
+		return store.subscribe((value) => (tasks = value));
+	});
 	// svelte-ignore state_referenced_locally
 	const today = taskStore.today;
 
 	let query = $state("");
-	const shown = $derived(filterTasks($tasks, query));
+	const shown = $derived(filterTasks(tasks, query));
 	const filtered = $derived(query.trim() !== "");
 	/** Метка активного пространства для пустого состояния — только когда настроено. */
-	const nsLabel = $derived(namespaces.length === 0 ? null : namespaceLabel($activeNamespace));
+	const nsLabel = $derived(liveNamespaces.length === 0 ? null : namespaceLabel($activeNamespace));
 
 	// --- быстрый ввод новой задачи (append в первый gtd-inbox файл, фолбэк <commonRoot>/Входящие.md) ---
 	let newTask = $state("");
@@ -95,8 +110,18 @@
 		// gtd-inbox этого пространства из живого индекса, иначе конвенционные
 		// Входящие.md: <root>/ (именованное) или <commonRoot>/ («Общее»).
 		const active = get(activeNamespace);
-		const fallback = nsCommonTarget(active, namespaces, NS_CONVENTION.inbox, settings.commonRoot);
-		const target = captureTargetInNamespace(taskStore.index().all(), active, namespaces, fallback);
+		const fallback = nsCommonTarget(
+			active,
+			liveNamespaces,
+			NS_CONVENTION.inbox,
+			settings.commonRoot,
+		);
+		const target = captureTargetInNamespace(
+			taskStore.index().all(),
+			active,
+			liveNamespaces,
+			fallback,
+		);
 		if (target === "") {
 			new Notice("GTD Flow: не задан файл входящих (пустая «Корневая папка Общего»)");
 			return;
@@ -106,8 +131,11 @@
 		try {
 			// файл входящих создаётся и помечается gtd-inbox: true (+ gtd-namespace для
 			// файла-исключения вне корня пространства) СТРОГО до записи строки
-			if (!(await ensureCaptureFileNs(vault, target, active, namespaces))) {
-				new Notice(`GTD Flow: не удалось подготовить файл входящих ${target}\nТекст: ${entered}`, 0);
+			if (!(await ensureCaptureFileNs(vault, target, active, liveNamespaces))) {
+				new Notice(
+					`GTD Flow: не удалось подготовить файл входящих ${target}\nТекст: ${entered}`,
+					0,
+				);
 				return;
 			}
 			const ok = await vault.processFile(target, transform);
@@ -115,7 +143,10 @@
 			if (!ok) new Notice(`GTD Flow: не удалось записать в ${target}: ${entered}`);
 		} catch (e) {
 			// поле уже очищено — возвращаем текст в уведомлении, чтобы ввод не пропал
-			new Notice(`GTD Flow: не удалось записать в ${target}: ${String(e)}\nТекст: ${entered}`, 0);
+			new Notice(
+				`GTD Flow: не удалось записать в ${target}: ${String(e)}\nТекст: ${entered}`,
+				0,
+			);
 		}
 	}
 
@@ -138,15 +169,14 @@
 <div class="gtd-inbox">
 	<div class="gtd-inbox-header">
 		<span class="gtd-inbox-count" aria-label="Количество задач">
-			{filtered ? `${shown.length} / ${$tasks.length}` : $tasks.length}
+			{filtered ? `${shown.length} / ${tasks.length}` : tasks.length}
 		</span>
-		<input
-			class="gtd-inbox-filter"
-			type="search"
-			placeholder="Фильтр…"
-			bind:value={query}
+		<input class="gtd-inbox-filter" type="search" placeholder="Фильтр…" bind:value={query} />
+		<NamespaceSwitcher
+			active={activeNamespace}
+			namespaces={liveNamespaces}
+			onSelect={setActiveNamespace}
 		/>
-		<NamespaceSwitcher active={activeNamespace} {namespaces} onSelect={setActiveNamespace} />
 	</div>
 	<div class="gtd-inbox-new">
 		<input
@@ -167,7 +197,11 @@
 				: ""}
 		</div>
 	{:else}
-		<VirtualList items={shown}>
+		<VirtualList
+			items={shown}
+			threshold={settings.virtualizeThreshold}
+			keyOf={(task) => task.key}
+		>
 			{#snippet row(task)}
 				<TaskCard
 					{task}

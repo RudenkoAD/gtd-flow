@@ -14,6 +14,7 @@
     "skipLibCheck": true,
     "importHelpers": true,
     "allowJs": true,
+    "noEmit": true,
     "types": ["node", "svelte"]
   },
   "include": ["src/**/*.ts", "src/**/*.d.ts"]

@@ -176,7 +176,9 @@ describe("eventVisibleInNamespace — события: активное ∪ «О�
 	const defs = [WORK, LIFE];
 
 	it("пустой defs ⇒ прозрачен (true) при любом active", () => {
-		expect(eventVisibleInNamespace("Work/e.md", null, { active: "Работа", defs: [] })).toBe(true);
+		expect(eventVisibleInNamespace("Work/e.md", null, { active: "Работа", defs: [] })).toBe(
+			true,
+		);
 	});
 
 	it("активное именованное пространство: свои события ПЛЮС общие (DEFAULT_NS)", () => {
@@ -248,7 +250,9 @@ describe("nsTargetPath — цели создания по конвенции", (
 		expect(nsTargetPath("Жизнь", defs, NS_CONVENTION.events, "GTD/Events.md")).toBe(
 			"Личное/События.md",
 		);
-		expect(nsTargetPath("Работа", defs, NS_CONVENTION.boardsDir, "GTD/Boards")).toBe("Work/Доски");
+		expect(nsTargetPath("Работа", defs, NS_CONVENTION.boardsDir, "GTD/Boards")).toBe(
+			"Work/Доски",
+		);
 	});
 
 	it("вложенный корень использует свой самый длинный root", () => {
@@ -258,7 +262,9 @@ describe("nsTargetPath — цели создания по конвенции", (
 	});
 
 	it("DEFAULT_NS ⇒ fallback (существующая глобальная настройка)", () => {
-		expect(nsTargetPath(DEFAULT_NS, defs, NS_CONVENTION.inbox, "GTD/Inbox.md")).toBe("GTD/Inbox.md");
+		expect(nsTargetPath(DEFAULT_NS, defs, NS_CONVENTION.inbox, "GTD/Inbox.md")).toBe(
+			"GTD/Inbox.md",
+		);
 		expect(nsTargetPath(DEFAULT_NS, defs, NS_CONVENTION.recurring, "GTD/Recurring.md")).toBe(
 			"GTD/Recurring.md",
 		);
@@ -283,7 +289,9 @@ describe("nsCommonTarget — «Общее» в один ряд с именова
 
 	it("именованное пространство ⇒ <root>/<suffix> (commonRoot игнорируется)", () => {
 		expect(nsCommonTarget("Работа", defs, NS_CONVENTION.inbox, "GTD")).toBe("Work/Входящие.md");
-		expect(nsCommonTarget("Жизнь", defs, NS_CONVENTION.events, "GTD")).toBe("Личное/События.md");
+		expect(nsCommonTarget("Жизнь", defs, NS_CONVENTION.events, "GTD")).toBe(
+			"Личное/События.md",
+		);
 		// вложенный корень берёт свой самый длинный root
 		expect(nsCommonTarget("Проект X", defs, NS_CONVENTION.archive, "GTD")).toBe(
 			"Work/Проекты/X/Архив.md",
@@ -291,16 +299,24 @@ describe("nsCommonTarget — «Общее» в один ряд с именова
 	});
 
 	it("DEFAULT_NS ⇒ <commonRoot>/<suffix> (в отличие от nsTargetPath — не fallback)", () => {
-		expect(nsCommonTarget(DEFAULT_NS, defs, NS_CONVENTION.inbox, "GTD")).toBe("GTD/Входящие.md");
-		expect(nsCommonTarget(DEFAULT_NS, defs, NS_CONVENTION.inbox, "Жизнь")).toBe("Жизнь/Входящие.md");
+		expect(nsCommonTarget(DEFAULT_NS, defs, NS_CONVENTION.inbox, "GTD")).toBe(
+			"GTD/Входящие.md",
+		);
+		expect(nsCommonTarget(DEFAULT_NS, defs, NS_CONVENTION.inbox, "Жизнь")).toBe(
+			"Жизнь/Входящие.md",
+		);
 	});
 
 	it("неизвестное имя (нет среди defs) ⇒ тоже <commonRoot>/<suffix>", () => {
-		expect(nsCommonTarget("Нет такого", defs, NS_CONVENTION.inbox, "GTD")).toBe("GTD/Входящие.md");
+		expect(nsCommonTarget("Нет такого", defs, NS_CONVENTION.inbox, "GTD")).toBe(
+			"GTD/Входящие.md",
+		);
 	});
 
 	it("commonRoot нормализуется (хвостовой слэш срезается)", () => {
-		expect(nsCommonTarget(DEFAULT_NS, defs, NS_CONVENTION.inbox, "GTD/")).toBe("GTD/Входящие.md");
+		expect(nsCommonTarget(DEFAULT_NS, defs, NS_CONVENTION.inbox, "GTD/")).toBe(
+			"GTD/Входящие.md",
+		);
 	});
 
 	it("пустой/корневой commonRoot ⇒ голый suffix (файл в корне хранилища)", () => {
@@ -310,7 +326,9 @@ describe("nsCommonTarget — «Общее» в один ряд с именова
 
 	it("именованное с пустым/корневым root ⇒ падает на commonRoot", () => {
 		const rooted = [{ name: "Корневое", root: "/" }];
-		expect(nsCommonTarget("Корневое", rooted, NS_CONVENTION.inbox, "GTD")).toBe("GTD/Входящие.md");
+		expect(nsCommonTarget("Корневое", rooted, NS_CONVENTION.inbox, "GTD")).toBe(
+			"GTD/Входящие.md",
+		);
 	});
 });
 

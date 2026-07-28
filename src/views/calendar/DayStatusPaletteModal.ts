@@ -10,6 +10,7 @@
  * не перепривязать к новому имени.
  */
 import { Modal, setIcon, type App } from "obsidian";
+import { reportAsync } from "../common/runAction";
 
 /** Узкий порт правки палитры (структурно удовлетворяется DayStatusPort). */
 export interface DayStatusPalettePort {
@@ -133,7 +134,9 @@ export class DayStatusPaletteModal extends Modal {
 		});
 
 		const save = footer.createEl("button", { text: "Сохранить", cls: "mod-cta" });
-		save.addEventListener("click", () => void this.apply());
+		save.addEventListener("click", () =>
+			reportAsync("сохранение палитры статусов дней", () => this.apply()),
+		);
 
 		refreshWarning();
 	}

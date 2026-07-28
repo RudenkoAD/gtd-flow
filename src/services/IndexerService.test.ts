@@ -68,7 +68,13 @@ function mkSnap(path: string, content: string, context?: Partial<FileContext>): 
 	content.split("\n").forEach((line, i) => {
 		const m = TASK_RE.exec(line);
 		if (m !== null)
-			listItems.push({ lineStart: i, lineEnd: i, taskChar: m[1]!, parentLine: null, heading: null });
+			listItems.push({
+				lineStart: i,
+				lineEnd: i,
+				taskChar: m[1]!,
+				parentLine: null,
+				heading: null,
+			});
 	});
 	return { path, content, listItems, context: { path, container: "plain", ...context } };
 }
@@ -159,7 +165,8 @@ describe("первичное наполнение", () => {
 	it("dispose во время скана прерывает наполнение без onReady", async () => {
 		let ready = 0;
 		const h = makeIndexer({
-			initialScan: () => scanOf(...[1, 2, 3, 4].map((n) => mkSnap(`f${n}.md`, `- [ ] t${n}`))),
+			initialScan: () =>
+				scanOf(...[1, 2, 3, 4].map((n) => mkSnap(`f${n}.md`, `- [ ] t${n}`))),
 			chunkSize: 1,
 			onReady: () => ready++,
 		});
@@ -233,11 +240,19 @@ describe("indexSnapshot", () => {
 		const content = "- [ ] dup\n- [ ] dup";
 		events.emitChanged(mkSnap("d.md", content));
 		vi.advanceTimersByTime(100);
-		const before = indexer.getIndex().fileTasks("d.md").map((t) => t.key).sort();
+		const before = indexer
+			.getIndex()
+			.fileTasks("d.md")
+			.map((t) => t.key)
+			.sort();
 
 		events.emitChanged(mkSnap("d.md", content));
 		vi.advanceTimersByTime(100);
-		const after = indexer.getIndex().fileTasks("d.md").map((t) => t.key).sort();
+		const after = indexer
+			.getIndex()
+			.fileTasks("d.md")
+			.map((t) => t.key)
+			.sort();
 		expect(after).toEqual(before);
 	});
 });

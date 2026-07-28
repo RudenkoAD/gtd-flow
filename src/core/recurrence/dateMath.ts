@@ -98,7 +98,7 @@ export function addDays(date: IsoDate, days: number): IsoDate {
 export function dayOfWeek(date: IsoDate): number {
 	const z = toEpochDays(date);
 	// 1970-01-01 — четверг: z=0 → 3
-	return (((z % 7) + 7) % 7 + 3) % 7;
+	return ((((z % 7) + 7) % 7) + 3) % 7;
 }
 
 /**

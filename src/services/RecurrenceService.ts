@@ -13,11 +13,7 @@
 import type { IsoDate, Task } from "../core/model/Task";
 import { parseTaskLine } from "../core/parser/parseTaskLine";
 import { VALUE_FIELD_EMOJI } from "../core/parser/emoji";
-import {
-	serializeTokens,
-	tokenizeTaskLine,
-	type FieldToken,
-} from "../core/parser/tokenizer";
+import { serializeTokens, tokenizeTaskLine, type FieldToken } from "../core/parser/tokenizer";
 import { compare, isValidIsoDate } from "../core/recurrence/dateMath";
 import { isParseError, parseRule, type ParseError, type Rule } from "../core/recurrence/grammar";
 import { MAX_ITERATIONS, nextOccurrence } from "../core/recurrence/nextOccurrence";
@@ -174,7 +170,13 @@ function setRecurrenceText(rawLine: string, ruleText: string): string | null {
 	} else {
 		t.segments.push(
 			{ kind: "text", text: " " },
-			{ kind: "field", field: "recurrence", emoji: VALUE_FIELD_EMOJI.recurrence, gap: " ", payload: ruleText },
+			{
+				kind: "field",
+				field: "recurrence",
+				emoji: VALUE_FIELD_EMOJI.recurrence,
+				gap: " ",
+				payload: ruleText,
+			},
 		);
 	}
 	return serializeTokens(t);
@@ -243,7 +245,11 @@ export class RecurrenceService implements RecurrencePort {
 
 	async pause(templateKey: string): Promise<void> {
 		await this.locked(() =>
-			this.deps.dispatcher.dispatch({ type: "set-status", key: templateKey, statusChar: "-" }),
+			this.deps.dispatcher.dispatch({
+				type: "set-status",
+				key: templateKey,
+				statusChar: "-",
+			}),
 		);
 	}
 
@@ -251,7 +257,11 @@ export class RecurrenceService implements RecurrencePort {
 		await this.locked(async () => {
 			// задачу читаем ДО записи: статусная правка не меняет 🆔/🔁/файл
 			const tpl = this.deps.feed.getIndex().get(templateKey);
-			await this.deps.dispatcher.dispatch({ type: "set-status", key: templateKey, statusChar: " " });
+			await this.deps.dispatcher.dispatch({
+				type: "set-status",
+				key: templateKey,
+				statusChar: " ",
+			});
 			if (tpl === undefined || tpl.taskId === null || tpl.recurrence === null) return;
 			const rule = parseRule(tpl.recurrence);
 			if (isParseError(rule)) return; // битое правило всплывёт ошибкой ближайшего runPass
@@ -266,7 +276,10 @@ export class RecurrenceService implements RecurrencePort {
 		});
 	}
 
-	async setRule(templateKey: string, ruleText: string): Promise<{ ok: boolean; parseError?: string }> {
+	async setRule(
+		templateKey: string,
+		ruleText: string,
+	): Promise<{ ok: boolean; parseError?: string }> {
 		return this.locked(() => this.setRuleInner(templateKey, ruleText));
 	}
 
@@ -284,12 +297,13 @@ export class RecurrenceService implements RecurrencePort {
 
 		// 1. шаблоны + все занятые 🆔 (любой статус носителя); шаблоны без 🆔
 		//    копим отдельно — им нужна ленивая инъекция, а не ошибка
-		const templates: TemplateInfo[] = [];
 		const idless: Task[] = [];
 		const existingIds = new Set<string>();
 		// templateId → задача-шаблон: нужна на фазе записи, чтобы развести спавны
-		// по входящим ПРОСТРАНСТВА каждого шаблона (spawnTargetOf).
+		// по входящим ПРОСТРАНСТВА каждого шаблона (spawnTargetOf).  It is filled
+		// only after duplicate template carriers have been rejected below.
 		const templateById = new Map<string, Task>();
+		const templatesById = new Map<string, TemplateInfo[]>();
 		// templateId → его заспавненные копии (🧬): нужны планировщику «от выполнения»
 		// (§every!), чтобы узнать, выполнена ли последняя копия. Собираем по всему
 		// индексу за один проход; для календарных правил не используется.
@@ -316,16 +330,33 @@ export class RecurrenceService implements RecurrencePort {
 			}
 			const rule: Rule | ParseError =
 				t.recurrence === null ? { error: "missing 🔁 rule" } : parseRule(t.recurrence);
-			templates.push({ task: t, rule });
-			templateById.set(t.taskId, t);
+			const info: TemplateInfo = { task: t, rule };
+			const carriers = templatesById.get(t.taskId);
+			if (carriers === undefined) templatesById.set(t.taskId, [info]);
+			else carriers.push(info);
 		}
 
 		// привязать собранные копии к шаблонам (нужно правилам «от выполнения»);
 		// делается после полного прохода — копия могла встретиться раньше шаблона
-		for (const tpl of templates) {
-			if (tpl.task.taskId === null) continue;
-			const kids = childrenByTemplate.get(tpl.task.taskId);
+		const uniqueTemplates: TemplateInfo[] = [];
+		for (const [templateId, carriers] of templatesById) {
+			if (carriers.length !== 1) {
+				const locations = carriers
+					.map((c) => `${c.task.filePath}:${c.task.lineStart + 1}`)
+					.join(", ");
+				for (const _carrier of carriers) {
+					report.errors.push({
+						templateId,
+						message: `duplicate recurring template id ${templateId}: ${locations}`,
+					});
+				}
+				continue;
+			}
+			const tpl = carriers[0]!;
+			const kids = childrenByTemplate.get(templateId);
 			if (kids !== undefined) tpl.children = kids;
+			uniqueTemplates.push(tpl);
+			templateById.set(templateId, tpl.task);
 		}
 
 		// 1a. Ленивая инъекция 🆔 в шаблоны без него (ТЗ §6: детерминированный
@@ -338,7 +369,7 @@ export class RecurrenceService implements RecurrencePort {
 		await this.injectMissingIds(idless, existingIds);
 
 		const plan = planSpawns({
-			templates,
+			templates: uniqueTemplates,
 			today,
 			catchUp: settings.catchUp,
 			catchUpCap: settings.catchUpCap,
@@ -366,7 +397,11 @@ export class RecurrenceService implements RecurrencePort {
 				date: adv.newCursor,
 			});
 			if (res.ok) report.advanced++;
-			else report.errors.push({ templateId: adv.templateId, message: `advance-cursor: ${res.reason}` });
+			else
+				report.errors.push({
+					templateId: adv.templateId,
+					message: `advance-cursor: ${res.reason}`,
+				});
 		}
 
 		// 4. дедуп коллизий 🆔 (после схождения синка двух устройств)
@@ -383,14 +418,21 @@ export class RecurrenceService implements RecurrencePort {
 	 * шаблон удалён), из памяти вычищаются. Спавн этих шаблонов — дело следующего
 	 * прохода: здесь ни спавна, ни курсора, ни ошибки в report.
 	 */
-	private async injectMissingIds(idless: readonly Task[], existingIds: Set<string>): Promise<void> {
+	private async injectMissingIds(
+		idless: readonly Task[],
+		existingIds: Set<string>,
+	): Promise<void> {
 		const seen = new Set<string>();
 		for (const t of idless) {
 			seen.add(t.key);
 			if (this.injectedIds.has(t.key)) continue; // уже вписали в этой сессии — ждём реиндекс
 			const fresh = this.freshId(existingIds);
 			if (fresh === null) continue; // генератор зациклился на занятых id — повторит следующий проход
-			const res = await this.deps.dispatcher.dispatch({ type: "set-id", key: t.key, taskId: fresh });
+			const res = await this.deps.dispatcher.dispatch({
+				type: "set-id",
+				key: t.key,
+				taskId: fresh,
+			});
 			if (res.ok) {
 				this.injectedIds.set(t.key, fresh);
 				existingIds.add(fresh); // не переиспользовать этот id для соседнего id-less шаблона
@@ -408,7 +450,8 @@ export class RecurrenceService implements RecurrencePort {
 	private freshId(existingIds: ReadonlySet<string>): string | null {
 		for (let attempt = 0; attempt < 32; attempt++) {
 			const id = this.genId();
-			if (!existingIds.has(id) && this.deps.feed.getIndex().resolveDep(id).length === 0) return id;
+			if (!existingIds.has(id) && this.deps.feed.getIndex().resolveDep(id).length === 0)
+				return id;
 		}
 		return null;
 	}
@@ -455,14 +498,20 @@ export class RecurrenceService implements RecurrencePort {
 				if (!transformRan) {
 					// файла нет даже после ensureFile — копий этой цели нет, курсоры не двигаем
 					for (const s of spawns) failed.add(s.templateId);
-					report.errors.push({ templateId: null, message: `spawn target missing: ${target}` });
+					report.errors.push({
+						templateId: null,
+						message: `spawn target missing: ${target}`,
+					});
 				} else {
 					report.spawned += appended;
 				}
 			} catch (err) {
 				// отказ записи цели: НИ ОДНА её копия не легла (vault.process атомарен)
 				for (const s of spawns) failed.add(s.templateId);
-				report.errors.push({ templateId: null, message: `spawn append failed: ${errorMessage(err)}` });
+				report.errors.push({
+					templateId: null,
+					message: `spawn append failed: ${errorMessage(err)}`,
+				});
 			}
 		}
 		return failed;
@@ -540,7 +589,11 @@ export class RecurrenceService implements RecurrencePort {
 					return lines.filter((_, i) => !claimed.has(i)).join("\n");
 				});
 				if (transformRan) report.deduped += removed;
-				else report.errors.push({ templateId: null, message: `dedup delete ${path}: file-not-found` });
+				else
+					report.errors.push({
+						templateId: null,
+						message: `dedup delete ${path}: file-not-found`,
+					});
 			} catch (err) {
 				report.errors.push({
 					templateId: null,
@@ -617,6 +670,11 @@ export class RecurrenceService implements RecurrencePort {
 		if (tpl === undefined) return { ok: false, reason: "task-not-found" };
 		if (tpl.container !== "recurring") return { ok: false, reason: "not-a-template" };
 		if (tpl.taskId === null) return { ok: false, reason: "template-has-no-id" };
+		if (
+			index.resolveDep(tpl.taskId).filter((candidate) => candidate.container === "recurring")
+				.length !== 1
+		)
+			return { ok: false, reason: "duplicate-template-id" };
 
 		const today = this.deps.todayIso();
 		const childId = makeChildId(tpl.taskId, today);

@@ -17,6 +17,8 @@ interface Harness {
 function makeHarness(opts?: {
 	defaultPath?: string;
 	seed?: Record<string, Record<string, unknown>>;
+	processFile?: DayStatusDeps["processFile"];
+	processFrontmatter?: DayStatusDeps["processFrontmatter"];
 }): Harness {
 	const defaultPath = opts?.defaultPath ?? "GTD/Статусы дней.md";
 	const frontmatters = new Map<string, Record<string, unknown>>();
@@ -40,14 +42,16 @@ function makeHarness(opts?: {
 	const deps: DayStatusDeps = {
 		discoverFile,
 		readFrontmatter: (path) => frontmatters.get(path) ?? null,
-		readFile: async (path) => (files.has(path) ? contents.get(path) ?? "" : null),
-		processFile: async (path, transform) => {
-			const cur = contents.get(path) ?? "";
-			const next = transform(cur);
-			if (next === null || next === cur) return false;
-			contents.set(path, next);
-			return true;
-		},
+		readFile: async (path) => (files.has(path) ? (contents.get(path) ?? "") : null),
+		processFile:
+			opts?.processFile ??
+			(async (path, transform) => {
+				const cur = contents.get(path) ?? "";
+				const next = transform(cur);
+				if (next === null || next === cur) return false;
+				contents.set(path, next);
+				return true;
+			}),
 		ensureFile: async (path) => {
 			ensured.push(path);
 			if (!files.has(path)) {
@@ -55,11 +59,15 @@ function makeHarness(opts?: {
 				contents.set(path, "");
 			}
 		},
-		processFrontmatter: async (path, fn) => {
-			const fm = frontmatters.get(path) ?? {};
-			fn(fm);
-			frontmatters.set(path, fm);
-		},
+		processFrontmatter:
+			opts?.processFrontmatter ??
+			(async (path, fn) => {
+				if (!files.has(path)) return false;
+				const fm = frontmatters.get(path) ?? {};
+				fn(fm);
+				frontmatters.set(path, fm);
+				return true;
+			}),
 		defaultFilePath: () => defaultPath,
 		onVaultChange: () => {},
 	};
@@ -203,5 +211,56 @@ describe("DayStatusService: стартовое правило при созда�
 		// тело пустое; ensureConfig не должен добавить стартовое правило в существующий файл
 		await h.service.ensureConfig();
 		expect(h.contents.get(path)).toBe("");
+	});
+});
+
+describe("DayStatusService: refresh/write races", () => {
+	it("поздний refresh старого файла не затирает более новую модель", async () => {
+		let discovered = "old.md";
+		let releaseOld!: (value: string) => void;
+		const oldRead = new Promise<string>((resolve) => {
+			releaseOld = resolve;
+		});
+		const service = new DayStatusService({
+			discoverFile: () => discovered,
+			readFrontmatter: (path) => ({
+				statuses: path === "old.md" ? { old: "#111" } : { fresh: "#222" },
+			}),
+			readFile: async (path) => (path === "old.md" ? oldRead : "2026-07-20: fresh\n"),
+			processFile: async () => true,
+			ensureFile: async () => undefined,
+			processFrontmatter: async () => true,
+			defaultFilePath: () => "new.md",
+			onVaultChange: () => {},
+		});
+
+		const staleRefresh = service.refresh();
+		discovered = "fresh.md";
+		await service.refresh();
+		releaseOld("2026-07-20: old\n");
+		await staleRefresh;
+
+		expect(service.filePath()).toBe("fresh.md");
+		expect(service.statusOf("2026-07-20")).toEqual({ name: "fresh", color: "#222" });
+	});
+
+	it("файл, исчезнувший между discovery и write, отклоняет операцию", async () => {
+		const h = makeHarness({
+			seed: { "s.md": { "gtd-day-status": true, statuses: {} } },
+			processFile: async () => false, // VaultAdapter не вызовет transform, если файла уже нет
+		});
+		await expect(h.service.setDay("2026-07-20", "работаю")).rejects.toMatchObject({
+			name: "DayStatusWriteError",
+		});
+	});
+
+	it("исчезнувший перед frontmatter-правкой файл тоже не выдаёт ложный успех", async () => {
+		const h = makeHarness({
+			seed: { "s.md": { "gtd-day-status": true, statuses: {} } },
+			processFrontmatter: async () => false,
+		});
+		await expect(h.service.setStatusDef("работаю", "#111")).rejects.toMatchObject({
+			name: "DayStatusWriteError",
+		});
 	});
 });

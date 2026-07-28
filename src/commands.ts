@@ -20,6 +20,7 @@ import {
 	type NamespaceFilter,
 } from "./core/namespace/namespace";
 import { pickBoardColumn, pickDate, pickNamespace } from "./views/common/pickers";
+import { reportAsync } from "./views/common/runAction";
 import {
 	captureTargetInNamespace,
 	ensureCaptureFileNs,
@@ -32,38 +33,52 @@ export function registerCommands(plugin: GtdFlowPlugin): void {
 		id: "quick-capture",
 		name: "Быстрый ввод во входящие",
 		callback: () => {
-			new QuickCaptureModal(plugin.app, (text) => void capture(plugin, text)).open();
+			new QuickCaptureModal(plugin.app, (text) =>
+				reportAsync("быстрый ввод не сохранён", () => capture(plugin, text)),
+			).open();
 		},
 	});
 
 	plugin.addCommand({
 		id: "run-recurrence-pass",
 		name: "Проверить регулярные сейчас",
-		callback: () => void runRecurrencePass(plugin),
+		callback: () => reportAsync("проход повторов не выполнен", () => runRecurrencePass(plugin)),
 	});
 
 	plugin.addCommand({
 		id: "sync-external-calendars",
 		name: "Синхронизировать внешние календари",
-		callback: () => void syncExternalCalendars(plugin),
+		callback: () =>
+			reportAsync("синхронизация внешних календарей не выполнена", () =>
+				syncExternalCalendars(plugin),
+			),
 	});
 
 	plugin.addCommand({
 		id: "card-at-cursor",
 		name: "Карточка задачи под курсором",
-		editorCallback: (editor, ctx) => void cardAtCursor(plugin, editor, ctx.file?.path ?? null),
+		editorCallback: (editor, ctx) =>
+			reportAsync("не удалось открыть карточку", () =>
+				cardAtCursor(plugin, editor, ctx.file?.path ?? null),
+			),
 	});
 
 	plugin.addCommand({
 		id: "defer-at-cursor",
 		name: "Отложить задачу под курсором…",
-		editorCallback: (editor, ctx) => void deferAtCursor(plugin, editor, ctx.file?.path ?? null),
+		editorCallback: (editor, ctx) =>
+			reportAsync("не удалось отложить задачу", () =>
+				deferAtCursor(plugin, editor, ctx.file?.path ?? null),
+			),
 	});
 
 	plugin.addCommand({
 		id: "move-to-column-at-cursor",
 		name: "Задачу под курсором — в колонку…",
-		editorCallback: (editor, ctx) => void columnAtCursor(plugin, editor, ctx.file?.path ?? null),
+		editorCallback: (editor, ctx) =>
+			reportAsync("не удалось переместить задачу в колонку", () =>
+				columnAtCursor(plugin, editor, ctx.file?.path ?? null),
+			),
 	});
 
 	// Переключатель активного пространства виден в палитре ТОЛЬКО когда настроено
@@ -74,7 +89,8 @@ export function registerCommands(plugin: GtdFlowPlugin): void {
 		name: "Переключить пространство GTD",
 		checkCallback: (checking) => {
 			if (plugin.settings.namespaces.length === 0) return false;
-			if (!checking) void switchNamespace(plugin);
+			if (!checking)
+				reportAsync("не удалось переключить пространство", () => switchNamespace(plugin));
 			return true;
 		},
 	});
@@ -154,10 +170,15 @@ async function capture(plugin: GtdFlowPlugin, text: string): Promise<void> {
 		// файл входящих создаётся и помечается gtd-inbox: true (+ gtd-namespace для
 		// файла-исключения вне корня пространства) СТРОГО до записи строки
 		if (!(await ensureCaptureFileNs(plugin.vaultAdapter, target, active, defs))) {
-			new Notice(`GTD Flow: не удалось подготовить файл входящих ${target}\nТекст: ${text}`, 0);
+			new Notice(
+				`GTD Flow: не удалось подготовить файл входящих ${target}\nТекст: ${text}`,
+				0,
+			);
 			return;
 		}
-		const ok = await plugin.vaultAdapter.processFile(target, (content) => appendLine(content, line));
+		const ok = await plugin.vaultAdapter.processFile(target, (content) =>
+			appendLine(content, line),
+		);
 		if (!ok) new Notice(`GTD Flow: не удалось записать в ${target}`);
 	} catch (e) {
 		// модалка уже закрыта — возвращаем текст в уведомлении, чтобы ввод
@@ -183,7 +204,11 @@ async function syncExternalCalendars(plugin: GtdFlowPlugin): Promise<void> {
 async function runRecurrencePass(plugin: GtdFlowPlugin): Promise<void> {
 	try {
 		const rep = await plugin.recurrence.runPass();
-		const parts = [`создано ${rep.spawned}`, `курсоров ${rep.advanced}`, `дедуп ${rep.deduped}`];
+		const parts = [
+			`создано ${rep.spawned}`,
+			`курсоров ${rep.advanced}`,
+			`дедуп ${rep.deduped}`,
+		];
 		if (rep.conflicts.length > 0) parts.push(`конфликтов ${rep.conflicts.length}`);
 		if (rep.errors.length > 0) parts.push(`ошибок ${rep.errors.length}`);
 		new Notice(`GTD Flow: проход повторов — ${parts.join(", ")}`);
@@ -200,7 +225,12 @@ async function runRecurrencePass(plugin: GtdFlowPlugin): Promise<void> {
 function taskUnderCursor(plugin: GtdFlowPlugin, editor: Editor, path: string | null): Task | null {
 	if (path === null) return null;
 	const lineNo = editor.getCursor().line;
-	return findTaskAtLine(plugin.taskStore.index().fileTasks(path), editor.getLine(lineNo), path, lineNo);
+	return findTaskAtLine(
+		plugin.taskStore.index().fileTasks(path),
+		editor.getLine(lineNo),
+		path,
+		lineNo,
+	);
 }
 
 function noticeNoTask(): void {
@@ -256,7 +286,11 @@ async function columnAtCursor(
 	// доски ПРОСТРАНСТВА ЗАДАЧИ (не активного вида): перенос идёт внутри пространства
 	// задачи под курсором — она едет на доску своего же пространства
 	const taskFilter: NamespaceFilter = {
-		active: resolveNamespace(task.filePath, task.nsOverride ?? null, plugin.settings.namespaces),
+		active: resolveNamespace(
+			task.filePath,
+			task.nsOverride ?? null,
+			plugin.settings.namespaces,
+		),
 		defs: plugin.settings.namespaces,
 	};
 	const found = plugin.boards.discoverBoards(taskFilter).boards;

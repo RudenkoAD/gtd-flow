@@ -3,6 +3,7 @@ import type { Component } from "svelte";
 import { writable, type Writable } from "svelte/store";
 import type GtdFlowPlugin from "../../main";
 import type { IntentDispatcher } from "../../services/WritebackService";
+import { reportAsync } from "../common/runAction";
 import { taskMenuPortsFromPlugin } from "../common/taskMenu";
 import { GtdView } from "../GtdView";
 import { VIEW_META } from "../registry";
@@ -23,8 +24,8 @@ export class ProjectView extends GtdView {
 	private readonly persisted: Writable<ProjectPersistedState> = writable({});
 	private lastState: ProjectPersistedState = {};
 
-	protected override component(): Component<any> {
-		return Project as unknown as Component<any>;
+	protected override component(): Component<Record<string, unknown>> {
+		return Project as unknown as Component<Record<string, unknown>>;
 	}
 
 	protected override props(): Record<string, unknown> {
@@ -39,6 +40,7 @@ export class ProjectView extends GtdView {
 			app: plugin.app,
 			projects: plugin.projects ?? null,
 			settings: plugin.settings,
+			settingsRevision: plugin.settingsRevision.store,
 			// ЛОКАЛЬНОЕ пространство вида (per-tab): реактивный источник, список
 			// определений и локальный сеттер — для NamespaceSwitcher в шапке, фильтра
 			// discovery проектов и ns-цели нового проекта. Смена активного эпоху
@@ -48,7 +50,8 @@ export class ProjectView extends GtdView {
 			setActiveNamespace: (name: string) => this.setLocalNamespace(name),
 			menuPorts: taskMenuPortsFromPlugin(plugin),
 			// Выход из графа проекта в обзор «Проекты» (симметрично openProject там).
-			openOverview: () => void plugin.activateView("projects"),
+			openOverview: () =>
+				reportAsync("открытие обзора проектов", () => plugin.activateView("projects")),
 			persisted: { subscribe: this.persisted.subscribe },
 			persist: (s: ProjectPersistedState) => {
 				this.lastState = s;

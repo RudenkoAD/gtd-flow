@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import type { Task } from "../model/Task";
-import type { Rule } from "./grammar";
 import { parseRule } from "./grammar";
 import {
 	makeChildId,
@@ -65,6 +64,28 @@ function plan(templates: TemplateInfo[], over: Partial<SpawnPlanInput> = {}) {
 }
 
 describe("planSpawns — spec §6 example (late catch-up offsets)", () => {
+	it("не планирует один deterministic childId дважды в одном batch", () => {
+		const first = makeTemplate({
+			filePath: "GTD/Recurring-A.md",
+			lineStart: 0,
+			recurrence: "every day",
+			rawLine: "- [ ] First carrier 🔁 every day 🆔 rev-prio 🔜 2026-07-15",
+			nextSpawn: "2026-07-15",
+		});
+		const second = makeTemplate({
+			filePath: "GTD/Recurring-B.md",
+			lineStart: 0,
+			description: "Duplicate carrier",
+			recurrence: "every day",
+			rawLine: "- [ ] Duplicate carrier 🔁 every day 🆔 rev-prio 🔜 2026-07-15",
+			nextSpawn: "2026-07-15",
+		});
+
+		const res = plan([tpl(first), tpl(second)]);
+
+		expect(res.spawns.map((spawn) => spawn.childId)).toEqual(["rev-prio-20260715"]);
+	});
+
 	// шаблон 🛫 -3d, вхождение 2026-07-31, спавн 2026-08-03:
 	// 🛫 считается от даты ВХОЖДЕНИЯ (2026-07-28), ➕ — от дня спавна (2026-08-03)
 	it("resolves 🛫 from the occurrence and ➕ from the spawn day", () => {
@@ -197,7 +218,11 @@ describe("planSpawns — idempotency and skips", () => {
 		expect(second.cursorAdvances).toEqual([]);
 	});
 	it("skips paused templates (statusChar !== ' ') entirely", () => {
-		const paused = makeTemplate({ statusChar: "-", rawLine: "- [-] Review priorities 🔁 every month on the last day 🆔 rev-prio 🔜 2026-04-30" });
+		const paused = makeTemplate({
+			statusChar: "-",
+			rawLine:
+				"- [-] Review priorities 🔁 every month on the last day 🆔 rev-prio 🔜 2026-04-30",
+		});
 		const res = plan([tpl(paused)], { today: "2026-08-03" });
 		expect(res.spawns).toEqual([]);
 		expect(res.cursorAdvances).toEqual([]);
@@ -275,8 +300,7 @@ describe("planSpawns — broken templates", () => {
 		const t = makeTemplate({
 			recurrence: "every 2 days from 2026-07-15",
 			nextSpawn: "2026-07-18",
-			rawLine:
-				"- [ ] Water plants 🔁 every 2 days from 2026-07-15 🆔 rev-prio 🔜 2026-07-18",
+			rawLine: "- [ ] Water plants 🔁 every 2 days from 2026-07-15 🆔 rev-prio 🔜 2026-07-18",
 		});
 		const res = plan([tpl(t)], { today: "2026-07-16" });
 		expect(res.spawns).toEqual([]);
@@ -285,8 +309,7 @@ describe("planSpawns — broken templates", () => {
 		const ok = makeTemplate({
 			recurrence: "every 2 days from 2026-07-15",
 			nextSpawn: "2026-07-17",
-			rawLine:
-				"- [ ] Water plants 🔁 every 2 days from 2026-07-15 🆔 rev-prio 🔜 2026-07-17",
+			rawLine: "- [ ] Water plants 🔁 every 2 days from 2026-07-15 🆔 rev-prio 🔜 2026-07-17",
 		});
 		const res2 = plan([tpl(ok)], { today: "2026-07-17" });
 		expect(res2.spawns.map((s) => s.occurrence)).toEqual(["2026-07-17"]);
@@ -334,7 +357,8 @@ describe("planSpawns — instance line construction", () => {
 	});
 	it("preserves indentation of the template line", () => {
 		const t = makeTemplate({
-			rawLine: "  - [ ] Nested template 🔁 every month on the last day 🆔 rev-prio 🔜 2026-07-31",
+			rawLine:
+				"  - [ ] Nested template 🔁 every month on the last day 🆔 rev-prio 🔜 2026-07-31",
 		});
 		const res = plan([tpl(t)], { today: "2026-07-31" });
 		expect(res.spawns[0]!.instanceLine.startsWith("  - [ ] Nested template")).toBe(true);
@@ -388,7 +412,11 @@ describe("planSpawns — multiple templates and catch-up 'all' on monthly", () =
 			rawLine: "- [ ] Pay rent 🔁 every month on the 1st 🆔 rent 🔜 2026-05-01",
 		});
 		const res = plan([tpl(t)], { catchUp: "all", today: "2026-07-15" });
-		expect(res.spawns.map((s) => s.occurrence)).toEqual(["2026-05-01", "2026-06-01", "2026-07-01"]);
+		expect(res.spawns.map((s) => s.occurrence)).toEqual([
+			"2026-05-01",
+			"2026-06-01",
+			"2026-07-01",
+		]);
 		expect(res.spawns.map((s) => s.childId)).toEqual([
 			"rent-20260501",
 			"rent-20260601",
@@ -498,7 +526,11 @@ describe("planSpawns — from (нижняя граница шаблона)", () 
 			rawLine: "- [ ] Standup 🔁 every day from 2026-07-13 🆔 daily 🔜 2026-07-13",
 		});
 		const res = plan([tpl(t)], { today: "2026-07-15", catchUp: "all" });
-		expect(res.spawns.map((s) => s.occurrence)).toEqual(["2026-07-13", "2026-07-14", "2026-07-15"]);
+		expect(res.spawns.map((s) => s.occurrence)).toEqual([
+			"2026-07-13",
+			"2026-07-14",
+			"2026-07-15",
+		]);
 		expect(res.cursorAdvances).toEqual([{ templateId: "daily", newCursor: "2026-07-16" }]);
 	});
 });
@@ -616,9 +648,12 @@ describe("planSpawns — от выполнения (§every!)", () => {
 
 	it("последняя копия выполнена вовремя: курсор 🔜 = дата ✅ + интервал, без спавна", () => {
 		// каскад из ТЗ: выполнил сегодня «every! 3 days» → 🔜 = сегодня+3
-		const res = plan([withChildren(flowers(), [{ occurrence: "2026-07-15", done: "2026-07-15" }])], {
-			today: "2026-07-15",
-		});
+		const res = plan(
+			[withChildren(flowers(), [{ occurrence: "2026-07-15", done: "2026-07-15" }])],
+			{
+				today: "2026-07-15",
+			},
+		);
 		expect(res.spawns).toEqual([]);
 		expect(res.cursorAdvances).toEqual([{ templateId: "flowers", newCursor: "2026-07-18" }]);
 	});
@@ -626,7 +661,11 @@ describe("planSpawns — от выполнения (§every!)", () => {
 	it("наступил день следующего спавна: РОВНО ОДНА копия, курсор уже на дате", () => {
 		// прошлый проход выставил 🔜 = 2026-07-18; сегодня оно наступило
 		const res = plan(
-			[withChildren(flowers({ nextSpawn: "2026-07-18" }), [{ occurrence: "2026-07-15", done: "2026-07-15" }])],
+			[
+				withChildren(flowers({ nextSpawn: "2026-07-18" }), [
+					{ occurrence: "2026-07-15", done: "2026-07-15" },
+				]),
+			],
 			{ today: "2026-07-18" },
 		);
 		expect(res.spawns.map((s) => s.occurrence)).toEqual(["2026-07-18"]);
@@ -637,7 +676,11 @@ describe("planSpawns — от выполнения (§every!)", () => {
 	it("выполнена с опозданием: отсчёт от даты ✅, а не по календарю", () => {
 		// вхождение было 07-15, а выполнил только 07-20 → следующий = 07-23
 		const res = plan(
-			[withChildren(flowers({ nextSpawn: "2026-07-18" }), [{ occurrence: "2026-07-15", done: "2026-07-20" }])],
+			[
+				withChildren(flowers({ nextSpawn: "2026-07-18" }), [
+					{ occurrence: "2026-07-15", done: "2026-07-20" },
+				]),
+			],
 			{ today: "2026-07-20" },
 		);
 		expect(res.spawns).toEqual([]);
@@ -668,7 +711,11 @@ describe("planSpawns — от выполнения (§every!)", () => {
 
 	it("двойной проход идемпотентен: childId уже в existingIds → без дубля", () => {
 		const res = plan(
-			[withChildren(flowers({ nextSpawn: "2026-07-18" }), [{ occurrence: "2026-07-15", done: "2026-07-15" }])],
+			[
+				withChildren(flowers({ nextSpawn: "2026-07-18" }), [
+					{ occurrence: "2026-07-15", done: "2026-07-15" },
+				]),
+			],
 			{ today: "2026-07-18", existingIds: new Set(["flowers-20260718"]) },
 		);
 		expect(res.spawns).toEqual([]);
@@ -678,7 +725,11 @@ describe("planSpawns — от выполнения (§every!)", () => {
 	it("desired в прошлом (проспали день): спавним СЕГОДНЯ, без ретроспективной пачки", () => {
 		// выполнил 07-10, следующий плановый = 07-13, но проход только 07-20
 		const res = plan(
-			[withChildren(flowers({ nextSpawn: "2026-07-13" }), [{ occurrence: "2026-07-10", done: "2026-07-10" }])],
+			[
+				withChildren(flowers({ nextSpawn: "2026-07-13" }), [
+					{ occurrence: "2026-07-10", done: "2026-07-10" },
+				]),
+			],
 			{ today: "2026-07-20", catchUp: "all" }, // даже 'all' не плодит пачку
 		);
 		expect(res.spawns.map((s) => s.occurrence)).toEqual(["2026-07-20"]);
@@ -688,7 +739,8 @@ describe("planSpawns — от выполнения (§every!)", () => {
 	it("until исчерпан: без спавна, курсор паркуется за until", () => {
 		const t = flowers({
 			recurrence: "every! 3 days until 2026-07-16",
-			rawLine: "- [ ] Полить цветы 🔁 every! 3 days until 2026-07-16 🆔 flowers 🔜 2026-07-15",
+			rawLine:
+				"- [ ] Полить цветы 🔁 every! 3 days until 2026-07-16 🆔 flowers 🔜 2026-07-15",
 		});
 		const res = plan([withChildren(t, [{ occurrence: "2026-07-15", done: "2026-07-15" }])], {
 			today: "2026-07-15",

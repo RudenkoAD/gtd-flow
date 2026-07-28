@@ -13,7 +13,10 @@ export class VaultAdapter {
 	 * не меняется (vault.process получает исходную строку обратно).
 	 * Возврат: была ли запись изменений. false также при отсутствии файла.
 	 */
-	async processFile(path: string, transform: (content: string) => string | null): Promise<boolean> {
+	async processFile(
+		path: string,
+		transform: (content: string) => string | null,
+	): Promise<boolean> {
 		const file = this.app.vault.getFileByPath(path);
 		if (file === null) return false;
 		let changed = false;
@@ -27,7 +30,10 @@ export class VaultAdapter {
 	}
 
 	/** false — файла нет; правку YAML целиком делает Obsidian. */
-	async processFrontmatter(path: string, fn: (fm: Record<string, unknown>) => void): Promise<boolean> {
+	async processFrontmatter(
+		path: string,
+		fn: (fm: Record<string, unknown>) => void,
+	): Promise<boolean> {
 		const file = this.app.vault.getFileByPath(path);
 		if (file === null) return false;
 		await this.app.fileManager.processFrontMatter(file, fn);

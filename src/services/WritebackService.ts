@@ -17,6 +17,9 @@ import type { IndexFeed } from "./types";
 
 export type IntentResult = { ok: true } | { ok: false; reason: string };
 
+/** Result of explicitly anchoring a task before a resumable multi-file workflow. */
+export type EnsureTaskIdResult = { ok: true; taskId: string } | { ok: false; reason: string };
+
 /**
  * Причина отказа записи в файл-зеркало внешнего календаря (gtd-external): такие
  * файлы READ-ONLY — их перезаписывает синхронизация, ручная правка затёрлась бы.
@@ -53,6 +56,38 @@ export interface WritebackDeps {
 	 *  него отклоняется с EXTERNAL_READONLY_REASON. Отсутствует ⇒ защита выключена
 	 *  (обратная совместимость; фикстуры/тесты без внешних файлов). */
 	readOnlyFile?: (path: string) => boolean;
+}
+
+/**
+ * Canonical lexical form of an Obsidian vault-relative path.
+ *
+ * File adapters commonly normalize `.`/`..` and duplicate separators. Comparing
+ * raw strings before a cross-file move is therefore unsafe: `GTD/x/../Note.md`
+ * can address the same file as `GTD/Note.md` and make the target preflight see
+ * the source row as an already-completed retry. Paths that are absolute or
+ * escape above the vault root are rejected instead of being rewritten.
+ */
+export function normalizeVaultRelativePath(raw: string): string | null {
+	const path = raw.replace(/\\/g, "/");
+	if (
+		path === "" ||
+		path.startsWith("/") ||
+		/^[A-Za-z]:\//.test(path) ||
+		path.includes("\u0000")
+	) {
+		return null;
+	}
+	const segments: string[] = [];
+	for (const segment of path.split("/")) {
+		if (segment === "" || segment === ".") continue;
+		if (segment === "..") {
+			if (segments.length === 0) return null;
+			segments.pop();
+			continue;
+		}
+		segments.push(segment);
+	}
+	return segments.length === 0 ? null : segments.join("/");
 }
 
 /** Всё, что нужно для локализации строки: 🆔, нормализованное описание, подсказка. */
@@ -193,7 +228,11 @@ function idlessMatchIndices(
  * чем ждал индекс) ⇒ фолбэк на подсказку; протухание в бо́льшую сторону ловит
  * отдельная fail-closed сверка count в вызывающем коде.
  */
-function pickMatch(matches: readonly number[], occurrenceIndex: number | undefined, lineStart: number): number {
+function pickMatch(
+	matches: readonly number[],
+	occurrenceIndex: number | undefined,
+	lineStart: number,
+): number {
 	if (matches.length === 0) return -1;
 	if (occurrenceIndex !== undefined && occurrenceIndex >= 0 && occurrenceIndex < matches.length) {
 		return matches[occurrenceIndex]!;
@@ -223,7 +262,11 @@ function pickMatch(matches: readonly number[], occurrenceIndex: number | undefin
  * Экспортирован: RecurrenceService локализует строку шаблона тем же механизмом
  * (правка 🔁 не выражается через Intent — recurrence-поле текстовое).
  */
-export function locateTaskLine(lines: readonly string[], filePath: string, target: LineTarget): number {
+export function locateTaskLine(
+	lines: readonly string[],
+	filePath: string,
+	target: LineTarget,
+): number {
 	// строки-события парсим с распознаванием 📍 — иначе их description расходится
 	// с индексом (см. LineTarget.container)
 	const parseLocation = target.container === "events";
@@ -345,7 +388,11 @@ function fileTargetPath(intent: Intent): string | null {
 
 /** Сколько id-less строк с этим описанием в содержимом файла (для сверки
  *  content-key локализации со знанием индекса — fail-closed при расхождении). */
-function countIdlessMatches(lines: readonly string[], filePath: string, description: string): number {
+function countIdlessMatches(
+	lines: readonly string[],
+	filePath: string,
+	description: string,
+): number {
 	let n = 0;
 	for (let i = 0; i < lines.length; i++) {
 		const t = parseAt(lines, i, filePath);
@@ -383,9 +430,29 @@ export class WritebackService implements IntentDispatcher {
 		return task?.taskId ?? this.injectedIds.get(key) ?? null;
 	}
 
+	/**
+	 * Give a task a stable id even when autoInjectId is disabled.  This is deliberately
+	 * explicit rather than changing the global setting: resumable cross-file workflows
+	 * need an anchor that survives a process restart between their individual writes.
+	 */
+	async ensureTaskId(key: string): Promise<EnsureTaskIdResult> {
+		const task = this.deps.feed.getIndex().get(key);
+		if (task === undefined) {
+			this.injectedIds.delete(key);
+			return { ok: false, reason: "task-not-found" };
+		}
+		const known = task.taskId ?? this.injectedIds.get(key) ?? null;
+		if (known !== null) return { ok: true, taskId: known };
+		const fresh = this.freshId();
+		if (fresh === null) return { ok: false, reason: "id-collision" };
+		const result = await this.dispatch({ type: "set-id", key, taskId: fresh });
+		return result.ok ? { ok: true, taskId: fresh } : result;
+	}
+
 	/** Файл под read-only-защитой (зеркало внешнего календаря)? */
 	private isReadOnly(path: string): boolean {
-		return this.deps.readOnlyFile !== undefined && this.deps.readOnlyFile(path);
+		const canonical = normalizeVaultRelativePath(path);
+		return this.deps.readOnlyFile !== undefined && this.deps.readOnlyFile(canonical ?? path);
 	}
 
 	/**
@@ -501,10 +568,16 @@ export class WritebackService implements IntentDispatcher {
 
 			const target: LineTarget =
 				remembered !== null
-					? { taskId: remembered, description: task.description, lineStart: task.lineStart }
+					? {
+							taskId: remembered,
+							description: task.description,
+							lineStart: task.lineStart,
+						}
 					: task;
 			const expectedIdless =
-				target.taskId === null ? this.countIdlessInIndex(task.filePath, target.description) : -1;
+				target.taskId === null
+					? this.countIdlessInIndex(task.filePath, target.description)
+					: -1;
 			let failure: string | null = "file-not-found";
 			let failedOp = -1;
 			await this.deps.write.processFile(task.filePath, (content) => {
@@ -678,6 +751,13 @@ export class WritebackService implements IntentDispatcher {
 			return { ok: false, reason: "task-not-found" };
 		}
 		if (task.taskId !== null) this.injectedIds.delete(intent.key);
+		const targetPath = normalizeVaultRelativePath(intent.toFile);
+		if (targetPath === null) return { ok: false, reason: "invalid-target-path" };
+		const sourcePath = normalizeVaultRelativePath(task.filePath) ?? task.filePath;
+		// This has to live at the writeback boundary: archive/template targets are
+		// configurable and UI guards alone cannot stop a same-file move from seeing
+		// its own id as an already-appended retry and deleting the line afterwards.
+		if (sourcePath === targetPath) return { ok: false, reason: "same-file" };
 
 		// 🆔, уже вписанный нами в окне дебаунса, — переносим по нему (см.
 		// injectedIds); это же даёт сходимость повтора после сбоя шагов 2/3.
@@ -692,7 +772,9 @@ export class WritebackService implements IntentDispatcher {
 			movedId = knownId;
 		}
 
-		// Шаг 1: локализация в источнике; при необходимости — запись 🆔.
+		// Шаг 1: локализация в источнике БЕЗ записи.  Сначала сверяем цель: если
+		// там уже есть другой носитель того же id, даже ленивую вставку id в
+		// источник делать нельзя — отказ должен оставить оба файла нетронутыми.
 		// Content-key сверяется со знанием индекса (см. applyToLine): протухший
 		// индекс не должен утащить в перенос чужую строку-двойника.
 		const locTarget: LineTarget = {
@@ -733,40 +815,101 @@ export class WritebackService implements IntentDispatcher {
 				return null;
 			}
 			captured = line;
-			lines[idx] = line;
-			return lines.join("\n");
+			return null; // id пишем только после безопасной проверки цели
 		});
 		if (failure !== null) return { ok: false, reason: failure };
-		// 🆔 уже в источнике — запоминаем до реиндекса (повтор move-line после
-		// сбоя шагов 2/3 адресуется по нему и сходится)
-		if (needInject) this.injectedIds.set(intent.key, movedId);
 		const movedLine = captured!;
+		const fingerprint = movedLine.trimEnd();
 
-		// Шаг 2: append в цель; 🆔 уже там → пропуск (идемпотентность повтора).
+		// Existing id is an idempotent retry only when it is exactly the line we
+		// captured from the source.  An unrelated duplicate must never authorize a
+		// source deletion.
+		const targetState = (lines: readonly string[]): "absent" | "retry" | "conflict" => {
+			const matches = idMatchIndices(lines, targetPath, movedId);
+			if (matches.length === 0) return "absent";
+			return matches.length === 1 && lines[matches[0]!]!.trimEnd() === fingerprint
+				? "retry"
+				: "conflict";
+		};
+		let preflight: "absent" | "retry" | "conflict" | null = null;
+		await this.deps.write.processFile(targetPath, (content) => {
+			preflight = targetState(content.split("\n"));
+			return null;
+		});
+		if (preflight === null) return { ok: false, reason: "file-not-found" };
+		if (preflight === "conflict") return { ok: false, reason: "duplicate-id-conflict" };
+
+		// Now persist the id in the source before copying it.  A failure here has
+		// not touched the target, so a retry can safely start from scratch.
+		if (needInject) {
+			let injectFailure: string | null = "file-not-found";
+			await this.deps.write.processFile(task.filePath, (content) => {
+				injectFailure = null;
+				const lines = content.split("\n");
+				const idx = locateTaskLine(lines, task.filePath, locTarget);
+				if (idx === -1) {
+					injectFailure = "line-not-found";
+					return null;
+				}
+				if (countIdlessMatches(lines, task.filePath, task.description) !== expectedIdless) {
+					injectFailure = "stale-index";
+					return null;
+				}
+				try {
+					const line = setValueField(lines[idx]!, "id", movedId);
+					if (line !== movedLine) {
+						injectFailure = "source-changed";
+						return null;
+					}
+					lines[idx] = line;
+					return lines.join("\n");
+				} catch {
+					injectFailure = "transform-failed";
+					return null;
+				}
+			});
+			if (injectFailure !== null) return { ok: false, reason: injectFailure };
+			// 🆔 уже в источнике — запоминаем до реиндекса (повтор move-line после
+			// сбоя шагов 2/3 адресуется по нему и сходится)
+			this.injectedIds.set(intent.key, movedId);
+		}
+
+		// Шаг 2: append в цель; повторно проверяем внутри transform to close the
+		// race after preflight.  A conflicting carrier fails closed and never
+		// reaches the source deletion below.
 		let targetSeen = false;
-		await this.deps.write.processFile(intent.toFile, (content) => {
+		let targetFailure: string | null = null;
+		await this.deps.write.processFile(targetPath, (content) => {
 			targetSeen = true;
 			const lines = content.split("\n");
-			if (locateTaskLine(lines, intent.toFile, { taskId: movedId, description: "", lineStart: 0 }) !== -1)
+			const state = targetState(lines);
+			if (state === "conflict") {
+				targetFailure = "duplicate-id-conflict";
 				return null;
+			}
+			if (state === "retry") return null;
 			return content.trimEnd()
 				? content + (content.endsWith("\n") ? "" : "\n") + movedLine + "\n"
 				: movedLine + "\n";
 		});
 		if (!targetSeen) return { ok: false, reason: "file-not-found" };
+		if (targetFailure !== null) return { ok: false, reason: targetFailure };
 
-		// Шаг 3: удалить из источника — теперь строго по 🆔.
+		// Шаг 3: удалить из источника — теперь строго по 🆔 И captured fingerprint.
+		// A second source carrier or an external edit is ambiguity, not permission
+		// to delete whichever line happens to be nearest to the old hint.
 		let delFailure: string | null = "file-not-found";
 		await this.deps.write.processFile(task.filePath, (content) => {
 			delFailure = null;
 			const lines = content.split("\n");
-			const idx = locateTaskLine(lines, task.filePath, {
-				taskId: movedId,
-				description: task.description,
-				lineStart: task.lineStart,
-			});
-			if (idx === -1) {
-				delFailure = "line-not-found";
+			const matches = idMatchIndices(lines, task.filePath, movedId);
+			if (matches.length !== 1) {
+				delFailure = matches.length === 0 ? "line-not-found" : "duplicate-id-conflict";
+				return null;
+			}
+			const idx = matches[0]!;
+			if (lines[idx]!.trimEnd() !== fingerprint) {
+				delFailure = "source-changed";
 				return null;
 			}
 			lines.splice(idx, 1);
@@ -798,7 +941,10 @@ export class WritebackService implements IntentDispatcher {
 	 * (необратимо). Дедуп (withChildren не задан) удаляет РОВНО одну строку —
 	 * машинные копии бездетны, семантика §6 не меняется.
 	 */
-	private async deleteLine(intent: { key: string; withChildren?: boolean }): Promise<IntentResult> {
+	private async deleteLine(intent: {
+		key: string;
+		withChildren?: boolean;
+	}): Promise<IntentResult> {
 		const task = this.deps.feed.getIndex().get(intent.key);
 		if (task === undefined) return { ok: false, reason: "task-not-found" };
 
@@ -844,7 +990,14 @@ export class WritebackService implements IntentDispatcher {
 	private freshId(): string | null {
 		for (let attempt = 0; attempt < 32; attempt++) {
 			const id = this.genId();
-			if (this.deps.feed.getIndex().resolveDep(id).length === 0) return id;
+			// Индекс догоняет записи с debounce: ids, которые этот экземпляр только
+			// что вписал, ещё могут отсутствовать в resolveDep.  Do not hand the
+			// same anchor to a neighbouring compound operation in that window.
+			if (
+				this.deps.feed.getIndex().resolveDep(id).length === 0 &&
+				![...this.injectedIds.values()].includes(id)
+			)
+				return id;
 		}
 		return null; // генератор зациклился на занятых id — не пишем
 	}

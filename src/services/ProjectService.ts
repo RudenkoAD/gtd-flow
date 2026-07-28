@@ -38,16 +38,46 @@ import { locateTaskLine } from "./WritebackService";
 // Общий контракт (agent A владеет декларацией; вид кодируется против неё)
 // ---------------------------------------------------------------------------
 
-export interface ProjectSummary { path: string; name: string; status: ProjectStatus; complete: boolean; stalled: boolean }
-export interface ProjectModel { nodes: NodeInfo[]; edges: { from: string; to: string }[]; issues: GraphIssue[]; layout: LayoutMap }
+export interface ProjectSummary {
+	path: string;
+	name: string;
+	status: ProjectStatus;
+	complete: boolean;
+	stalled: boolean;
+}
+export interface ProjectModel {
+	nodes: NodeInfo[];
+	edges: { from: string; to: string }[];
+	issues: GraphIssue[];
+	layout: LayoutMap;
+}
 export interface ProjectPort {
 	discoverProjects(filter?: NamespaceFilter): ProjectSummary[];
-	createProject(path: string, name: string): Promise<{ ok: boolean; path?: string; reason?: string }>;
+	createProject(
+		path: string,
+		name: string,
+	): Promise<{ ok: boolean; path?: string; reason?: string }>;
 	model(path: string): ProjectModel | null;
-	connect(path: string, fromId: string, toId: string): Promise<{ ok: boolean; reason?: string; cyclePath?: string[] }>;
-	disconnect(path: string, fromId: string, toId: string): Promise<{ ok: boolean; reason?: string }>;
-	addNode(path: string, text: string, x: number, y: number): Promise<{ ok: boolean; reason?: string }>;
-	deleteNode(path: string, id: string): Promise<{ ok: boolean; reason?: string; unblocked?: number }>;
+	connect(
+		path: string,
+		fromId: string,
+		toId: string,
+	): Promise<{ ok: boolean; reason?: string; cyclePath?: string[] }>;
+	disconnect(
+		path: string,
+		fromId: string,
+		toId: string,
+	): Promise<{ ok: boolean; reason?: string }>;
+	addNode(
+		path: string,
+		text: string,
+		x: number,
+		y: number,
+	): Promise<{ ok: boolean; reason?: string }>;
+	deleteNode(
+		path: string,
+		id: string,
+	): Promise<{ ok: boolean; reason?: string; unblocked?: number }>;
 	moveNodes(path: string, moves: { id: string; x: number; y: number }[]): Promise<void>;
 	setProjectStatus(path: string, status: ProjectStatus): Promise<void>;
 	wouldCreateCycle(path: string, fromId: string, toId: string): string[] | null;
@@ -150,6 +180,10 @@ export class ProjectService implements ProjectPort {
 	private readonly genId: () => string;
 	/** Коалесценция moveNodes по path: одна patchFrontmatter на вспышку жеста. */
 	private readonly pendingMoves = new Map<string, PendingMoves>();
+	/** Неуспевшие батчи не выбрасываем: следующее перемещение того же проекта
+	 * повторит и их вместе с новой позицией. UI получает rejected Promise и может
+	 * откатить оптимистичный canvas, но координаты не теряются из памяти сервиса. */
+	private readonly failedMoves = new Map<string, Map<string, NodePosition>>();
 
 	constructor(private readonly deps: ProjectServiceDeps) {
 		this.genId = deps.genId ?? defaultGenId;
@@ -179,7 +213,11 @@ export class ProjectService implements ProjectPort {
 			.filter(
 				(path) =>
 					!filtering ||
-					inNamespace(path, frontmatterNamespace(this.deps.readFrontmatter(path)), nsFilter),
+					inNamespace(
+						path,
+						frontmatterNamespace(this.deps.readFrontmatter(path)),
+						nsFilter,
+					),
 			)
 			.map((path) => this.summarize(path));
 	}
@@ -189,7 +227,10 @@ export class ProjectService implements ProjectPort {
 	 * Идемпотентно: уже помеченный gtd-project файл не перезаписывается. Узлы
 	 * добавит addNode в уже существующий файл. Возврат — путь созданного файла.
 	 */
-	async createProject(path: string, name: string): Promise<{ ok: boolean; path?: string; reason?: string }> {
+	async createProject(
+		path: string,
+		name: string,
+	): Promise<{ ok: boolean; path?: string; reason?: string }> {
 		const trimmed = name.trim();
 		if (trimmed === "") return { ok: false, reason: "empty-name" };
 		await this.deps.ensureFile(path);
@@ -204,7 +245,8 @@ export class ProjectService implements ProjectPort {
 	private summarize(path: string): ProjectSummary {
 		const fm = this.deps.readFrontmatter(path);
 		const rawName = fm?.["name"];
-		const name = typeof rawName === "string" && rawName.trim() !== "" ? rawName.trim() : baseName(path);
+		const name =
+			typeof rawName === "string" && rawName.trim() !== "" ? rawName.trim() : baseName(path);
 		const status = normalizeStatus(fm?.["status"]);
 		const members = this.members(path);
 		// Завершение детектируется, но статус пишется только явным действием (ТЗ §7)
@@ -321,7 +363,11 @@ export class ProjectService implements ProjectPort {
 	}
 
 	/** Убрать fromId из ⛔ цели; пустой список ⇒ setDependsOn([]) удаляет поле. */
-	async disconnect(path: string, fromId: string, toId: string): Promise<{ ok: boolean; reason?: string }> {
+	async disconnect(
+		path: string,
+		fromId: string,
+		toId: string,
+	): Promise<{ ok: boolean; reason?: string }> {
 		const target = this.members(path).find((m) => m.taskId === toId);
 		if (target === undefined) return { ok: false, reason: "target-not-found" };
 
@@ -342,7 +388,10 @@ export class ProjectService implements ProjectPort {
 				}
 				if (!cur.dependsOn.includes(fromId)) return null; // ребра уже нет — no-op
 				try {
-					lines[idx] = setDependsOn(lines[idx]!, cur.dependsOn.filter((d) => d !== fromId));
+					lines[idx] = setDependsOn(
+						lines[idx]!,
+						cur.dependsOn.filter((d) => d !== fromId),
+					);
 				} catch {
 					failure = "transform-failed";
 					return null;
@@ -363,7 +412,12 @@ export class ProjectService implements ProjectPort {
 	 * (или в конец), затем позиция — в frontmatter layout. Две атомарные записи
 	 * в один файл; сбой между ними оставляет узел без позиции (см. шапку файла).
 	 */
-	async addNode(path: string, text: string, x: number, y: number): Promise<{ ok: boolean; reason?: string }> {
+	async addNode(
+		path: string,
+		text: string,
+		x: number,
+		y: number,
+	): Promise<{ ok: boolean; reason?: string }> {
 		const trimmed = text.trim();
 		if (trimmed === "" || trimmed.includes("\n") || trimmed.includes("\r"))
 			return { ok: false, reason: "invalid-text" };
@@ -412,7 +466,10 @@ export class ProjectService implements ProjectPort {
 	 * прочих строк файла; затем layout[id] из frontmatter. unblocked — сколько
 	 * членов станет ready (graphEngine до/после на копии членов, до записи).
 	 */
-	async deleteNode(path: string, id: string): Promise<{ ok: boolean; reason?: string; unblocked?: number }> {
+	async deleteNode(
+		path: string,
+		id: string,
+	): Promise<{ ok: boolean; reason?: string; unblocked?: number }> {
 		const members = this.members(path);
 		const victim = members.find((m) => (m.taskId ?? m.key) === id);
 		if (victim === undefined) return { ok: false, reason: "node-not-found" };
@@ -447,7 +504,10 @@ export class ProjectService implements ProjectPort {
 							const t = parseAt(lines, i, path);
 							if (t === null || !t.dependsOn.includes(victim.taskId)) continue;
 							try {
-								lines[i] = setDependsOn(lines[i]!, t.dependsOn.filter((d) => d !== victim.taskId));
+								lines[i] = setDependsOn(
+									lines[i]!,
+									t.dependsOn.filter((d) => d !== victim.taskId),
+								);
 							} catch {
 								// кривой ⛔-список: строку не трогаем — останется broken-dep бейдж
 							}
@@ -483,7 +543,10 @@ export class ProjectService implements ProjectPort {
 		// зависимости из копий не вычищаем (зеркалит guard в deleteNode)
 		const survivorCarries =
 			victim.taskId !== null &&
-			this.deps.feed.getIndex().resolveDep(victim.taskId).some((t) => t.key !== victim.key);
+			this.deps.feed
+				.getIndex()
+				.resolveDep(victim.taskId)
+				.some((t) => t.key !== victim.key);
 		const before = buildGraph(members, this.resolveDep(), today);
 		const readyBefore = new Set(
 			before.nodes.filter((n) => !n.ghost && n.state === "ready").map((n) => n.id),
@@ -491,11 +554,16 @@ export class ProjectService implements ProjectPort {
 		const rest = members
 			.filter((m) => m.key !== victim.key)
 			.map((m) =>
-				survivorCarries ? m : { ...m, dependsOn: m.dependsOn.filter((d) => d !== victimId) },
+				survivorCarries
+					? m
+					: { ...m, dependsOn: m.dependsOn.filter((d) => d !== victimId) },
 			);
 		// резолвер без жертвы: её носительство 🆔 исчезает вместе со строкой
 		const rd: ResolveDep = (depId) =>
-			this.deps.feed.getIndex().resolveDep(depId).filter((t) => t.key !== victim.key);
+			this.deps.feed
+				.getIndex()
+				.resolveDep(depId)
+				.filter((t) => t.key !== victim.key);
 		const after = buildGraph(rest, rd, today);
 		let count = 0;
 		for (const n of after.nodes) {
@@ -520,7 +588,8 @@ export class ProjectService implements ProjectPort {
 			existing.timer = setTimeout(() => void this.flushMoves(path), MOVE_DEBOUNCE_MS);
 			return existing.promise;
 		}
-		const positions = new Map<string, NodePosition>();
+		const positions = new Map<string, NodePosition>(this.failedMoves.get(path));
+		this.failedMoves.delete(path);
 		for (const m of moves) positions.set(m.id, { x: m.x, y: m.y });
 		let resolve!: () => void;
 		let reject!: (e: unknown) => void;
@@ -556,6 +625,9 @@ export class ProjectService implements ProjectPort {
 			});
 			pending.resolve();
 		} catch (e) {
+			const retained = this.failedMoves.get(path) ?? new Map<string, NodePosition>();
+			for (const [id, pos] of pending.positions) retained.set(id, pos);
+			this.failedMoves.set(path, retained);
 			pending.reject(e);
 		}
 	}

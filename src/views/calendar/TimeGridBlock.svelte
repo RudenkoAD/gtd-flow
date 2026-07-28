@@ -4,6 +4,7 @@
 	import type { IntentDispatcher } from "../../services/WritebackService";
 	import type { GtdFlowSettings } from "../../settings/Settings";
 	import type { TaskMenuPorts } from "../common/taskMenu";
+	import { addDaysIso } from "../common/dates";
 	import type { DndPort } from "../dnd/types";
 	import EventChip from "./EventChip.svelte";
 	import type { PlacedEvent } from "./calendarLogic";
@@ -11,6 +12,8 @@
 		minutesFromOffsetY,
 		minutesToTime,
 		resizeEndMin,
+		SNAP_STEP_MIN,
+		snapMinutes,
 		type TimedBlock,
 	} from "./timeGrid";
 
@@ -113,32 +116,85 @@
 		);
 	}
 
-	function onResizeUp(): void {
-		if (!resizing) return;
-		resizing = false;
-		const endMin = previewEndMin;
-		if (endMin === null) return;
+	async function persistEnd(endMin: number): Promise<void> {
 		const timeEnd = minutesToTime(endMin); // 1440 клампится к "23:59"
 		// вырожденный конец (start в последней минуте суток) — не пишем
 		if (timeEnd <= minutesToTime(block.startMin)) {
 			previewEndMin = null;
 			return;
 		}
-		// тот же field/date; time: undefined — начало не трогаем (контракт SetDate)
-		void dispatcher
-			.dispatch({ type: "set-date", key: ev.task.key, field: ev.field, date, timeEnd })
-			.then((res) => {
-				if (!res.ok) {
-					previewEndMin = null; // откат превью — на диске ничего не поменялось
-					new Notice(`GTD Flow: ${res.reason}`);
-				}
+		try {
+			const res = await dispatcher.dispatch({
+				type: "set-date",
+				key: ev.task.key,
+				field: ev.field,
+				date,
+				timeEnd,
 			});
+			if (!res.ok) {
+				previewEndMin = null; // откат превью — на диске ничего не поменялось
+				new Notice(`GTD Flow: ${res.reason}`);
+			}
+		} catch (error) {
+			previewEndMin = null;
+			new Notice(`GTD Flow: не удалось изменить длительность: ${String(error)}`);
+		}
+	}
+
+	function onResizeUp(): void {
+		if (!resizing) return;
+		resizing = false;
+		const endMin = previewEndMin;
+		if (endMin === null) return;
+		void persistEnd(endMin);
 	}
 
 	function onResizeCancel(): void {
 		if (!resizing) return;
 		resizing = false;
 		previewEndMin = null;
+	}
+
+	/** Keyboard move: arrows shift the task by one snap or one day. Shift+arrows
+	 * resize the end edge. These use the same `set-date` write as pointer actions. */
+	function onBlockKeydown(e: KeyboardEvent): void {
+		if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) return;
+		e.preventDefault();
+		if (e.shiftKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+			const currentEnd = previewEndMin ?? block.endMin;
+			const end = resizeEndMin(
+				currentEnd + (e.key === "ArrowUp" ? -SNAP_STEP_MIN : SNAP_STEP_MIN),
+				block.startMin,
+			);
+			previewEndMin = end;
+			void persistEnd(end);
+			return;
+		}
+
+		let nextDate = date;
+		let nextStart = block.startMin;
+		if (e.key === "ArrowLeft") nextDate = addDaysIso(date, -1);
+		else if (e.key === "ArrowRight") nextDate = addDaysIso(date, 1);
+		else if (e.key === "ArrowUp") nextStart = Math.max(0, block.startMin - SNAP_STEP_MIN);
+		else nextStart = Math.min(1440 - SNAP_STEP_MIN, block.startMin + SNAP_STEP_MIN);
+
+		const duration = block.hasEnd ? block.endMin - block.startMin : 0;
+		const nextEnd = duration > 0 ? Math.min(1439, nextStart + duration) : null;
+		void (async () => {
+			try {
+				const res = await dispatcher.dispatch({
+					type: "set-date",
+					key: ev.task.key,
+					field: ev.field,
+					date: nextDate,
+					time: minutesToTime(snapMinutes(nextStart)),
+					...(nextEnd === null ? {} : { timeEnd: minutesToTime(nextEnd) }),
+				});
+				if (!res.ok) new Notice(`GTD Flow: ${res.reason}`);
+			} catch (error) {
+				new Notice(`GTD Flow: не удалось перенести задачу: ${String(error)}`);
+			}
+		})();
 	}
 </script>
 
@@ -154,16 +210,39 @@
 		<div class="gtd-tg-block-range">{rangeLabel}</div>
 	{/if}
 	<EventChip {ev} {today} {dnd} {dispatcher} {app} {settings} {menuPorts} dragAnchor={el} />
+	<!-- Отдельный фокусируемый контрол: не делаем весь блок интерактивным div,
+	     потому что внутри есть чекбокс EventChip. Стрелки двигают, Shift+↑/↓
+	     меняют длину тем же set-date путём, что и pointer-жест. -->
+	<button
+		type="button"
+		class="gtd-tg-block-move"
+		aria-label={`Переместить ${ev.task.description}: стрелки — перенос, Shift+стрелки вверх/вниз — длительность`}
+		aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown"
+		onkeydown={onBlockKeydown}
+		onclick={() => new Notice("Используйте стрелки для перемещения задачи")}>↔</button
+	>
 	{#if resizable}
-		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<div
+		<button
+			type="button"
 			class="gtd-tg-block-resize"
-			aria-hidden="true"
+			aria-label="Изменить длительность: Shift+стрелка вверх или вниз"
 			onpointerdown={onResizeDown}
 			onpointermove={onResizeMove}
 			onpointerup={onResizeUp}
 			onpointercancel={onResizeCancel}
-		></div>
+			onkeydown={(e) => {
+				if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+				e.preventDefault();
+				e.stopPropagation();
+				const end = resizeEndMin(
+					(previewEndMin ?? block.endMin) +
+						(e.key === "ArrowUp" ? -SNAP_STEP_MIN : SNAP_STEP_MIN),
+					block.startMin,
+				);
+				previewEndMin = end;
+				void persistEnd(end);
+			}}
+		></button>
 	{/if}
 </div>
 
@@ -225,6 +304,36 @@
 		height: 6px;
 		z-index: 3; /* поверх чипа — pointerdown достаётся ручке, не drag'у чипа */
 		cursor: ns-resize;
+		padding: 0;
+		border: 0;
+		background: transparent;
 		touch-action: none; /* на десктопном тач-экране resize не скроллит сетку */
+	}
+	.gtd-tg-block-move {
+		position: absolute;
+		top: 2px;
+		right: 4px;
+		z-index: 4;
+		min-width: 18px;
+		height: 18px;
+		padding: 0;
+		border: 1px solid var(--background-modifier-border);
+		border-radius: var(--radius-s, 4px);
+		background: var(--background-primary);
+		color: var(--text-muted);
+		opacity: 0;
+		cursor: move;
+	}
+	.gtd-tg-block:hover .gtd-tg-block-move,
+	.gtd-tg-block-move:focus-visible {
+		opacity: 1;
+	}
+	.gtd-tg-block-move:focus-visible {
+		outline: 2px solid var(--interactive-accent);
+		outline-offset: 1px;
+	}
+	.gtd-tg-block-resize:focus-visible {
+		outline: 2px solid var(--interactive-accent);
+		outline-offset: -2px;
 	}
 </style>

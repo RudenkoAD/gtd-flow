@@ -10,6 +10,7 @@
 	import { showEventMenu } from "./eventMenu";
 	import { type EventVaultPort } from "./eventSeries";
 	import { type TimedBlock } from "./timeGrid";
+	import { occurrenceKeyboardAction, surfaceKeyboardAction } from "./calendarKeyboard";
 
 	let {
 		occ,
@@ -19,6 +20,7 @@
 		settings,
 		block = null,
 		dnd = null,
+		onKeyboardMove = null,
 	}: {
 		occ: EventOccurrence;
 		app: App;
@@ -30,6 +32,9 @@
 		block?: TimedBlock | null;
 		/** DnD-порт: непусто только в блоках тайм-сетки — там вхождение можно тянуть. */
 		dnd?: DndPort | null;
+		/** Клавиатурный перенос timed-вхождения (реализует TimeGridCol). */
+		onKeyboardMove?:
+			((key: "ArrowLeft" | "ArrowRight" | "ArrowUp" | "ArrowDown") => void) | null;
 	} = $props();
 
 	/** Событие из файла-зеркала внешнего календаря (gtd-external): read-only —
@@ -39,7 +44,11 @@
 	 *  <root>/События.md (именованное) или settings.eventsFile («Общее»). Копия —
 	 *  наше одноразовое событие в обычном файле (зеркало не трогаем). */
 	const copyTargetFile = $derived.by(() => {
-		const ns = resolveNamespace(occ.task.filePath, occ.task.nsOverride ?? null, settings.namespaces);
+		const ns = resolveNamespace(
+			occ.task.filePath,
+			occ.task.nsOverride ?? null,
+			settings.namespaces,
+		);
 		return nsTargetPath(ns, settings.namespaces, NS_CONVENTION.events, settings.eventsFile);
 	});
 
@@ -51,7 +60,9 @@
 	const widthPct = $derived(block === null ? 100 : 100 / block.laneCount);
 	/** «19:00–20:30» в блоке при собственном конце; иначе бейдж времени в тексте. */
 	const rangeLabel = $derived(
-		block !== null && block.hasEnd && occ.timeEnd !== null ? `${occ.time}–${occ.timeEnd}` : null,
+		block !== null && block.hasEnd && occ.timeEnd !== null
+			? `${occ.time}–${occ.timeEnd}`
+			: null,
 	);
 	/** Бейдж времени вне блока (агенда/месяц/«Весь день»): «19:00–20:30» при
 	 *  заданном конце, иначе «19:00»; null — «Весь день» (без времени). */
@@ -76,7 +87,9 @@
 					: "Событие: ",
 	);
 	const tooltip = $derived(
-		tooltipPrefix + occ.title + (compact && occ.time !== null ? ` (${rangeLabel ?? occ.time})` : ""),
+		tooltipPrefix +
+			occ.title +
+			(compact && occ.time !== null ? ` (${rangeLabel ?? occ.time})` : ""),
 	);
 	/** Место события (📍): непустой текст или null. */
 	const locationText = $derived(
@@ -94,13 +107,19 @@
 	/** Начало drag блока-вхождения: призрак — весь блок, время при drop — по его верху. */
 	function onPointerDown(e: PointerEvent): void {
 		if (!draggable || dnd === null || rootEl === null || e.button !== 0) return;
-		if (e.target instanceof Element && e.target.closest("input, button, a, select, textarea")) return;
+		if (e.target instanceof Element && e.target.closest("input, button, a, select, textarea"))
+			return;
 		dnd.startDrag(
 			{
 				taskKey: occ.task.key,
 				sourceViewType: VIEW_TYPES.calendar,
 				grabOffsetY: e.clientY - rootEl.getBoundingClientRect().top,
-				occurrence: { kind: occ.kind, date: occ.date, time: occ.time, timeEnd: occ.timeEnd },
+				occurrence: {
+					kind: occ.kind,
+					date: occ.date,
+					time: occ.time,
+					timeEnd: occ.timeEnd,
+				},
 			},
 			e,
 			rootEl,
@@ -114,9 +133,49 @@
 		e.stopPropagation();
 		showEventMenu(e, { occ, app, dispatcher, vault, external, copyTargetFile });
 	}
+
+	function openMenuFromKeyboard(): void {
+		if (rootEl === null) return;
+		const rect = rootEl.getBoundingClientRect();
+		const e = new MouseEvent("contextmenu", {
+			bubbles: true,
+			clientX: rect.left + rect.width / 2,
+			clientY: rect.top + rect.height / 2,
+		});
+		onContextMenu(e);
+	}
+
+	/** Enter/Space and the menu key expose the context menu without a mouse.
+	 * Timed editable occurrences additionally support arrow-key movement; the
+	 * parent performs the same transfer operation as drag-and-drop. */
+	function onKeydown(e: KeyboardEvent): void {
+		const surfaceAction = surfaceKeyboardAction(e.key, e.shiftKey);
+		if (surfaceAction === "quick-add") {
+			e.preventDefault();
+			openMenuFromKeyboard();
+			return;
+		}
+		if (surfaceAction === "menu") {
+			e.preventDefault();
+			openMenuFromKeyboard();
+			return;
+		}
+		const move = occurrenceKeyboardAction(e.key);
+		if (block !== null && onKeyboardMove !== null && move !== null) {
+			e.preventDefault();
+			// `occurrenceKeyboardAction` is the shared policy check; narrow the
+			// original DOM key before forwarding it to the typed move port.
+			switch (e.key) {
+				case "ArrowLeft":
+				case "ArrowRight":
+				case "ArrowUp":
+				case "ArrowDown":
+					onKeyboardMove(e.key);
+			}
+		}
+	}
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
 	class="gtd-cal-chip gtd-cal-event"
 	class:is-block={block !== null}
@@ -124,11 +183,24 @@
 	class:is-external={external}
 	class:is-draggable={draggable}
 	bind:this={rootEl}
-	style={block !== null ? `top:${block.topPct}%; height:${block.heightPct}%; left:${leftPct}%; width:${widthPct}%` : ""}
+	role="button"
+	tabindex="0"
+	aria-label={`${markLabel}: ${occ.title}. Enter — меню${block !== null && onKeyboardMove !== null ? ", стрелки — перенести" : ""}`}
+	aria-keyshortcuts={block !== null && onKeyboardMove !== null
+		? "ArrowLeft ArrowRight ArrowUp ArrowDown"
+		: undefined}
+	style={block !== null
+		? `top:${block.topPct}%; height:${block.heightPct}%; left:${leftPct}%; width:${widthPct}%`
+		: ""}
 	title={locationText === null ? tooltip : null}
-	use:obsidianTooltip={{ text: eventTooltip, placement: "bottom", classes: ["gtd-event-tooltip"] }}
+	use:obsidianTooltip={{
+		text: eventTooltip,
+		placement: "bottom",
+		classes: ["gtd-event-tooltip"],
+	}}
 	onpointerdown={onPointerDown}
 	oncontextmenu={onContextMenu}
+	onkeydown={onKeydown}
 >
 	{#if block !== null}
 		<!-- блок тайм-сетки: шапка-время сверху (прячется у коротких), название с переносами -->

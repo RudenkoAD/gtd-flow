@@ -36,7 +36,9 @@ export function buildTemplateVM(task: Task, today: IsoDate): TemplateVM {
 	// отсутствие 🔁 показываем тем же каналом, что и синтаксическую ошибку:
 	// шаблон без правила так же неспособен спавнить
 	const ruleParsed: Rule | ParseError =
-		task.recurrence === null ? { error: "template has no 🔁 rule" } : parseRule(task.recurrence);
+		task.recurrence === null
+			? { error: "template has no 🔁 rule" }
+			: parseRule(task.recurrence);
 	const paused = task.statusChar !== " ";
 	// expired только при until: без until nextOccurrence не иссякает
 	const expired =
@@ -203,7 +205,8 @@ export async function createTemplate(deps: {
 	if (isParseError(parseRule(deps.ruleText))) return { ok: false, reason: "invalid-rule" };
 	// проверка имени до записи (id не тратим, файл не создаём) — buildTemplateLine
 	// без id возвращает null ровно на пустом имени
-	if (buildTemplateLine(deps.name, deps.ruleText) === null) return { ok: false, reason: "empty-name" };
+	if (buildTemplateLine(deps.name, deps.ruleText) === null)
+		return { ok: false, reason: "empty-name" };
 	const genId = deps.genId ?? defaultGenId;
 	// именованное пространство без своих файлов шаблонов — цель <root>/Регулярные.md;
 	// иначе (есть свой файл или «Общее») штатная логика от spawnTarget
@@ -247,7 +250,11 @@ export function historyOf(tasks: Iterable<Task>, templateId: string): Task[] {
 			if (b.created === null) return -1;
 			return a.created < b.created ? 1 : -1;
 		}
-		return a.filePath < b.filePath ? -1 : a.filePath > b.filePath ? 1 : a.lineStart - b.lineStart;
+		return a.filePath < b.filePath
+			? -1
+			: a.filePath > b.filePath
+				? 1
+				: a.lineStart - b.lineStart;
 	});
 	return out;
 }

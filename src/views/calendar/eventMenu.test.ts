@@ -28,7 +28,13 @@ describe("buildEventMenuModel — модель пунктов меню собы�
 		// у одноразового подпись переноса — «Перенести событие…» (правится сама строка)
 		expect(items.find((i) => i.id === "transfer")!.title).toBe("Перенести событие…");
 		// серийных пунктов нет
-		for (const id of ["edit-series", "copy-occurrence", "copy-series", "delete-occurrence", "delete-series"])
+		for (const id of [
+			"edit-series",
+			"copy-occurrence",
+			"copy-series",
+			"delete-occurrence",
+			"delete-series",
+		])
 			expect(items.some((i) => i.id === id)).toBe(false);
 	});
 
@@ -61,7 +67,14 @@ describe("buildEventMenuModel — модель пунктов меню собы�
 			expect(items[0]!.title).toBe("Копировать…");
 			expect(items[1]!.title).toBe("Открыть файл");
 			// НЕТ разрушительных/правящих пунктов
-			for (const id of ["edit-series", "location", "transfer", "delete-series", "delete-occurrence", "delete-single"])
+			for (const id of [
+				"edit-series",
+				"location",
+				"transfer",
+				"delete-series",
+				"delete-occurrence",
+				"delete-single",
+			])
 				expect(items.some((i) => i.id === id)).toBe(false);
 		}
 	});

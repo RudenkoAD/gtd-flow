@@ -113,7 +113,11 @@ describe("inbox — формула §1 (скоуп входящих: по умо
 
 	it("регрессия живого теста: drag на доску прямо из Inbox.md убирает из входящих", () => {
 		// Карточка получила #kanban/... прямо в Inbox.md — разобрана (!hasBoardTag).
-		const t = makeTask({ filePath: "GTD/Inbox.md", container: "inbox", tags: ["#kanban/work/doing"] });
+		const t = makeTask({
+			filePath: "GTD/Inbox.md",
+			container: "inbox",
+			tags: ["#kanban/work/doing"],
+		});
 		expect(inboxKeys([t])).toEqual([]);
 	});
 
@@ -146,7 +150,11 @@ describe("inbox — формула §1 (скоуп входящих: по умо
 
 	it("неактивные (done/отложенные/шаблоны) — не во входящих даже в файле захвата", () => {
 		const done = makeTask({ filePath: "GTD/Inbox.md", container: "inbox", statusChar: "x" });
-		const deferred = makeTask({ filePath: "GTD/Inbox.md", container: "inbox", start: "2026-08-01" });
+		const deferred = makeTask({
+			filePath: "GTD/Inbox.md",
+			container: "inbox",
+			start: "2026-08-01",
+		});
 		const template = makeTask({ filePath: "GTD/Inbox.md", container: "recurring" });
 		expect(inboxKeys([done, deferred, template])).toEqual([]);
 	});
@@ -225,7 +233,11 @@ describe("inbox — сортировка", () => {
 			priority: "high",
 			created: "2026-07-01",
 		});
-		const highNoCreated = makeTask({ filePath: "GTD/Inbox.md", container: "inbox", priority: "high" });
+		const highNoCreated = makeTask({
+			filePath: "GTD/Inbox.md",
+			container: "inbox",
+			priority: "high",
+		});
 		expect(inboxKeys([plain, top, highLate, highEarly, highNoCreated])).toEqual([
 			top.key,
 			highEarly.key,
@@ -329,7 +341,11 @@ describe("остальные запросы", () => {
 		// зачёркнутая заархивированная задача с датой раньше мелькала в календаре —
 		// теперь архив полностью инертен и исключён отовсюду
 		const doneWithDue = makeTask({ container: "archive", statusChar: "x", due: "2026-07-20" });
-		const undoneWithDue = makeTask({ container: "archive", statusChar: " ", due: "2026-07-21" });
+		const undoneWithDue = makeTask({
+			container: "archive",
+			statusChar: " ",
+			due: "2026-07-21",
+		});
 		const deferred = makeTask({ container: "archive", start: "2026-07-25" });
 		const all = [doneWithDue, undoneWithDue, deferred];
 		expect(inboxKeys(all)).toEqual([]);
@@ -375,7 +391,12 @@ describe("остальные запросы", () => {
 		const t = makeTask({ due: "2026-08-15", scheduled: "2026-07-10" });
 		// по due — вне диапазона; по scheduled — внутри
 		const byDue = evaluate(
-			{ kind: "calendar-range", fromIso: "2026-07-01", toIso: "2026-07-31", placement: ["due"] },
+			{
+				kind: "calendar-range",
+				fromIso: "2026-07-01",
+				toIso: "2026-07-31",
+				placement: ["due"],
+			},
 			ctxOf([t]),
 		);
 		const bySched = evaluate(
@@ -432,12 +453,12 @@ describe("пространства (namespace-фильтр запросов)", (
 		const work = makeTask({ filePath: "Work/Inbox.md", container: "inbox" });
 		const life = makeTask({ filePath: "Личное/Inbox.md", container: "inbox" });
 		const general = makeTask({ filePath: "Разное/Inbox.md", container: "inbox" });
-		expect(evaluate({ kind: "inbox" }, ctxNs([work, life, general], "Работа")).map((t) => t.key)).toEqual(
-			[work.key],
-		);
-		expect(evaluate({ kind: "inbox" }, ctxNs([work, life, general], "Жизнь")).map((t) => t.key)).toEqual(
-			[life.key],
-		);
+		expect(
+			evaluate({ kind: "inbox" }, ctxNs([work, life, general], "Работа")).map((t) => t.key),
+		).toEqual([work.key]);
+		expect(
+			evaluate({ kind: "inbox" }, ctxNs([work, life, general], "Жизнь")).map((t) => t.key),
+		).toEqual([life.key]);
 	});
 
 	it("активное DEFAULT_NS («Общее») — только файлы вне корней", () => {
@@ -450,22 +471,26 @@ describe("пространства (namespace-фильтр запросов)", (
 
 	it("override (frontmatter gtd-namespace) перебивает папку и в inbox", () => {
 		// файл лежит в Work/, но override уводит его в «Жизнь»
-		const moved = makeTask({ filePath: "Work/личное.md", container: "inbox", nsOverride: "Жизнь" });
+		const moved = makeTask({
+			filePath: "Work/личное.md",
+			container: "inbox",
+			nsOverride: "Жизнь",
+		});
 		const stay = makeTask({ filePath: "Work/рабочее.md", container: "inbox" });
-		expect(evaluate({ kind: "inbox" }, ctxNs([moved, stay], "Жизнь")).map((t) => t.key)).toEqual([
-			moved.key,
-		]);
-		expect(evaluate({ kind: "inbox" }, ctxNs([moved, stay], "Работа")).map((t) => t.key)).toEqual([
-			stay.key,
-		]);
+		expect(
+			evaluate({ kind: "inbox" }, ctxNs([moved, stay], "Жизнь")).map((t) => t.key),
+		).toEqual([moved.key]);
+		expect(
+			evaluate({ kind: "inbox" }, ctxNs([moved, stay], "Работа")).map((t) => t.key),
+		).toEqual([stay.key]);
 	});
 
 	it("tickler режется пространством", () => {
 		const work = makeTask({ filePath: "Work/t.md", start: "2026-08-01" });
 		const life = makeTask({ filePath: "Личное/t.md", start: "2026-08-01" });
-		expect(evaluate({ kind: "tickler" }, ctxNs([work, life], "Работа")).map((t) => t.key)).toEqual([
-			work.key,
-		]);
+		expect(
+			evaluate({ kind: "tickler" }, ctxNs([work, life], "Работа")).map((t) => t.key),
+		).toEqual([work.key]);
 	});
 
 	it("all-templates (регулярные) режутся пространством", () => {
@@ -479,7 +504,9 @@ describe("пространства (namespace-фильтр запросов)", (
 	it("calendar-range режется пространством", () => {
 		const work = makeTask({ filePath: "Work/c.md", due: "2026-07-20" });
 		const life = makeTask({ filePath: "Личное/c.md", due: "2026-07-21" });
-		expect(evaluate(RANGE, ctxNs([work, life], "Работа")).map((t) => t.key)).toEqual([work.key]);
+		expect(evaluate(RANGE, ctxNs([work, life], "Работа")).map((t) => t.key)).toEqual([
+			work.key,
+		]);
 	});
 
 	it("project-members НЕ режется пространством (файл проекта уже ns-консистентен)", () => {

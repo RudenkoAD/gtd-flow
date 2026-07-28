@@ -325,8 +325,7 @@ export function expandEventOccurrences(
 			if (isParseError(rule)) continue;
 			const time = rule.eventTime ?? null;
 			const timeEnd = rule.eventTimeEnd ?? null;
-			const exclude =
-				task.excludedDates.length > 0 ? new Set(task.excludedDates) : undefined;
+			const exclude = task.excludedDates.length > 0 ? new Set(task.excludedDates) : undefined;
 			for (const date of expandOccurrences(rule, from, to, undefined, exclude)) {
 				push({
 					task,
@@ -369,8 +368,7 @@ export function expandEventOccurrences(
  * (чип события) — чтобы рендерить оба типа из ОДНОГО отсортированного списка.
  */
 export type AgendaDayItem =
-	| { kind: "task"; ev: PlacedEvent }
-	| { kind: "event"; occ: EventOccurrence };
+	{ kind: "task"; ev: PlacedEvent } | { kind: "event"; occ: EventOccurrence };
 
 /**
  * Слить задачи дня (placeEvents) и вхождения событий дня (expandEventOccurrences)
@@ -390,7 +388,8 @@ export function mergeDayItems(
 ): AgendaDayItem[] {
 	// typeRank: событие (0) раньше задачи (1) при равенстве времени — «событие перед задачей»
 	const rows: { item: AgendaDayItem; time: string | null; typeRank: number }[] = [];
-	for (const occ of occurrences) rows.push({ item: { kind: "event", occ }, time: occ.time, typeRank: 0 });
+	for (const occ of occurrences)
+		rows.push({ item: { kind: "event", occ }, time: occ.time, typeRank: 0 });
 	for (const ev of events)
 		rows.push({ item: { kind: "task", ev }, time: placedTime(ev.task, ev.field), typeRank: 1 });
 	rows.sort((a, b) => {

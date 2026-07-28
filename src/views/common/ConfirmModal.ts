@@ -37,6 +37,13 @@ export class ConfirmModal extends Modal {
 	}
 }
 
-export function confirm(app: App, title: string, body: string, confirmLabel: string): Promise<boolean> {
-	return new Promise((resolve) => new ConfirmModal(app, title, body, confirmLabel, resolve).open());
+export function confirm(
+	app: App,
+	title: string,
+	body: string,
+	confirmLabel: string,
+): Promise<boolean> {
+	return new Promise((resolve) =>
+		new ConfirmModal(app, title, body, confirmLabel, resolve).open(),
+	);
 }

@@ -78,13 +78,19 @@ describe("buildTemplateVM", () => {
 	});
 
 	it("fromCompletion с until в будущем — не expired (nextOccurrence всегда null, но серия жива, §FIX-3)", () => {
-		const vm = buildTemplateVM(template({ recurrence: "every! 3 days until 2027-01-01" }), TODAY);
+		const vm = buildTemplateVM(
+			template({ recurrence: "every! 3 days until 2027-01-01" }),
+			TODAY,
+		);
 		expect(vm.expired).toBe(false);
 		expect(vm.badges).toEqual([]);
 	});
 
 	it("fromCompletion с until в прошлом — expired (§FIX-3)", () => {
-		const vm = buildTemplateVM(template({ recurrence: "every! 3 days until 2026-01-01" }), TODAY);
+		const vm = buildTemplateVM(
+			template({ recurrence: "every! 3 days until 2026-01-01" }),
+			TODAY,
+		);
 		expect(vm.expired).toBe(true);
 		expect(vm.badges).toEqual(["expired"]);
 	});
@@ -146,16 +152,46 @@ describe("historyOf", () => {
 	});
 
 	it("сортировка ➕ desc, копии без ➕ — в конце", () => {
-		const old = makeTask({ filePath: "in.md", lineStart: 1, spawnedFrom: "rev", created: "2026-05-31" });
-		const fresh = makeTask({ filePath: "in.md", lineStart: 2, spawnedFrom: "rev", created: "2026-06-30" });
-		const dateless = makeTask({ filePath: "in.md", lineStart: 3, spawnedFrom: "rev", created: null });
+		const old = makeTask({
+			filePath: "in.md",
+			lineStart: 1,
+			spawnedFrom: "rev",
+			created: "2026-05-31",
+		});
+		const fresh = makeTask({
+			filePath: "in.md",
+			lineStart: 2,
+			spawnedFrom: "rev",
+			created: "2026-06-30",
+		});
+		const dateless = makeTask({
+			filePath: "in.md",
+			lineStart: 3,
+			spawnedFrom: "rev",
+			created: null,
+		});
 		expect(historyOf([old, dateless, fresh], "rev")).toEqual([fresh, old, dateless]);
 	});
 
 	it("равные даты упорядочены стабильно по (файл, строка)", () => {
-		const b = makeTask({ filePath: "b.md", lineStart: 1, spawnedFrom: "rev", created: "2026-07-01" });
-		const a2 = makeTask({ filePath: "a.md", lineStart: 2, spawnedFrom: "rev", created: "2026-07-01" });
-		const a1 = makeTask({ filePath: "a.md", lineStart: 1, spawnedFrom: "rev", created: "2026-07-01" });
+		const b = makeTask({
+			filePath: "b.md",
+			lineStart: 1,
+			spawnedFrom: "rev",
+			created: "2026-07-01",
+		});
+		const a2 = makeTask({
+			filePath: "a.md",
+			lineStart: 2,
+			spawnedFrom: "rev",
+			created: "2026-07-01",
+		});
+		const a1 = makeTask({
+			filePath: "a.md",
+			lineStart: 1,
+			spawnedFrom: "rev",
+			created: "2026-07-01",
+		});
 		expect(historyOf([b, a2, a1], "rev")).toEqual([a1, a2, b]);
 	});
 });
@@ -170,7 +206,9 @@ describe("deleteTemplateBody", () => {
 
 describe("buildTemplateLine", () => {
 	it("собирает `- [ ] <имя> 🔁 <правило>`", () => {
-		expect(buildTemplateLine("Полить цветы", "every day")).toBe("- [ ] Полить цветы 🔁 every day");
+		expect(buildTemplateLine("Полить цветы", "every day")).toBe(
+			"- [ ] Полить цветы 🔁 every day",
+		);
 	});
 
 	it("схлопывает пробелы в названии и триммит правило", () => {
@@ -234,7 +272,9 @@ describe("createTemplate", () => {
 		const vault = new FakeVault();
 		const res = await createTemplate({ vault, recurringFiles: [], ...base });
 		expect(res).toEqual({ ok: true, path: "GTD/Recurring.md" });
-		expect(vault.files.get("GTD/Recurring.md")).toBe("- [ ] Полить цветы 🔁 every day 🆔 tpl001\n");
+		expect(vault.files.get("GTD/Recurring.md")).toBe(
+			"- [ ] Полить цветы 🔁 every day 🆔 tpl001\n",
+		);
 		expect(vault.fm.get("GTD/Recurring.md")).toEqual({ "gtd-recurring": true });
 	});
 

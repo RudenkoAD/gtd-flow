@@ -3,6 +3,7 @@ import { isInInbox, type QueryContext } from "../core/query/QueryEngine";
 import { defaultInboxConfig } from "../core/query/querySpec";
 import type { ContainerKind, IsoDate, Task } from "../core/model/Task";
 import { parseTaskLine } from "../core/parser/parseTaskLine";
+import type { PromotionRetry } from "../core/tickler/promote";
 import { FakeFeed } from "../stores/testSupport";
 import { PromoteService } from "./PromoteService";
 import { WritebackService, type WritePort } from "./WritebackService";
@@ -11,10 +12,15 @@ import { WritebackService, type WritePort } from "./WritebackService";
 
 class FakePort implements WritePort {
 	readonly files = new Map<string, string>();
+	calls = 0;
+	/** Номер processFile, который бросает ошибку; 0 — без отказа. */
+	failOnCall = 0;
 	async processFile(
 		path: string,
 		transform: (content: string) => string | null,
 	): Promise<boolean> {
+		this.calls++;
+		if (this.calls === this.failOnCall) throw new Error("эмулированный сбой записи");
 		const content = this.files.get(path);
 		if (content === undefined) return false;
 		const next = transform(content);
@@ -51,9 +57,14 @@ interface HarnessOptions {
 	/** Последний обработанный день; null — проходов не было (усыновление).
 	 *  Дефолт "2026-06-30": окно (30.06, today] покрывает фикстуры с 🛫 01.07+. */
 	lastRun?: IsoDate | null;
+	autoInjectId?: boolean;
+	ensureInboxOk?: boolean;
 }
 
-function makeHarness(files: Record<string, { content: string; container: ContainerKind }>, over: HarnessOptions = {}) {
+function makeHarness(
+	files: Record<string, { content: string; container: ContainerKind }>,
+	over: HarnessOptions = {},
+) {
 	const port = new FakePort();
 	const feed = new FakeFeed(over.today ?? TODAY);
 	const containers = new Map<string, ContainerKind>();
@@ -69,13 +80,15 @@ function makeHarness(files: Record<string, { content: string; container: Contain
 	const dispatcher = new WritebackService({
 		write: port,
 		feed,
-		autoInjectId: true,
+		autoInjectId: over.autoInjectId ?? true,
 		genId: () => `id${++idSeq}`,
 	});
 	const state = {
 		promoteTo: over.promoteTo ?? ("inbox" as const),
 		includePlain: over.includePlain ?? false,
 		lastRun: over.lastRun !== undefined ? over.lastRun : ("2026-06-30" as IsoDate | null),
+		ensureInboxOk: over.ensureInboxOk ?? true,
+		retries: [] as PromotionRetry[],
 	};
 	const svc = new PromoteService({
 		feed,
@@ -85,12 +98,18 @@ function makeHarness(files: Record<string, { content: string; container: Contain
 		settings: () => ({ promoteTo: state.promoteTo, includePlain: state.includePlain }),
 		inboxTargetFor: () => INBOX,
 		ensureInboxFile: async (path) => {
+			if (!state.ensureInboxOk) return false;
 			if (!port.files.has(path)) port.files.set(path, "");
 			return true;
 		},
 		lastRun: () => state.lastRun,
 		setLastRun: async (day) => {
 			state.lastRun = day;
+		},
+		ensureTaskId: (key) => dispatcher.ensureTaskId(key),
+		promotionRetries: () => state.retries,
+		setPromotionRetries: async (retries) => {
+			state.retries = retries.map((retry) => ({ ...retry }));
 		},
 	});
 	/** Перечитать все файлы порта в индекс (эмуляция реиндекса). */
@@ -111,7 +130,12 @@ function lines(port: FakePort, path: string): string[] {
 describe("PromoteService — всплытие во входящие (promoteTo=inbox)", () => {
 	it("первый проход (lastRun=null) усыновляет день БЕЗ обработки бэклога", async () => {
 		const h = makeHarness(
-			{ "Notes/a.md": { content: "- [ ] давно наступила 🛫 2026-07-10 🆔 aaa", container: "plain" } },
+			{
+				"Notes/a.md": {
+					content: "- [ ] давно наступила 🛫 2026-07-10 🆔 aaa",
+					container: "plain",
+				},
+			},
 			{ lastRun: null },
 		);
 		const rep = await h.svc.runPass();
@@ -145,7 +169,12 @@ describe("PromoteService — всплытие во входящие (promoteTo=i
 
 	it("origin: чистое всплытие, ноль записей", async () => {
 		const h = makeHarness(
-			{ "Notes/a.md": { content: "- [ ] plain задача 🛫 2026-07-10 🆔 aaa", container: "plain" } },
+			{
+				"Notes/a.md": {
+					content: "- [ ] plain задача 🛫 2026-07-10 🆔 aaa",
+					container: "plain",
+				},
+			},
 			{ promoteTo: "origin" },
 		);
 		const rep = await h.svc.runPass();
@@ -183,7 +212,12 @@ describe("PromoteService — всплытие во входящие (promoteTo=i
 
 	it("plain при includePlain=false: переносит в inbox-файл", async () => {
 		const h = makeHarness(
-			{ "Notes/a.md": { content: "- [ ] plain задача 🛫 2026-07-01 🆔 bbb", container: "plain" } },
+			{
+				"Notes/a.md": {
+					content: "- [ ] plain задача 🛫 2026-07-01 🆔 bbb",
+					container: "plain",
+				},
+			},
 			{ includePlain: false },
 		);
 		const rep = await h.svc.runPass();
@@ -194,7 +228,12 @@ describe("PromoteService — всплытие во входящие (promoteTo=i
 
 	it("plain при includePlain=true: снимает 🛫 на месте, без переноса", async () => {
 		const h = makeHarness(
-			{ "Notes/a.md": { content: "- [ ] plain задача 🛫 2026-07-01 🆔 ccc", container: "plain" } },
+			{
+				"Notes/a.md": {
+					content: "- [ ] plain задача 🛫 2026-07-01 🆔 ccc",
+					container: "plain",
+				},
+			},
 			{ includePlain: true },
 		);
 		const rep = await h.svc.runPass();
@@ -260,6 +299,105 @@ describe("PromoteService — всплытие во входящие (promoteTo=i
 		const inbox = lines(h.port, INBOX)[0]!;
 		expect(inbox).toContain("без идентификатора");
 		expect(inbox).toMatch(/🆔 id\d+/); // move-line обязан адресовать строку
+	});
+
+	it.each([
+		["ensure-id", 1],
+		["clear-start", 2],
+		["strip-tags", 3],
+		["move-line append", 6],
+	] as const)(
+		"%s failure is journalled and retried with autoInjectId=false",
+		async (_, failOnCall) => {
+			const h = makeHarness(
+				{
+					"Boards/Work.md": {
+						content: "- [ ] recover me 🛫 2026-07-10 #kanban/work/todo",
+						container: "board",
+					},
+				},
+				{ autoInjectId: false },
+			);
+			h.port.failOnCall = failOnCall;
+
+			const failed = await h.svc.runPass();
+
+			expect(failed.promoted).toBe(0);
+			expect(failed.errors).not.toEqual([]);
+			expect(h.state.lastRun).toBe("2026-06-30"); // no checkpoint past failed work
+			// Failure before id persistence has no journal yet; all later steps do.
+			if (failOnCall === 1) expect(h.state.retries).toEqual([]);
+			else expect(h.state.retries).toHaveLength(1);
+
+			h.port.failOnCall = 0;
+			h.sync(); // emulate the indexer/restart: retry must not depend on in-memory keys
+			const recovered = await h.svc.runPass();
+
+			expect(recovered.promoted).toBe(1);
+			expect(h.state.retries).toEqual([]);
+			expect(h.state.lastRun).toBe(TODAY);
+			expect(lines(h.port, "Boards/Work.md")).toEqual([]);
+			const inbox = lines(h.port, INBOX);
+			expect(inbox).toHaveLength(1);
+			expect(inbox[0]).toMatch(/🆔 id\d+/);
+			expect(inbox[0]).not.toContain("🛫");
+			expect(inbox[0]).not.toContain("#kanban/");
+		},
+	);
+
+	it("ensure-inbox failure is retried without checkpointing", async () => {
+		const h = makeHarness(
+			{
+				"Boards/Work.md": {
+					content: "- [ ] recover me 🛫 2026-07-10 #kanban/work/todo",
+					container: "board",
+				},
+			},
+			{ autoInjectId: false, ensureInboxOk: false },
+		);
+
+		const failed = await h.svc.runPass();
+
+		expect(failed.promoted).toBe(0);
+		expect(h.state.lastRun).toBe("2026-06-30");
+		expect(h.state.retries).toHaveLength(1);
+
+		h.state.ensureInboxOk = true;
+		h.sync();
+		const recovered = await h.svc.runPass();
+
+		expect(recovered.promoted).toBe(1);
+		expect(h.state.retries).toEqual([]);
+		expect(lines(h.port, "Boards/Work.md")).toEqual([]);
+		expect(lines(h.port, INBOX)).toHaveLength(1);
+	});
+
+	it("fails closed when persisted retries disagree about a task's route", async () => {
+		const source = "Notes/a.md";
+		const original = "- [ ] do not move me 🛫 2026-07-10 🆔 conflict-id";
+		const h = makeHarness({
+			[source]: { content: original, container: "plain" },
+		});
+		h.state.retries = [
+			{ taskId: "conflict-id", source, target: INBOX },
+			{ taskId: "conflict-id", source, target: "GTD/Other.md" },
+		];
+		const callsBefore = h.port.calls;
+
+		const report = await h.svc.runPass();
+
+		expect(report).toEqual({
+			promoted: 0,
+			moved: 0,
+			errors: ["promotion retry conflict-id: journal-conflict"],
+		});
+		expect(h.port.calls).toBe(callsBefore);
+		expect(h.port.files.get(source)).toBe(original);
+		expect(h.state.retries).toEqual([
+			{ taskId: "conflict-id", source, target: INBOX },
+			{ taskId: "conflict-id", source, target: "GTD/Other.md" },
+		]);
+		expect(h.state.lastRun).toBe("2026-06-30");
 	});
 });
 

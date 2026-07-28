@@ -15,7 +15,9 @@ describe("defaultUnderCommonRoot", () => {
 
 	it("дефолт + сменённый commonRoot ⇒ <commonRoot>/<имя-файла-дефолта>", () => {
 		expect(defaultUnderCommonRoot(FACTORY, FACTORY, "Жизнь")).toBe("Жизнь/DayStatus.md");
-		expect(defaultUnderCommonRoot(FACTORY, FACTORY, "Areas/GTD")).toBe("Areas/GTD/DayStatus.md");
+		expect(defaultUnderCommonRoot(FACTORY, FACTORY, "Areas/GTD")).toBe(
+			"Areas/GTD/DayStatus.md",
+		);
 	});
 
 	it("кастомный путь не трогается, даже если commonRoot сменён", () => {

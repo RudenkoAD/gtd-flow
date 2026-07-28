@@ -4,7 +4,11 @@
  * frontmatter), но не импортируют 'obsidian' — тестируются в голом node.
  * Единственный потребитель — MetadataAdapter, который остаётся тонким.
  */
-import type { FileContext, IsoDate, ProjectStatus } from "../core/model/Task";
+import {
+	fileContextFromContainerFrontmatter,
+	projectContainerFrontmatter,
+} from "../core/frontmatter/containerFrontmatter";
+import type { FileContext, IsoDate } from "../core/model/Task";
 import type { SnapshotListItem } from "./types";
 
 /** Минимальный структурный срез obsidian Pos (col/offset не нужны). */
@@ -52,25 +56,15 @@ export function snapshotListItems(
 	}));
 }
 
-const PROJECT_STATUSES: ReadonlySet<string> = new Set(["active", "on-hold", "done", "archived"]);
-
 /**
- * FileContext из frontmatter-объекта: контейнер (resolveContainer) + override
- * пространства (frontmatterNamespace). nsOverride добавляется в результат ТОЛЬКО
- * когда задан (непустая строка) — иначе ключ опущен (обратная совместимость с
- * потребителями, сравнивающими контекст целиком, и минимум шума в снапшоте).
+ * FileContext из полного frontmatter-объекта. Семантика контейнеров живёт в
+ * dependency-free core-проекции, которую также используют MCP и QuickJS-виджет.
  */
 export function fileContextFromFrontmatter(
 	path: string,
 	fm: Record<string, unknown> | null | undefined,
 ): FileContext {
-	const base = resolveContainer(path, fm);
-	const nsOverride = frontmatterNamespace(fm);
-	const withNs = nsOverride === null ? base : { ...base, nsOverride };
-	// gtd-external: true — файл-зеркало внешнего календаря (read-only). Флаг НЕ меняет
-	// контейнер (зеркало несёт и gtd-events: true → container "events" и подхватывается
-	// пайплайном событий), лишь помечает файл как READ-ONLY (защита write-back, меню).
-	return fm?.["gtd-external"] === true ? { ...withNs, external: true } : withNs;
+	return fileContextFromContainerFrontmatter(path, projectContainerFrontmatter(fm));
 }
 
 /** frontmatter gtd-namespace → override пространства (перебивает папку). Только
@@ -78,55 +72,10 @@ export function fileContextFromFrontmatter(
  *  null (мусор игнорируется, файл остаётся в пространстве своей папки). Экспорт —
  *  для discovery сервисов (Board/Project), фильтрующих по пространству напрямую
  *  из сырого frontmatter, минуя индекс. */
-export function frontmatterNamespace(fm: Record<string, unknown> | null | undefined): string | null {
-	if (fm === null || fm === undefined) return null;
-	const raw = fm["gtd-namespace"];
-	if (typeof raw !== "string") return null;
-	const s = raw.trim();
-	return s === "" ? null : s;
-}
-
-/**
- * Контейнер файла из frontmatter. Приоритет флагов (по убыванию):
- * recurring (gtd-recurring) > events (gtd-events) > card (gtd-card-of) >
- * project (gtd-project) > board (gtd-board) > archive (gtd-archive) >
- * inbox (gtd-inbox) > plain.
- *
- * Первые пять — цепочка состояний §1 (TEMPLATE/EVENT/DETAIL и файлы проекта/доски).
- * archive и inbox — маркеры контейнеров: archive задаёт полную инертность (ARCHIVED,
- * вне всех запросов), inbox лишь помечает файл захвата и в деривации состояний
- * ведёт себя как plain. Оба стоят НИЖЕ содержательных флагов: если файл — доска
- * или проект, эта роль важнее, чем «архив»/«входящие».
- */
-function resolveContainer(
-	path: string,
+export function frontmatterNamespace(
 	fm: Record<string, unknown> | null | undefined,
-): FileContext {
-	if (fm === null || fm === undefined) return { path, container: "plain" };
-	if (fm["gtd-recurring"] === true) return { path, container: "recurring" };
-	if (fm["gtd-events"] === true) return { path, container: "events" };
-	const cardOf = fm["gtd-card-of"];
-	if (cardOf !== null && cardOf !== undefined && cardOf !== false && String(cardOf).trim() !== "")
-		return { path, container: "card" };
-	if (fm["gtd-project"] === true) {
-		const status = normalizeProjectStatus(fm["status"]);
-		return status === undefined
-			? { path, container: "project" }
-			: { path, container: "project", projectStatus: status };
-	}
-	if (fm["gtd-board"] === true) return { path, container: "board" };
-	if (fm["gtd-archive"] === true) return { path, container: "archive" };
-	if (fm["gtd-inbox"] === true) return { path, container: "inbox" };
-	return { path, container: "plain" };
-}
-
-/** Отсутствие/пустой статус ⇒ undefined (трактуется как active, §1).
- *  Неизвестное значение — fail-closed «не активен», кодируем как on-hold. */
-function normalizeProjectStatus(raw: unknown): ProjectStatus | undefined {
-	if (raw === null || raw === undefined) return undefined;
-	const s = String(raw).trim();
-	if (s === "") return undefined;
-	return PROJECT_STATUSES.has(s) ? (s as ProjectStatus) : "on-hold";
+): string | null {
+	return projectContainerFrontmatter(fm).nsOverride ?? null;
 }
 
 /** Локальная календарная дата (не UTC: день пользователя — день его таймзоны). */

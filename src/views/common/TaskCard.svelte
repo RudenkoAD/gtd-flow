@@ -5,6 +5,7 @@
 	import type { IntentDispatcher } from "../../services/WritebackService";
 	import type { GtdFlowSettings } from "../../settings/Settings";
 	import type { DndPort, DragPayload } from "../dnd/types";
+	import { reportAsync } from "./runAction";
 	import { buildTaskMenu, type TaskMenuPorts } from "./taskMenu";
 	import {
 		PRIORITY_ICONS,
@@ -55,7 +56,10 @@
 	);
 
 	function isControl(target: EventTarget | null): boolean {
-		return target instanceof Element && target.closest("input, button, a, select, textarea") !== null;
+		return (
+			target instanceof Element &&
+			target.closest("input, button, a, select, textarea") !== null
+		);
 	}
 
 	function onCardPointerDown(e: PointerEvent): void {
@@ -162,11 +166,13 @@
 		return cards.progressOf(task.taskId);
 	});
 
-	async function openCard(): Promise<void> {
+	function openCard(): void {
 		const cards = menuPorts?.cards ?? null;
 		if (cards == null) return; // порт не подключён — карточек нет
-		const res = await cards.openOrCreate(task.key);
-		if (!res.ok) new Notice(`GTD Flow: ${res.reason ?? "карточка недоступна"}`);
+		reportAsync("не удалось открыть карточку", async () => {
+			const res = await cards.openOrCreate(task.key);
+			if (!res.ok) new Notice(`GTD Flow: ${res.reason ?? "карточка недоступна"}`);
+		});
 	}
 
 	// dblclick = инлайн-редактирование названия; открытие карточки осталось
@@ -177,9 +183,11 @@
 	}
 
 	// единая точка write-back: отказ — уведомление, а не тихо съеденный клик
-	async function run(intent: Intent): Promise<void> {
-		const res = await dispatcher.dispatch(intent);
-		if (!res.ok) new Notice(`GTD Flow: ${res.reason}`);
+	function run(intent: Intent): void {
+		reportAsync("не удалось изменить задачу", async () => {
+			const res = await dispatcher.dispatch(intent);
+			if (!res.ok) new Notice(`GTD Flow: ${res.reason}`);
+		});
 	}
 
 	function toggleStatus(): void {
@@ -191,8 +199,16 @@
 	}
 
 	function openMenu(e: MouseEvent): void {
-		buildTaskMenu({ task, app, dispatcher, settings, today, inTickler, inBoard, ports: menuPorts })
-			.showAtMouseEvent(e);
+		buildTaskMenu({
+			task,
+			app,
+			dispatcher,
+			settings,
+			today,
+			inTickler,
+			inBoard,
+			ports: menuPorts,
+		}).showAtMouseEvent(e);
 	}
 </script>
 
@@ -238,13 +254,13 @@
 						>{PRIORITY_ICONS[task.priority]}</span
 					>
 				{/if}
-				{#each segments as seg}{#if seg.tag}<span class="tag">{seg.text}</span
-					>{:else}{seg.text}{/if}{/each}
+				{#each segments as seg (seg.text)}{#if seg.tag}<span class="tag">{seg.text}</span
+						>{:else}{seg.text}{/if}{/each}
 			{/if}
 		</div>
 		{#if badges.length > 0}
 			<div class="gtd-task-badges">
-				{#each badges as b}
+				{#each badges as b (b.field)}
 					<span class="gtd-task-badge gtd-badge-{b.field}">{b.icon} {b.date}</span>
 				{/each}
 			</div>

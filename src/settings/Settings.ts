@@ -1,6 +1,7 @@
 /** Модель настроек (ТЗ §9). Персистится через loadData/saveData. */
 
 import { DEFAULT_NS, normalizeNsPath, type NamespaceDef } from "../core/namespace/namespace";
+import type { PromotionRetry } from "../core/tickler/promote";
 
 export type PromoteTo = "origin" | "inbox";
 export type CatchUpPolicy = "latest" | "all" | "none";
@@ -8,6 +9,12 @@ export type CalendarField = "due" | "scheduled" | "start";
 /** Тип записи инлайн-ввода календаря (переключатель «Задача | Событие»). Канон
  *  союза живёт здесь — настройка lastQuickAddKind его же и хранит. */
 export type QuickAddKind = "task" | "event";
+
+/**
+ * Версия формата data.json.  Она отделена от версии плагина: формат настроек
+ * меняется только когда требуется миграция сохранённых пользовательских данных.
+ */
+export const SETTINGS_FORMAT_VERSION = 1;
 
 export interface DeferPreset {
 	label: string;
@@ -36,6 +43,8 @@ export interface ExternalCalendarSub {
 }
 
 export interface GtdFlowSettings {
+	/** Версия сериализованного формата data.json (не версия плагина). */
+	settingsVersion: number;
 	/** Корневая папка «Общего» — «дом» для файлов, создаваемых в пространстве «Общее»
 	 *  (по конвенции NS_CONVENTION от этой папки, ровно как именованное пространство
 	 *  создаёт от своего корня): захват «Общего» → `<commonRoot>/Входящие.md` и т.д.
@@ -67,6 +76,9 @@ export interface GtdFlowSettings {
 	/** Последний день, обработанный проходом «всплытия во входящие» (PromoteService);
 	 *  null — проходов ещё не было (первый лишь усыновляет текущую дату). Не в UI. */
 	promoteLastRun: string | null;
+	/** Незавершённые многофайловые promotion-операции. Запись создаётся ДО снятия
+	 * 🛫, поэтому следующий проход может продолжить работу после краша/отказа. */
+	promoteRetries: PromotionRetry[];
 	recurring: {
 		spawnTarget: string;
 		catchUp: CatchUpPolicy;
@@ -105,44 +117,70 @@ export interface GtdFlowSettings {
 	externalSyncIntervalMin: number;
 }
 
-export const DEFAULT_SETTINGS: GtdFlowSettings = {
-	commonRoot: "GTD",
-	inboxIncludePlain: false,
-	projectStrategy: "tag",
-	projectTagPrefix: "#project/",
-	calendarPlacement: ["due", "scheduled", "start"],
-	deferPresets: [
-		{ label: "Завтра", offsetDays: 1 },
-		{ label: "+3 дня", offsetDays: 3 },
-		{ label: "Через неделю", offsetDays: 7 },
-	],
-	firstDayOfWeek: 1,
-	statusMap: {},
-	defaultBoardPath: "",
-	autoInjectId: true,
-	debounceMs: { fileReindex: 150, queryRecompute: 50 },
-	virtualizeThreshold: 100,
-	// Дефолт "inbox" (фидбек пользователя): когда 🛫 наступает сама, задача
-	// приходит именно во «Входящие» своего пространства, а не остаётся на месте.
-	promoteTo: "inbox",
-	promoteLastRun: null,
-	recurring: {
-		spawnTarget: "GTD/Inbox.md",
-		catchUp: "latest",
-		catchUpCap: 30,
-	},
-	cardsFolder: "GTD/Cards",
-	cardLinkInLine: true,
-	eventsFile: "GTD/Events.md",
-	archiveFile: "GTD/Archive.md",
-	dayStatusFile: "GTD/DayStatus.md",
-	onboarded: false,
-	namespaces: [],
-	activeNamespace: DEFAULT_NS,
-	lastQuickAddKind: "task",
-	externalCalendars: [],
-	externalSyncIntervalMin: 5,
-};
+/**
+ * Новая независимая модель настроек.  Не используем копирование
+ * DEFAULT_SETTINGS: SettingsTab намеренно меняет вложенные массивы на месте,
+ * поэтому ссылка на экспортированный литерал не должна когда-либо попасть в
+ * живые настройки плагина.
+ */
+export function createDefaultSettings(): GtdFlowSettings {
+	return {
+		settingsVersion: SETTINGS_FORMAT_VERSION,
+		commonRoot: "GTD",
+		inboxIncludePlain: false,
+		projectStrategy: "tag",
+		projectTagPrefix: "#project/",
+		calendarPlacement: ["due", "scheduled", "start"],
+		deferPresets: [
+			{ label: "Завтра", offsetDays: 1 },
+			{ label: "+3 дня", offsetDays: 3 },
+			{ label: "Через неделю", offsetDays: 7 },
+		],
+		firstDayOfWeek: 1,
+		statusMap: {},
+		defaultBoardPath: "",
+		autoInjectId: true,
+		debounceMs: { fileReindex: 150, queryRecompute: 50 },
+		virtualizeThreshold: 100,
+		// Дефолт "inbox" (фидбек пользователя): когда 🛫 наступает сама, задача
+		// приходит именно во «Входящие» своего пространства, а не остаётся на месте.
+		promoteTo: "inbox",
+		promoteLastRun: null,
+		promoteRetries: [],
+		recurring: {
+			spawnTarget: "GTD/Inbox.md",
+			catchUp: "latest",
+			catchUpCap: 30,
+		},
+		cardsFolder: "GTD/Cards",
+		cardLinkInLine: true,
+		eventsFile: "GTD/Events.md",
+		archiveFile: "GTD/Archive.md",
+		dayStatusFile: "GTD/DayStatus.md",
+		onboarded: false,
+		namespaces: [],
+		activeNamespace: DEFAULT_NS,
+		lastQuickAddKind: "task",
+		externalCalendars: [],
+		externalSyncIntervalMin: 5,
+	};
+}
+
+/**
+ * Публичная константа сохранена для обратной совместимости потребителей и
+ * тестов.  Глубокая заморозка превращает случайную попытку изменить фабричный
+ * шаблон в явную ошибку; для реальной работы всегда вызывается
+ * createDefaultSettings()/mergeSettings().
+ */
+export const DEFAULT_SETTINGS: GtdFlowSettings = deepFreeze(createDefaultSettings());
+
+function deepFreeze<T>(value: T): T {
+	if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+		Object.freeze(value);
+		for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
+	}
+	return value;
+}
 
 /**
  * «Дефолт следует за commonRoot»: если путь-настройка остался фабричным дефолтом,

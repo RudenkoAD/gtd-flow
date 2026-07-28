@@ -15,6 +15,10 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { registerTools } from "./tools";
 
+/** Replaced by esbuild.mcp.mjs from package.json. Keeping this as a build-time
+ * symbol prevents an independently hand-edited MCP version from drifting. */
+declare const __GTD_FLOW_VERSION__: string;
+
 /** --vault <path> из argv, иначе env GTD_VAULT. */
 function resolveVaultArg(argv: readonly string[]): string | null {
 	for (let i = 0; i < argv.length; i++) {
@@ -39,7 +43,7 @@ async function main(): Promise<void> {
 		process.exit(2);
 	}
 
-	const server = new McpServer({ name: "gtd-flow", version: "0.1.0" });
+	const server = new McpServer({ name: "gtd-flow", version: __GTD_FLOW_VERSION__ });
 	registerTools(server, { vaultRoot });
 
 	const transport = new StdioServerTransport();
@@ -49,6 +53,8 @@ async function main(): Promise<void> {
 }
 
 main().catch((e: unknown) => {
-	process.stderr.write(`GTD Flow MCP: fatal: ${e instanceof Error ? e.stack ?? e.message : String(e)}\n`);
+	process.stderr.write(
+		`GTD Flow MCP: fatal: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}\n`,
+	);
 	process.exit(1);
 });

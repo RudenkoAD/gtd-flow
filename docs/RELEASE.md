@@ -1,75 +1,139 @@
-# Чек-лист релиза GTD Flow (community-плагин Obsidian)
+# Чек-лист релиза GTD Flow
 
-По ТЗ §10 + [требования каталога](https://docs.obsidian.md/Plugins/Releasing/Submit+your+plugin).
-Статусы «проверено» — фактический греп кодовой базы от 2026-07-15 (см. раздел «Гигиена ревью»).
+Этот документ намеренно не содержит конкретного номера версии или числа тестов:
+источники истины проверяются автоматически перед каждым релизом.
 
-## 1. Манифест (`manifest.json`)
+## 1. Подготовка версии
 
-- [x] `id: "gtd-flow"` — строчные, без пробелов, не содержит «obsidian»
-- [x] `name: "GTD Flow"` — без слов «Obsidian» и «plugin»
-- [x] `version: "0.1.0"` — semver `x.y.z`, совпадает с `package.json`
-- [x] `minAppVersion: "1.7.2"` — минимум для Deferred Views (ТЗ §4)
-- [x] `isDesktopOnly: false` — мобильные поддержаны (фолбэки: меню вместо drag, граф списком)
-- [x] `description` — по-английски, без «Obsidian»/«plugin», < 250 символов
-- [x] `author` заполнен
-- [ ] `authorUrl` / `fundingUrl` — опциональны, добавить по желанию до сабмита
+- [ ] Выполнить `npm version <x.y.z>`. Скрипт `version-bump.mjs` синхронизирует
+      `package.json`, `manifest.json` и `versions.json`.
+- [ ] Проверить `git diff` и release notes.
+- [ ] Выполнить `npm run verify:release` (или полный `npm run verify`, который также
+      проверяет собранные артефакты).
+- [ ] Опубликовать тег, созданный `npm version` (например `v0.12.0`). Контракт также
+      принимает эквивалентный тег без `v`; после нормализации он должен точно совпасть
+      с версией в `package.json`.
 
-## 2. Версии
+`scripts/verify-release.mjs` блокирует публикацию, если:
 
-- [x] `versions.json`: `{ "0.1.0": "1.7.2" }` — карта «версия плагина → minAppVersion»
-- [x] `npm version <x.y.z>` прогоняет `version-bump.mjs`: синхронизирует `manifest.json` и `versions.json`
-- [ ] Перед тегом: номер версии поднят во всех трёх местах (package.json / manifest.json / versions.json)
+- тег не является текущей версией пакета;
+- `package.json` и `manifest.json` расходятся;
+- `versions.json` не содержит правильную пару
+  `version → minAppVersion`;
+- отсутствует контракт Node runtime или приватность npm-пакета.
 
-## 3. Гейты перед сборкой артефактов
+Добавьте `--artifacts`, чтобы также проверить обязательные release-файлы. Полный
+`npm run verify` всегда использует этот режим перед CI/release.
 
-- [ ] `node scripts/check-core-purity.mjs` — ноль импортов `obsidian` в `src/core` и `src/services`
-- [ ] `npx vitest run` — весь набор зелёный (873+ тестов, включая перф-смоук)
-- [ ] `npx tsc -noEmit -skipLibCheck` — чисто
-- [ ] `node esbuild.config.mjs production` — production-бандл без ошибок
-  (всё вместе: `npm run build` = purity + tsc + esbuild production)
+## 2. Локальные гейты
 
-## 4. Три артефакта релиза
+Перед тегом:
 
-- [ ] `main.js` — production-сборка (bundle; `obsidian`, `electron`, `@codemirror/*`, `@lezer/*` — external)
-- [ ] `manifest.json`
-- [ ] `styles.css`
-- [ ] Артефакты приложены к GitHub-релизу **отдельными файлами** (не внутри zip)
-- [ ] `manifest.json` лежит также в **корне репозитория** (требование BRAT и каталога)
+```bash
+npm ci
+npm run verify
+```
 
-## 5. GitHub release
+`verify` выполняет:
 
-- [ ] Тег релиза **точно равен** `version` из манифеста: `0.1.0`, **без префикса `v`**
-- [ ] Release notes: что нового, известные ограничения
-- [ ] Релиз опубликован (не draft)
+1. ESLint и проверку форматирования Prettier;
+2. AST-проверку границ `core` / `services` / MCP / widget;
+3. весь набор Vitest с обязательными порогами покрытия для `core`, `services` и MCP;
+4. compiler/a11y-smoke всех исходных `.svelte` и полный `svelte-check`;
+5. mounted browser-тесты реальных Svelte-компонентов в Chromium с axe;
+6. TypeScript без emit;
+7. production-сборку Obsidian-плагина, MCP и widget core;
+8. бюджеты размера бандлов;
+9. проверку release contract и наличие всех публикуемых файлов.
 
-## 6. Сабмит в каталог
+Перед первым локальным browser-прогоном выполните `npx playwright install chromium`;
+CI устанавливает Chromium автоматически. Не обходите `verify` отдельным вызовом
+`esbuild`.
 
-- [ ] Форк `obsidianmd/obsidian-releases`, в `community-plugins.json` добавлена запись
-      `{ "id": "gtd-flow", "name": "GTD Flow", "author": …, "description": …, "repo": "<owner>/<repo>" }`
-      (в конец списка, не по алфавиту)
-- [ ] PR по шаблону; проверки бота зелёные; ответить на замечания ревью
-- [ ] ⚠️ **LICENSE-файла в репозитории нет** — `package.json` заявляет MIT, но файл `LICENSE`
-      обязателен для сабмита. Добавить до PR.
-- [ ] ⚠️ README сейчас на русском. Каталог не запрещает, но для ревью и пользователей
-      желательна английская версия (или двуязычная) — решить до сабмита.
+## 3. Автоматический release pipeline
 
-## 7. Гигиена ревью — фактический статус (греп src/ от 2026-07-15)
+`.github/workflows/release.yml` разделён на две зоны доверия:
 
-| Проверка | Статус | Детали |
-|---|---|---|
-| `innerHTML` / `outerHTML` / `insertAdjacentHTML` | ✅ 0 вхождений в `src/` | В бандле `main.js` — 3 вхождения **из зависимостей**: рантайм Svelte (создание шаблонов через detached `<template>.innerHTML` со статическими строками компилятора) и d3-selection (внутри `@xyflow/svelte`). Собственного кода с innerHTML нет; DOM строится через `createEl`/`createDiv`/Svelte. |
-| `instanceof` вместо cast | ✅ | `openTask.ts`: `file instanceof TFile`, `leaf.view instanceof MarkdownView`. Исключение осознанное: `MetadataAdapter.isMarkdownFile` — структурная проверка `extension === "md"` вместо `instanceof TFile`, т.к. импорт `obsidian` там строго type-only (файл гоняется в node-тестах); задокументировано комментарием в коде. |
-| `vault.configDir` / жёсткие пути `.obsidian` | ✅ | Плагин вообще не обращается к каталогу конфига: греп `configDir` и `\.obsidian` по `src/` — 0 вхождений. |
-| `isDesktopOnly: false` | ✅ | Подтверждено манифестом; мобильные фолбэки реализованы (ТЗ §8 слой 3). |
-| Всё через `register*` | ✅ | `registerView` / `registerEvent` / `registerInterval` / `addCommand` везде. Исключение осознанное: `DndService` вешает pointer-листенеры руками на конкретное окно (pop-out имеет свой DOM) и снимает их через `plugin.register(() => …)` — утечек нет, причина задокументирована в коде. |
-| Deferred Views (≥1.7.2) | ✅ | Виды активируются только через `setViewState`/`revealLeaf`; кастов `leaf.view as <наш вид>` на чужих leaf нет (греп `.view` — единственное обращение через `instanceof MarkdownView`). |
-| `console.log` в продакшн-коде | ✅ 0 | Только `console.error` на реальных сбоях (прерванный скан, сбой первичной сборки). |
-| Сетевые запросы | ✅ 0 | `fetch` / `XMLHttpRequest` / `requestUrl` — 0 вхождений: плагин полностью офлайн. |
-| Небезопасные касты | ⚠️ приемлемо | В продакшн-коде `as unknown as` — типизационный шим Svelte 5 (`Component<any>` в обёртках видов), недокументированный флаг `metadataCache.initialized` (задокументирован комментарием и обёрнут в проверку) и `app.dragManager` под feature-detect. Остальные — в тестах. |
-| Глобальный `app` | ✅ | Только `this.app` / инжектированный `plugin.app`. |
+1. `build` имеет только `contents: read`, устанавливает зависимости, выполняет все
+   тесты и создаёт проверенный artifact bundle;
+2. `publish` получает `contents: write`, но не checkout-ит и не исполняет код
+   зависимостей — только проверяет SHA-256 и публикует готовый bundle.
 
-## 8. После публикации
+Все сторонние GitHub Actions закреплены на полных commit SHA.
+Любой несовпадающий или невалидный тег завершает `build` ошибкой до публикации.
 
-- [ ] Проверить установку с нуля через каталог (или BRAT до принятия PR)
-- [ ] Smoke-тест на мобильном устройстве (iOS/Android) — установка и открытие видов
-- [ ] Тег `0.1.1+`: далее релизы — только через `npm version` + новый GitHub release
+## 4. Контракт артефактов
+
+GitHub release публикует отдельными файлами:
+
+| Файл                                     | Назначение                                                 |
+| ---------------------------------------- | ---------------------------------------------------------- |
+| `main.js`, `manifest.json`, `styles.css` | Установка Obsidian-плагина / BRAT                          |
+| `mcp-server.js`                          | Опциональный standalone MCP-сервер                         |
+| `widget-core.js`                         | Версионированное ядро для внешних QuickJS/Android-виджетов |
+| `LICENSE`                                | Лицензия проекта                                           |
+| `SHA256SUMS`                             | Проверка целостности всех файлов выше                      |
+
+`manifest.json` и `versions.json` остаются в корне репозитория, как требует
+экосистема Obsidian. `widget-core.js` не нужно копировать в папку Obsidian-плагина.
+
+Для локальной проверки полного набора:
+
+```bash
+npm run build
+npm run prepare:release -- --tag "$(node -p "require('./package.json').version")"
+cd dist/release
+sha256sum --check SHA256SUMS
+```
+
+## 5. Проверки совместимости
+
+- [ ] CI зелёный на минимальном поддерживаемом Node и актуальном LTS.
+- [ ] Компиляция использует API, доступные в `manifest.minAppVersion`.
+- [ ] Smoke-тест чистой установки Obsidian на минимальной поддерживаемой версии.
+- [ ] Smoke-тест последней Obsidian на desktop.
+- [ ] Smoke-тест iOS или Android: установка, открытие видов, quick capture.
+- [ ] MCP запускается заявленным минимальным Node и возвращает правильную
+      `serverInfo.version`.
+
+## 6. Ручная проверка продукта
+
+Выполнить `docs/VERIFY.md` на **новом** тестовом хранилище. Генератор теперь
+отказывается использовать существующую папку; `--force` разрешён только для ранее
+созданного им vault с маркером `.gtd-flow-test-vault`. Не направляйте его в реальное
+хранилище.
+
+Особенно проверить:
+
+- операции перемещения и архивации;
+- восстановление после искусственно вызванных write errors;
+- календарные подписки, таймаут и удаление во время активной синхронизации;
+- клавиатурную работу календаря;
+- pop-out и mobile fallbacks;
+- отсутствие неожиданных изменений соседних строк/frontmatter.
+
+## 7. Сетевое и приватное поведение
+
+Плагин не является полностью офлайн: внешние календарные подписки выполняют
+`requestUrl` по URL, явно заданным пользователем. Проверить:
+
+- отсутствие сетевых запросов без настроенной подписки;
+- отсутствие URL/содержимого приватных календарей в логах;
+- корректные лимиты размера, времени и числа событий;
+- удаление или миграцию управляемых mirror-файлов при изменении настроек.
+
+MCP пишет прямо в Markdown-файлы. Перед релизом прогнать параллельные write-тесты,
+проверку conflict detection, сохранение file mode и fail-closed поведение для
+невалидных YAML/settings.
+
+## 8. Сабмит и пост-релиз
+
+- [ ] Репозиторий содержит `LICENSE` и актуальный README.
+- [ ] Для каталога Obsidian запись в `community-plugins.json` соответствует
+      `manifest.json`.
+- [ ] Release опубликован, не draft.
+- [ ] Установка через BRAT проверена с нуля.
+- [ ] `SHA256SUMS` сходится с опубликованными файлами.
+- [ ] Известные ограничения и миграции перечислены в release notes.
+- [ ] После публикации отслеживать CI dependency audit и пользовательские ошибки
+      синхронизации/writeback.

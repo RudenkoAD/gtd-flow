@@ -299,14 +299,17 @@ describe("tokenizeTaskLine: интервал времени «HH:mm-HH:mm» в p
 		for (const emoji of ["✅", "❌", "➕", "🔜"]) {
 			const t = tokenizeTaskLine(`- [ ] T ${emoji} 2026-01-01 14:30-16:00`)!;
 			expect(fields(t.segments)[0]!.payload, emoji).toBe("2026-01-01");
-			expect(t.segments[t.segments.length - 1]).toEqual({ kind: "text", text: " 14:30-16:00" });
+			expect(t.segments[t.segments.length - 1]).toEqual({
+				kind: "text",
+				text: " 14:30-16:00",
+			});
 		}
 	});
 
 	it("после офсета ±Nd интервал не захватывается (шаблоны)", () => {
-		expect(fields(tokenizeTaskLine("- [ ] Tpl 📅 +14d 14:30-16:00")!.segments)[0]!.payload).toBe(
-			"+14d",
-		);
+		expect(
+			fields(tokenizeTaskLine("- [ ] Tpl 📅 +14d 14:30-16:00")!.segments)[0]!.payload,
+		).toBe("+14d");
 	});
 
 	it("NBSP между датой и интервалом захватывается дословно", () => {
@@ -397,10 +400,7 @@ describe("serializeTokens: точный round-trip", () => {
 				fc.integer({ min: 1, max: 12 }),
 				fc.integer({ min: 1, max: 28 }),
 			)
-			.map(
-				([y, m, d]) =>
-					`${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`,
-			);
+			.map(([y, m, d]) => `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`);
 		const arb = fc.record({
 			s1: sep,
 			s2: sep,
@@ -509,9 +509,9 @@ describe("📍 location: свободный текст до следующего
 		const f = fields(t.segments);
 		expect(f[0]!.field).toBe("location");
 		expect(f[0]!.payload).toBe("касса вокзала"); // #тег не проглочен
-		expect(extractTags(t.segments.map((s) => (s.kind === "text" ? s.text : "")).join(""))).toEqual(
-			["#kanban/trips/todo"],
-		);
+		expect(
+			extractTags(t.segments.map((s) => (s.kind === "text" ? s.text : "")).join("")),
+		).toEqual(["#kanban/trips/todo"]);
 	});
 
 	it("защита «а»: числовой #5 — не тег, остаётся частью места", () => {

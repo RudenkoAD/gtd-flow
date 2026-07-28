@@ -105,7 +105,12 @@ describe("editEventLine — атомарная правка названия + �
 	});
 
 	it("проставляет 📍 место как часть той же трансформации", () => {
-		const out = editEventLine("- [ ] A 🔁 every day 🆔 ev1", "B", "every tuesday", "Спортзал на Ленина");
+		const out = editEventLine(
+			"- [ ] A 🔁 every day 🆔 ev1",
+			"B",
+			"every tuesday",
+			"Спортзал на Ленина",
+		);
 		expect(out).toBe("- [ ] B 🔁 every tuesday 🆔 ev1 📍 Спортзал на Ленина");
 	});
 
@@ -115,7 +120,12 @@ describe("editEventLine — атомарная правка названия + �
 	});
 
 	it("меняет существующее 📍 на новое", () => {
-		const out = editEventLine("- [ ] A 🔁 every day 📍 Старое место", "A", "every day", "Новое место");
+		const out = editEventLine(
+			"- [ ] A 🔁 every day 📍 Старое место",
+			"A",
+			"every day",
+			"Новое место",
+		);
 		expect(out).toBe("- [ ] A 🔁 every day 📍 Новое место");
 	});
 });
@@ -584,9 +594,9 @@ describe("editEventSeries", () => {
 
 describe("buildSingleOccurrenceLine", () => {
 	it("строит строку одноразового переноса с временем и провенансом 🧬", () => {
-		expect(buildSingleOccurrenceLine("  Тренировка  ", "2026-07-21", "18:00", "19:30", "ev1")).toBe(
-			"- [ ] Тренировка 📅 2026-07-21 18:00-19:30 🧬 ev1",
-		);
+		expect(
+			buildSingleOccurrenceLine("  Тренировка  ", "2026-07-21", "18:00", "19:30", "ev1"),
+		).toBe("- [ ] Тренировка 📅 2026-07-21 18:00-19:30 🧬 ev1");
 	});
 	it("без времени/конца/провенанса — минимальная строка", () => {
 		expect(buildSingleOccurrenceLine("Событие", "2026-07-21", null, null, null)).toBe(
@@ -628,7 +638,9 @@ describe("excludeEventOccurrence — удаление вхождения сер�
 		const task = taskFrom("- [ ] Тр 🔁 every tue 🚫 2026-07-21 🆔 ev1", "GTD/Events.md", 0);
 		const res = await excludeEventOccurrence({ vault, task, date: "2026-07-21" });
 		expect(res.ok).toBe(true);
-		expect(vault.files.get("GTD/Events.md")).toBe("- [ ] Тр 🔁 every tue 🚫 2026-07-21 🆔 ev1\n");
+		expect(vault.files.get("GTD/Events.md")).toBe(
+			"- [ ] Тр 🔁 every tue 🚫 2026-07-21 🆔 ev1\n",
+		);
 	});
 	it("строку не найти — line-not-found", async () => {
 		const vault = new FakeVault();
@@ -825,7 +837,9 @@ describe("setEventLocation — правка только 📍 (серия или
 		const task = taskFrom("- [ ] Событие 📅 2026-07-21 📍 Старое", "GTD/Events.md", 0);
 		const res = await setEventLocation({ vault, task, location: "Новое место" });
 		expect(res.ok).toBe(true);
-		expect(vault.files.get("GTD/Events.md")).toBe("- [ ] Событие 📅 2026-07-21 📍 Новое место\n");
+		expect(vault.files.get("GTD/Events.md")).toBe(
+			"- [ ] Событие 📅 2026-07-21 📍 Новое место\n",
+		);
 	});
 
 	it("пустое/null место — снимает поле", async () => {

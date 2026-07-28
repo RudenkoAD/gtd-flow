@@ -12,6 +12,7 @@
 import { Menu, type App } from "obsidian";
 import type { IsoDate } from "../../core/model/Task";
 import type { DayStatusPort } from "../../services/DayStatusService";
+import { reportAsync } from "../common/runAction";
 import { DayStatusPaletteModal } from "./DayStatusPaletteModal";
 import { DayStatusRuleModal } from "./DayStatusRuleModal";
 
@@ -46,7 +47,9 @@ export function openDayStatusMenu(
 			mi
 				.setTitle("Создать файл статусов дней…")
 				.setIcon("palette")
-				.onClick(() => void port.ensureConfig()),
+				.onClick(() =>
+					reportAsync("создание файла статусов дней", () => port.ensureConfig()),
+				),
 		);
 		menu.showAtMouseEvent(ev);
 		return;
@@ -61,14 +64,19 @@ export function openDayStatusMenu(
 				.setTitle(s.name)
 				.setIcon("square")
 				.onClick(() =>
-					void (isRange ? port.setRange(from, to, s.name) : port.setDay(from, s.name)),
+					reportAsync("изменение статуса дня", () =>
+						isRange ? port.setRange(from, to, s.name) : port.setDay(from, s.name),
+					),
 				),
 		);
 	}
 	if (!isRange) {
 		menu.addSeparator();
 		menu.addItem((mi) =>
-			mi.setTitle("Убрать статус").setIcon("eraser").onClick(() => void port.clearDay(from)),
+			mi
+				.setTitle("Убрать статус")
+				.setIcon("eraser")
+				.onClick(() => reportAsync("очистка статуса дня", () => port.clearDay(from))),
 		);
 	}
 	menu.addSeparator();
@@ -97,7 +105,8 @@ export interface PaintController {
 }
 
 export function createPaintController(opts: {
-	app: App;
+	/** Получаем app в момент открытия меню: контроллер не захватывает устаревший prop. */
+	app: () => App;
 	/** Порт статусов (может быть null — жест не запускается). */
 	port: () => DayStatusPort | null;
 	/** Обновление превью диапазона для подсветки (null — жеста нет). */
@@ -147,7 +156,8 @@ export function createPaintController(opts: {
 			container = null;
 			opts.setPreview(null);
 			const port = opts.port();
-			if (range !== null && port !== null) openDayStatusMenu(opts.app, port, range.from, range.to, e);
+			if (range !== null && port !== null)
+				openDayStatusMenu(opts.app(), port, range.from, range.to, e);
 		},
 		pointercancel(e: PointerEvent): void {
 			if (pointerId !== e.pointerId) return;

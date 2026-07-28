@@ -109,7 +109,8 @@ export function pickNamespace(
 	namespaces: readonly NamespaceDef[],
 	active: string,
 ): Promise<string | null> {
-	const mark = (value: string, label: string): string => (value === active ? `${label} ✓` : label);
+	const mark = (value: string, label: string): string =>
+		value === active ? `${label} ✓` : label;
 	const items: PickItem<string>[] = [
 		{ label: mark(DEFAULT_NS, namespaceLabel(DEFAULT_NS)), value: DEFAULT_NS },
 		...namespaces.map((d) => ({ label: mark(d.name, d.name), value: d.name })),

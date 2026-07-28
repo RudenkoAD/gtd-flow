@@ -148,6 +148,33 @@ describe("createQueryStore: мемоизация и дебаунс", () => {
 		expect(spy).toHaveBeenCalledTimes(2);
 		un();
 	});
+
+	it("ревизия настроек инвалидирует memo без смены индекса и читает свежие settings bits", () => {
+		const feed = new FakeFeed("2026-07-15");
+		const ts = createTaskStore(feed);
+		const revision$ = writable(0);
+		let includePlain = false;
+		const spy = vi.fn(evaluate);
+		const store = createQueryStore(
+			ts,
+			{ kind: "inbox" },
+			{
+				settingsBits: () => defaultInboxConfig(includePlain),
+				settingsRevision$: revision$,
+				evaluate: spy,
+			},
+			50,
+		);
+		const un = store.subscribe(() => {});
+		expect(spy).toHaveBeenCalledTimes(1);
+		includePlain = true;
+		revision$.set(1);
+		vi.advanceTimersByTime(50);
+		expect(spy).toHaveBeenCalledTimes(2);
+		expect(spy.mock.calls.at(-1)?.[1].settingsBits.includePlain).toBe(true);
+		un();
+		ts.dispose();
+	});
 });
 
 describe("готовые фабрики: реальный evaluate поверх TaskIndex", () => {
@@ -217,7 +244,12 @@ describe("готовые фабрики: реальный evaluate поверх 
 		const { feed, ts } = setup();
 		feed.replaceFile("P/alpha.md", [
 			makeTask({ filePath: "P/alpha.md", lineStart: 1, container: "project" }),
-			makeTask({ filePath: "P/alpha.md", lineStart: 2, container: "project", statusChar: "x" }),
+			makeTask({
+				filePath: "P/alpha.md",
+				lineStart: 2,
+				container: "project",
+				statusChar: "x",
+			}),
 		]);
 		feed.replaceFile("P/beta.md", [
 			makeTask({ filePath: "P/beta.md", lineStart: 1, container: "project" }),
@@ -294,10 +326,11 @@ describe("per-namespace фильтр запросов и реактивност�
 		seedTwoInboxes(feed);
 		const ns$ = writable<NamespaceFilter>({ active: "Работа", defs: [] });
 		const store = inboxStore(ts, defaultInboxConfig(), 50, ns$);
-		expect(get(store).map((t) => t.filePath).sort()).toEqual([
-			"Work/Входящие.md",
-			"Личное/Входящие.md",
-		]);
+		expect(
+			get(store)
+				.map((t) => t.filePath)
+				.sort(),
+		).toEqual(["Work/Входящие.md", "Личное/Входящие.md"]);
 		ts.dispose();
 	});
 

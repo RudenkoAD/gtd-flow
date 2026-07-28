@@ -94,6 +94,11 @@ export function planSpawns(input: SpawnPlanInput): SpawnPlanResult {
 	const spawns: PlannedSpawn[] = [];
 	const cursorAdvances: CursorAdvance[] = [];
 	const errors: TemplateIssue[] = [];
+	// The caller's set describes rows that existed before this pass.  Keep a
+	// private occupied set for rows we have planned as well: two carriers with a
+	// duplicated template id must never make one batch append the same child id
+	// twice, even before the filesystem-level deduplication gets a chance to run.
+	const occupiedChildIds = new Set(input.existingIds);
 
 	for (const tpl of input.templates) {
 		const t = tpl.task;
@@ -127,7 +132,16 @@ export function planSpawns(input: SpawnPlanInput): SpawnPlanResult {
 		// календарю, а по выполнению последней копии. Курсор 🔜 держится тем же
 		// механизмом cursorAdvances, членство isOccurrence не проверяется.
 		if (rule.fromCompletion) {
-			planFromCompletion(t, templateId, rule, tpl.children ?? [], input, spawns, cursorAdvances);
+			planFromCompletion(
+				t,
+				templateId,
+				rule,
+				tpl.children ?? [],
+				input,
+				spawns,
+				cursorAdvances,
+				occupiedChildIds,
+			);
 			continue;
 		}
 
@@ -167,7 +181,11 @@ export function planSpawns(input: SpawnPlanInput): SpawnPlanResult {
 		// собрать все вхождения D ≤ today
 		const due: IsoDate[] = [];
 		let d: IsoDate | null = cursor;
-		for (let iter = 0; iter < MAX_ITERATIONS && d !== null && compare(d, input.today) <= 0; iter++) {
+		for (
+			let iter = 0;
+			iter < MAX_ITERATIONS && d !== null && compare(d, input.today) <= 0;
+			iter++
+		) {
 			due.push(d);
 			d = nextOccurrence(rule, d);
 		}
@@ -195,13 +213,21 @@ export function planSpawns(input: SpawnPlanInput): SpawnPlanResult {
 		for (const occurrence of selected) {
 			const childId = makeChildId(templateId, occurrence);
 			// коллизия по id вместо размножения: копия уже есть (любой статус) — молчим
-			if (input.existingIds.has(childId)) continue;
+			if (occupiedChildIds.has(childId)) continue;
 			spawns.push({
 				templateId,
 				occurrence,
 				childId,
-				instanceLine: buildInstanceLine(t.rawLine, occurrence, input.today, templateId, childId, false),
+				instanceLine: buildInstanceLine(
+					t.rawLine,
+					occurrence,
+					input.today,
+					templateId,
+					childId,
+					false,
+				),
 			});
+			occupiedChildIds.add(childId);
 		}
 
 		if (d !== null && d !== t.nextSpawn) {
@@ -244,6 +270,7 @@ function planFromCompletion(
 	input: SpawnPlanInput,
 	spawns: PlannedSpawn[],
 	cursorAdvances: CursorAdvance[],
+	occupiedChildIds: Set<string>,
 ): void {
 	const today = input.today;
 
@@ -308,13 +335,21 @@ function planFromCompletion(
 	// дедуп — до него; курсор встаёт на дату вхождения.
 	const occurrence = today;
 	const childId = makeChildId(templateId, occurrence);
-	if (!input.existingIds.has(childId)) {
+	if (!occupiedChildIds.has(childId)) {
 		spawns.push({
 			templateId,
 			occurrence,
 			childId,
-			instanceLine: buildInstanceLine(task.rawLine, occurrence, today, templateId, childId, true),
+			instanceLine: buildInstanceLine(
+				task.rawLine,
+				occurrence,
+				today,
+				templateId,
+				childId,
+				true,
+			),
 		});
+		occupiedChildIds.add(childId);
 	}
 	if (occurrence !== task.nextSpawn) cursorAdvances.push({ templateId, newCursor: occurrence });
 }

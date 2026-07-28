@@ -43,10 +43,7 @@ describe("layeredLayout", () => {
 
 	it("цепочка: все узлы в ряд слева направо, одинаковый y", () => {
 		const moves = byId(
-			layeredLayout(
-				[node("a"), node("b"), node("c")],
-				[edge("a", "b"), edge("b", "c")],
-			),
+			layeredLayout([node("a"), node("b"), node("c")], [edge("a", "b"), edge("b", "c")]),
 		);
 		expect(moves.get("a")).toEqual({ id: "a", x: 0, y: 0 });
 		expect(moves.get("b")).toEqual({ id: "b", x: STEP_X, y: 0 });
@@ -142,10 +139,7 @@ describe("layeredLayout", () => {
 	});
 
 	it("цикл не роняет раскладку: все узлы получают позиции", () => {
-		const moves = layeredLayout(
-			[node("a"), node("b")],
-			[edge("a", "b"), edge("b", "a")],
-		);
+		const moves = layeredLayout([node("a"), node("b")], [edge("a", "b"), edge("b", "a")]);
 		expect(moves).toHaveLength(2);
 		// оба остаются на слое 0 (как depth в graphEngine), штабелем без наложения
 		expect(moves[0]!.x).toBe(moves[1]!.x);

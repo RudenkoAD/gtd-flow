@@ -29,14 +29,20 @@ class FakeVault implements DemoVaultPort {
 	async ensureFile(path: string): Promise<void> {
 		if (!this.files.has(path)) this.files.set(path, "");
 	}
-	async processFile(path: string, transform: (content: string) => string | null): Promise<boolean> {
+	async processFile(
+		path: string,
+		transform: (content: string) => string | null,
+	): Promise<boolean> {
 		if (!this.files.has(path)) return false;
 		const next = transform(this.files.get(path)!);
 		if (next === null) return false;
 		this.files.set(path, next);
 		return true;
 	}
-	async processFrontmatter(path: string, fn: (fm: Record<string, unknown>) => void): Promise<unknown> {
+	async processFrontmatter(
+		path: string,
+		fn: (fm: Record<string, unknown>) => void,
+	): Promise<unknown> {
 		const fm = this.frontmatter.get(path) ?? {};
 		fn(fm);
 		this.frontmatter.set(path, fm);

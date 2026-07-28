@@ -52,9 +52,9 @@ describe("computeKey", () => {
 		);
 	});
 	it("пустой id не считается id", () => {
-		expect(computeKey({ taskId: "", filePath: "a.md", description: "x" }).startsWith("a.md#")).toBe(
-			true,
-		);
+		expect(
+			computeKey({ taskId: "", filePath: "a.md", description: "x" }).startsWith("a.md#"),
+		).toBe(true);
 	});
 	it("occurrenceIndex дизамбигуирует одинаковые строки", () => {
 		const src = { taskId: null, filePath: "a.md", description: "Same" };
@@ -67,7 +67,11 @@ describe("computeKey", () => {
 		expect(k1).toBe(k2);
 	});
 	it("описание с полями и без них даёт один ключ", () => {
-		const k1 = computeKey({ taskId: null, filePath: "a.md", description: "Call 📅 2026-01-01" });
+		const k1 = computeKey({
+			taskId: null,
+			filePath: "a.md",
+			description: "Call 📅 2026-01-01",
+		});
 		const k2 = computeKey({ taskId: null, filePath: "a.md", description: "Call" });
 		expect(k1).toBe(k2);
 	});

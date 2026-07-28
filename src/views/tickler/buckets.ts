@@ -35,11 +35,7 @@ export const BUCKET_ORDER: readonly { id: BucketId; title: string }[] = [
  * Кромка: в последний день недели endOfWeek == today, а defer на today
  * не отложил бы задачу вовсе (§1: start > today) — поднимаем до today+1.
  */
-export function bucketDeferDate(
-	bucket: BucketId,
-	today: IsoDate,
-	firstDayOfWeek: number,
-): IsoDate {
+export function bucketDeferDate(bucket: BucketId, today: IsoDate, firstDayOfWeek: number): IsoDate {
 	switch (bucket) {
 		case "tomorrow":
 			return addDaysIso(today, 1);

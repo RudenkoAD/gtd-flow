@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { mirrorWindow, parseIcs, type MirrorOccurrence, type MirrorWindow } from "./icsParse";
+import {
+	IcsBudgetError,
+	mirrorWindow,
+	parseIcs,
+	type MirrorOccurrence,
+	type MirrorWindow,
+} from "./icsParse";
 
 // ---------------------------------------------------------------------------
 // Хелперы фикстур
@@ -58,11 +64,18 @@ describe("parseIcs — одиночные события", () => {
 		);
 		const occ = parseIcs(ics, WINDOW);
 		expect(occ).toHaveLength(1);
-		expect(occ[0]).toMatchObject({ date: "2026-07-09", allDay: true, startTime: null, endTime: null });
+		expect(occ[0]).toMatchObject({
+			date: "2026-07-09",
+			allDay: true,
+			startTime: null,
+			endTime: null,
+		});
 	});
 
 	it("событие вне окна не попадает в вывод", () => {
-		const ics = vcal(`BEGIN:VEVENT\r\nUID:far\r\nSUMMARY:Далеко\r\nDTSTART:20270101T100000\r\nEND:VEVENT`);
+		const ics = vcal(
+			`BEGIN:VEVENT\r\nUID:far\r\nSUMMARY:Далеко\r\nDTSTART:20270101T100000\r\nEND:VEVENT`,
+		);
 		expect(parseIcs(ics, WINDOW)).toHaveLength(0);
 	});
 });
@@ -93,7 +106,8 @@ describe("parseIcs — повторяющиеся серии", () => {
 		const occ = sorted(parseIcs(ics, WINDOW));
 		// COUNT=4: 06,13,20,27; EXDATE убирает 13 → остаются 06,20,27
 		expect(occ.map((o) => o.date)).toEqual(["2026-07-06", "2026-07-20", "2026-07-27"]);
-		for (const o of occ) expect(o).toMatchObject({ startTime: "10:00", endTime: "10:30", title: "Стендап" });
+		for (const o of occ)
+			expect(o).toMatchObject({ startTime: "10:00", endTime: "10:30", title: "Стендап" });
 	});
 
 	it("RECURRENCE-ID: переопределённое вхождение берёт новое время/название, а 🆔-база (recurrenceKey) остаётся исходной", () => {
@@ -143,6 +157,36 @@ describe("parseIcs — таймзоны", () => {
 	});
 });
 
+describe("parseIcs — безопасное ускорение UTC-серий", () => {
+	const newYorkVtimezone =
+		`BEGIN:VTIMEZONE\r\nTZID:America/New_York\r\n` +
+		`BEGIN:DAYLIGHT\r\nTZOFFSETFROM:-0500\r\nTZOFFSETTO:-0400\r\nTZNAME:EDT\r\nDTSTART:19700308T020000\r\nRRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU\r\nEND:DAYLIGHT\r\n` +
+		`BEGIN:STANDARD\r\nTZOFFSETFROM:-0400\r\nTZOFFSETTO:-0500\r\nTZNAME:EST\r\nDTSTART:19701101T020000\r\nRRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=1SU\r\nEND:STANDARD\r\nEND:VTIMEZONE`;
+
+	it("floating recurring times retain ical.js's wall-clock iterator instead of epoch seeding", () => {
+		const ics = vcal(
+			`BEGIN:VEVENT\r\nUID:floating\r\nDTSTART:20260101T090000\r\nRRULE:FREQ=HOURLY\r\nEND:VEVENT`,
+		);
+		expect(() => parseIcs(ics, WINDOW, { budget: { maxIteratorStepsPerSeries: 10 } })).toThrow(
+			/step recurrence budget/,
+		);
+	});
+
+	it("TZID recurrence crossing DST retains the canonical iterator path", () => {
+		const dstWindow: MirrorWindow = { start: new Date(2026, 2, 8), end: new Date(2026, 2, 9) };
+		const ics = vcal(
+			`${newYorkVtimezone}\r\nBEGIN:VEVENT\r\nUID:dst-hourly\r\nDTSTART;TZID=America/New_York:20260307T003000\r\nRRULE:FREQ=HOURLY\r\nEND:VEVENT`,
+		);
+		// A non-UTC seed derived from epoch milliseconds can land on the wrong
+		// side of the DST transition.  The safe path therefore spends iterator
+		// steps from DTSTART and visibly trips this deliberately tight budget.
+		expect(() =>
+			parseIcs(ics, dstWindow, { budget: { maxIteratorStepsPerSeries: 10 } }),
+		).toThrow(/step recurrence budget/);
+		expect(parseIcs(ics, dstWindow).length).toBeGreaterThan(0);
+	});
+});
+
 describe("parseIcs — устойчивость", () => {
 	it("битый ICS бросает (вызыватель ловит и пишет в статус)", () => {
 		expect(() => parseIcs("это не ICS", WINDOW)).toThrow();
@@ -169,7 +213,11 @@ describe("parseIcs — окно у серий из далёкого прошло
 		const ics = vcal(
 			`BEGIN:VEVENT\r\nUID:h1\r\nSUMMARY:Ежечасно\r\nDTSTART:20240601T000000\r\nDTEND:20240601T003000\r\nRRULE:FREQ=HOURLY\r\nEND:VEVENT`,
 		);
-		const occ = sorted(parseIcs(ics, WINDOW));
+		// Coverage instrumentation can push this deliberately large correctness
+		// fixture past the production wall-clock budget. Budget enforcement has
+		// dedicated deterministic tests below, so keep this assertion focused on
+		// recurrence fast-forwarding rather than host load.
+		const occ = sorted(parseIcs(ics, WINDOW, { budget: { maxElapsedMs: 10_000 } }));
 		expect(occ.length).toBeGreaterThan(2000); // ~92 дня × 24 ч
 		expect(occ[0]!.date).toBe("2026-06-01"); // начало окна не потеряно
 		expect(occ.some((o) => o.date === "2026-08-31")).toBe(true); // и конец окна населён
@@ -190,6 +238,164 @@ describe("parseIcs — окно у серий из далёкого прошло
 		expect(occ).toHaveLength(91); // 92 − исключённый день
 		expect(occ.some((o) => o.date === "2026-07-15")).toBe(false);
 	});
+
+	it("fast-forward keeps EXDATE and RECURRENCE-ID semantics while staying under a tight iterator budget", () => {
+		const ics = vcal(
+			`BEGIN:VEVENT\r\nUID:old-ex\r\nSUMMARY:Master\r\nDTSTART:20200101T090000Z\r\nRRULE:FREQ=HOURLY\r\nEXDATE:20260715T090000Z\r\nEND:VEVENT\r\n` +
+				`BEGIN:VEVENT\r\nUID:old-ex\r\nRECURRENCE-ID:20260716T090000Z\r\nSUMMARY:Moved\r\nDTSTART:20260717T120000Z\r\nEND:VEVENT`,
+		);
+		// The mirror window itself has ~2,200 hourly rows; 3,000 permits that
+		// useful work but would reject the ~56,000-step pre-window walk.
+		const occ = parseIcs(ics, WINDOW, { budget: { maxIteratorStepsPerSeries: 3_000 } });
+		const excluded = new Date(Date.UTC(2026, 6, 15, 9, 0));
+		const p = (n: number): string => String(n).padStart(2, "0");
+		const excludedDate = `${excluded.getFullYear()}-${p(excluded.getMonth() + 1)}-${p(excluded.getDate())}`;
+		const excludedTime = `${p(excluded.getHours())}:${p(excluded.getMinutes())}`;
+		expect(occ.some((o) => o.date === excludedDate && o.startTime === excludedTime)).toBe(
+			false,
+		);
+		const moved = occ.find((o) => o.title === "Moved")!;
+		expect(moved).toMatchObject({ date: "2026-07-17", recurrenceKey: "2026-07-16T09:00:00Z" });
+	});
+
+	it("secondly series from years ago fast-forwards before exhausting iterator steps, then stops at output budget", () => {
+		const ics = vcal(
+			`BEGIN:VEVENT\r\nUID:seconds\r\nSUMMARY:Ticker\r\nDTSTART:20200101T000000Z\r\nRRULE:FREQ=SECONDLY\r\nEND:VEVENT`,
+		);
+		expect(() =>
+			parseIcs(ics, WINDOW, {
+				budget: { maxIteratorStepsPerSeries: 150, maxSeriesRows: 100, maxTotalRows: 100 },
+			}),
+		).toThrow(IcsBudgetError);
+		expect(() =>
+			parseIcs(ics, WINDOW, {
+				budget: { maxIteratorStepsPerSeries: 150, maxSeriesRows: 100, maxTotalRows: 100 },
+			}),
+		).toThrow(/row output budget/);
+	});
+});
+
+describe("parseIcs — adversarial resource budgets", () => {
+	it("rejects oversized response and excessive VEVENT count before expansion", () => {
+		expect(() =>
+			parseIcs(vcal("x".repeat(200)), WINDOW, { budget: { maxResponseBytes: 10 } }),
+		).toThrow(/size budget/);
+		const twoEvents = vcal(
+			`BEGIN:VEVENT\r\nUID:a\r\nDTSTART:20260701T090000\r\nEND:VEVENT\r\n` +
+				`BEGIN:VEVENT\r\nUID:b\r\nDTSTART:20260702T090000\r\nEND:VEVENT`,
+		);
+		expect(() => parseIcs(twoEvents, WINDOW, { budget: { maxVevents: 1 } })).toThrow(
+			/VEVENT budget/,
+		);
+	});
+
+	it("enforces elapsed-time and global-output budgets without returning a truncated mirror", () => {
+		let now = 0;
+		expect(() =>
+			parseIcs(
+				vcal("BEGIN:VEVENT\r\nUID:a\r\nDTSTART:20260701T090000\r\nEND:VEVENT"),
+				WINDOW,
+				{
+					budget: { maxElapsedMs: 1 },
+					nowMs: () => now++,
+				},
+			),
+		).toThrow(/time budget/);
+
+		const twoEvents = vcal(
+			`BEGIN:VEVENT\r\nUID:a\r\nDTSTART:20260701T090000\r\nEND:VEVENT\r\n` +
+				`BEGIN:VEVENT\r\nUID:b\r\nDTSTART:20260702T090000\r\nEND:VEVENT`,
+		);
+		expect(() => parseIcs(twoEvents, WINDOW, { budget: { maxTotalRows: 1 } })).toThrow(
+			/feed exceeds.*row output budget/,
+		);
+	});
+
+	it("rejects folded-line and parameter shapes before synchronous ICAL.parse can amplify them", () => {
+		const folded = vcal(
+			"BEGIN:VEVENT\r\nUID:folded\r\nDTSTART:20260701T090000\r\nDESCRIPTION:first\r\n second\r\n third\r\nEND:VEVENT",
+		);
+		expect(() =>
+			parseIcs(folded, WINDOW, { budget: { maxFoldedLinesPerContentLine: 1 } }),
+		).toThrow(/folded-line budget/);
+
+		const parameterHeavy = vcal(
+			"BEGIN:VEVENT\r\nUID:params\r\nDTSTART:20260701T090000\r\nSUMMARY;X-ONE=a;X-TWO=b:Hello\r\nEND:VEVENT",
+		);
+		expect(() =>
+			parseIcs(parameterHeavy, WINDOW, { budget: { maxParametersPerContentLine: 1 } }),
+		).toThrow(/parameter budget/);
+
+		const expensiveUnfolding = vcal(
+			"BEGIN:VEVENT\r\nUID:unfolding-work\r\nDTSTART:20260701T090000\r\nDESCRIPTION:123456789\r\n more\r\nEND:VEVENT",
+		);
+		expect(() =>
+			parseIcs(expensiveUnfolding, WINDOW, { budget: { maxUnfoldingWorkChars: 8 } }),
+		).toThrow(/unfolding-work budget/);
+
+		const expensiveParameterScan = vcal(
+			"BEGIN:VEVENT\r\nUID:parameter-work\r\nDTSTART:20260701T090000\r\nSUMMARY;X-ONE=a:123456789\r\nEND:VEVENT",
+		);
+		expect(() =>
+			parseIcs(expensiveParameterScan, WINDOW, { budget: { maxParameterWorkChars: 8 } }),
+		).toThrow(/parameter-work budget/);
+	});
+
+	it("keeps valid quoted parameters and normal folded descriptions parseable", () => {
+		const ics = vcal(
+			"BEGIN:VEVENT\r\nUID:quoted\r\nDTSTART:20260701T090000\r\n" +
+				'ATTENDEE;CN="Ada, Lovelace";MEMBER="mailto:one@example.test","mailto:two@example.test";ROLE=REQ-PARTICIPANT:mailto:ada@example.test\r\n' +
+				"DESCRIPTION:first part\r\n second part\r\nEND:VEVENT",
+		);
+		expect(
+			parseIcs(ics, WINDOW, {
+				budget: {
+					maxParametersPerContentLine: 3,
+					maxParameterValueDelimitersPerContentLine: 1,
+					maxFoldedLinesPerContentLine: 1,
+				},
+			}),
+		).toHaveLength(1);
+	});
+
+	it("rejects parameter-list amplification before ical.js allocates MEMBER arrays", () => {
+		const members = Array.from(
+			{ length: 3 },
+			(_, index) => `"mailto:member-${index}@example.test"`,
+		).join(",");
+		const ics = vcal(
+			`BEGIN:VEVENT\r\nUID:parameter-list\r\nDTSTART:20260701T090000\r\nATTENDEE;MEMBER=${members}:mailto:owner@example.test\r\nEND:VEVENT`,
+		);
+		expect(() =>
+			parseIcs(ics, WINDOW, { budget: { maxParameterValueDelimitersPerContentLine: 1 } }),
+		).toThrow(/parameter-value budget/);
+	});
+
+	it("bounds nesting, physical lines, and repeated value delimiters in the structural preflight", () => {
+		const deep = vcal("BEGIN:X-ONE\r\nBEGIN:X-TWO\r\nEND:X-TWO\r\nEND:X-ONE");
+		expect(() => parseIcs(deep, WINDOW, { budget: { maxComponentDepth: 2 } })).toThrow(
+			/component-depth budget/,
+		);
+
+		const manyValues = vcal(
+			"BEGIN:VEVENT\r\nUID:values\r\nDTSTART:20260701T090000\r\nRDATE:20260702T090000,20260703T090000\r\nEND:VEVENT",
+		);
+		expect(() =>
+			parseIcs(manyValues, WINDOW, { budget: { maxValueDelimitersPerContentLine: 0 } }),
+		).toThrow(/value-delimiter budget/);
+
+		expect(() => parseIcs(vcal(""), WINDOW, { budget: { maxPhysicalLines: 2 } })).toThrow(
+			/physical-line budget/,
+		);
+	});
+
+	it("rejects a sub-day VTIMEZONE RRULE before lazy timezone expansion can run", () => {
+		const ics = vcal(
+			`BEGIN:VTIMEZONE\r\nTZID:Poison/Secondly\r\nBEGIN:STANDARD\r\nDTSTART:19700101T000000\r\nTZOFFSETFROM:+0000\r\nTZOFFSETTO:+0000\r\nRRULE:FREQ=SECONDLY\r\nEND:STANDARD\r\nEND:VTIMEZONE\r\n` +
+				`BEGIN:VEVENT\r\nUID:poison\r\nDTSTART;TZID=Poison/Secondly:20260701T090000\r\nEND:VEVENT`,
+		);
+		expect(() => parseIcs(ics, WINDOW)).toThrow(/VTIMEZONE RRULE must use FREQ=YEARLY/);
+	});
 });
 
 describe("parseIcs — ночные (переходящие полночь) вхождения (FIX-7)", () => {
@@ -199,8 +405,18 @@ describe("parseIcs — ночные (переходящие полночь) вх
 		);
 		const occ = sorted(parseIcs(ics, WINDOW));
 		expect(occ).toHaveLength(2);
-		expect(occ[0]).toMatchObject({ date: "2026-07-06", allDay: false, startTime: "23:00", endTime: "23:59" });
-		expect(occ[1]).toMatchObject({ date: "2026-07-07", allDay: false, startTime: "00:00", endTime: "01:00" });
+		expect(occ[0]).toMatchObject({
+			date: "2026-07-06",
+			allDay: false,
+			startTime: "23:00",
+			endTime: "23:59",
+		});
+		expect(occ[1]).toMatchObject({
+			date: "2026-07-07",
+			allDay: false,
+			startTime: "00:00",
+			endTime: "01:00",
+		});
 	});
 
 	it("многодневное таймированное: крайние сутки со временем, промежуточные — all-day", () => {

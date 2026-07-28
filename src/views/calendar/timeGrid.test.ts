@@ -157,11 +157,7 @@ describe("layoutDay — позиционирование ровно по вре�
 	});
 
 	it("события без времени → allDay, порядок входа сохранён", () => {
-		const { timed, allDay } = layoutDay([
-			ev("x", null),
-			ev("a", "10:00"),
-			ev("y", null),
-		]);
+		const { timed, allDay } = layoutDay([ev("x", null), ev("a", "10:00"), ev("y", null)]);
 		expect(allDay).toEqual(["x", "y"]);
 		expect(timed.map((t) => t.key)).toEqual(["a"]);
 	});

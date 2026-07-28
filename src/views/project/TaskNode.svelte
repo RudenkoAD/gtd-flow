@@ -77,10 +77,12 @@
 		<div class="gtd-tnode-body">
 			<div class="gtd-tnode-desc" class:is-struck={isDone || isCancelled}>
 				{#if task.priority !== "none"}
-					<span title={PRIORITY_LABELS[task.priority]}>{PRIORITY_ICONS[task.priority]}</span>
+					<span title={PRIORITY_LABELS[task.priority]}
+						>{PRIORITY_ICONS[task.priority]}</span
+					>
 				{/if}
-				{#each segments as seg}{#if seg.tag}<span class="tag">{seg.text}</span
-					>{:else}{seg.text}{/if}{/each}
+				{#each segments as seg (seg.text)}{#if seg.tag}<span class="tag">{seg.text}</span
+						>{:else}{seg.text}{/if}{/each}
 			</div>
 			{#if badges.length > 0}
 				<div class="gtd-tnode-badges">

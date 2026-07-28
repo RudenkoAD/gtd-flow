@@ -122,10 +122,32 @@ describe("belongsToBoard", () => {
 
 	it("(c) scope 'path:' включает по префиксу пути, прочее — нет", () => {
 		const def: BoardDef = { ...tagBoard, scope: "path:GTD/" };
-		expect(belongsToBoard(makeTask({ key: "k", filePath: "GTD/a.md" }), "Board.md", def)).toBe(true);
+		expect(belongsToBoard(makeTask({ key: "k", filePath: "GTD/a.md" }), "Board.md", def)).toBe(
+			true,
+		);
 		expect(belongsToBoard(makeTask({ key: "k", filePath: "other.md" }), "Board.md", def)).toBe(
 			false,
 		);
+	});
+
+	it("path scope сравнивается по границе сегмента: path:GTD не захватывает GTD2", () => {
+		const withoutSlash: BoardDef = { ...tagBoard, scope: "path:GTD" };
+		const documentedSlash: BoardDef = { ...tagBoard, scope: "path:GTD/" };
+		for (const def of [withoutSlash, documentedSlash]) {
+			expect(
+				belongsToBoard(makeTask({ key: "inside", filePath: "GTD/a.md" }), "Board.md", def),
+			).toBe(true);
+			expect(
+				belongsToBoard(makeTask({ key: "folder", filePath: "GTD" }), "Board.md", def),
+			).toBe(true);
+			expect(
+				belongsToBoard(
+					makeTask({ key: "sibling", filePath: "GTD2/a.md" }),
+					"Board.md",
+					def,
+				),
+			).toBe(false);
+		}
 	});
 
 	it("не-path scope членство не расширяет (чужой файл без тега — не член)", () => {

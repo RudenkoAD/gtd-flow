@@ -18,9 +18,9 @@ describe("sanitizeCardName", () => {
 	});
 
 	it("вычищает управляющие символы", () => {
-		expect(sanitizeCardName("a" + String.fromCharCode(0) + "b" + String.fromCharCode(9) + "c")).toBe(
-			"a b c",
-		);
+		expect(
+			sanitizeCardName("a" + String.fromCharCode(0) + "b" + String.fromCharCode(9) + "c"),
+		).toBe("a b c");
 	});
 
 	it("обрезает до предела и срезает хвостовые пробелы/точки после обрезки", () => {

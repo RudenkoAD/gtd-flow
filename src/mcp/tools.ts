@@ -80,13 +80,18 @@ export function registerTools(server: McpServer, ctx: ServerContext): void {
 				namespace: z
 					.string()
 					.optional()
-					.describe("Space name (e.g. 'Работа'), 'Общее' for the common space, or 'all'. Omit for the active space."),
+					.describe(
+						"Space name (e.g. 'Работа'), 'Общее' for the common space, or 'all'. Omit for the active space.",
+					),
 				view: z
 					.enum(["inbox", "tickler", "board", "project", "all"])
 					.optional()
 					.describe("Which view to list. Default 'all'."),
 				board: z.string().optional().describe("Board id or name (with view 'board')."),
-				project: z.string().optional().describe("Project name or path (with view 'project')."),
+				project: z
+					.string()
+					.optional()
+					.describe("Project name or path (with view 'project')."),
 				include_done: z
 					.boolean()
 					.optional()
@@ -107,7 +112,9 @@ export function registerTools(server: McpServer, ctx: ServerContext): void {
 				namespace: z
 					.string()
 					.optional()
-					.describe("Target space name or 'Общее'. Omit for the active space. 'all' is not allowed."),
+					.describe(
+						"Target space name or 'Общее'. Omit for the active space. 'all' is not allowed.",
+					),
 				due: z.string().optional().describe("📅 due date, ISO, optional time."),
 				scheduled: z.string().optional().describe("⏳ scheduled date, ISO, optional time."),
 				start: z.string().optional().describe("🛫 start/defer date, ISO, optional time."),
@@ -126,7 +133,11 @@ export function registerTools(server: McpServer, ctx: ServerContext): void {
 				id: z.string().describe("Task 🆔 or content-key (from list_tasks)."),
 				done: z.boolean().optional().describe("true marks done (✅ today), false reopens."),
 				text: z.string().optional().describe("New description (replaces the text)."),
-				due: z.string().nullable().optional().describe("📅 date (ISO, optional time) or null to clear."),
+				due: z
+					.string()
+					.nullable()
+					.optional()
+					.describe("📅 date (ISO, optional time) or null to clear."),
 				scheduled: z
 					.string()
 					.nullable()
@@ -195,7 +206,9 @@ export function registerTools(server: McpServer, ctx: ServerContext): void {
 				namespace: z
 					.string()
 					.optional()
-					.describe("Space name, 'Общее', or 'all'. Omit for the active space (common-space events are always visible)."),
+					.describe(
+						"Space name, 'Общее', or 'all'. Omit for the active space (common-space events are always visible).",
+					),
 			},
 		},
 		(args) => runTool(ctx, (s) => listEvents(s, args)),
@@ -212,7 +225,9 @@ export function registerTools(server: McpServer, ctx: ServerContext): void {
 				namespace: z
 					.string()
 					.optional()
-					.describe("Target space name or 'Общее'. Omit for the active space. 'all' is not allowed."),
+					.describe(
+						"Target space name or 'Общее'. Omit for the active space. 'all' is not allowed.",
+					),
 				date: z
 					.string()
 					.describe("One-off event date, ISO YYYY-MM-DD. Mutually exclusive with rule.")

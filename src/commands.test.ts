@@ -41,7 +41,6 @@ const H = vi.hoisted(() => {
 	}
 
 	const notices: string[] = [];
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	const modals: any[] = [];
 
 	class Modal {
@@ -95,7 +94,10 @@ interface Cmd {
 function makePlugin(over?: {
 	ensureFile?: (path: string) => Promise<void>;
 	processFile?: (path: string, t: (c: string) => string | null) => Promise<boolean>;
-	processFrontmatter?: (path: string, fn: (fm: Record<string, unknown>) => void) => Promise<unknown>;
+	processFrontmatter?: (
+		path: string,
+		fn: (fm: Record<string, unknown>) => void,
+	) => Promise<unknown>;
 }) {
 	const commands = new Map<string, Cmd>();
 	const ensureFile = vi.fn(over?.ensureFile ?? (() => Promise.resolve()));

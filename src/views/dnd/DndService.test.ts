@@ -8,6 +8,10 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Plugin } from "obsidian";
+
+const { notice } = vi.hoisted(() => ({ notice: vi.fn() }));
+vi.mock("obsidian", () => ({ Notice: notice }));
+
 import { DndService } from "./DndService";
 import type { DragPayload } from "./types";
 
@@ -27,8 +31,6 @@ interface FakeElOpts {
 	scrollHeight?: number;
 	clientHeight?: number;
 }
-
-/* eslint-disable @typescript-eslint/no-explicit-any */
 
 function makeEl(win: any, opts: FakeElOpts = {}): any {
 	const el: any = {
@@ -157,6 +159,7 @@ let plugin: any;
 let service: DndService;
 
 beforeEach(() => {
+	notice.mockClear();
 	mainWin = makeWin();
 	(globalThis as any).activeWindow = mainWin;
 	plugin = makePlugin();
@@ -243,7 +246,12 @@ describe("DndService: автоскролл якорится на элемент 
 		const { board, section, body, card } = kanbanDom(mainWin);
 		mainWin.document.elementFromPoint = (): any => card;
 		const target: any = { el: section, accepts: (): boolean => true, drop: (): void => {} };
-		(service as any).autoscroll({ win: mainWin, drag: null, dispose: () => {} }, target, 100, 290);
+		(service as any).autoscroll(
+			{ win: mainWin, drag: null, dispose: () => {} },
+			target,
+			100,
+			290,
+		);
 		expect(body.scrollBy).toHaveBeenCalledTimes(1);
 		const call = body.scrollBy.mock.calls[0] as [number, number];
 		expect(call[0]).toBe(0);
@@ -266,7 +274,12 @@ describe("DndService: автоскролл якорится на элемент 
 		const { body, card } = kanbanDom(mainWin);
 		mainWin.document.elementFromPoint = (): any => null;
 		const target: any = { el: card, accepts: (): boolean => true, drop: (): void => {} };
-		(service as any).autoscroll({ win: mainWin, drag: null, dispose: () => {} }, target, 100, 290);
+		(service as any).autoscroll(
+			{ win: mainWin, drag: null, dispose: () => {} },
+			target,
+			100,
+			290,
+		);
 		expect(body.scrollBy).toHaveBeenCalledTimes(1);
 	});
 });
@@ -307,6 +320,39 @@ describe("DndService: post-drag click глотается", () => {
 		expect((mainWin.document.listeners.get("click") ?? []).length).toBe(1);
 		for (const t of [...mainWin.timeouts]) t.fn();
 		expect((mainWin.document.listeners.get("click") ?? []).length).toBe(0);
+	});
+});
+
+describe("DndService: ошибки drop доступны пользователю", () => {
+	function registerThrowingTarget(drop: () => Promise<void> | void): void {
+		const target = makeEl(mainWin, { rect: { left: 0, top: 0, right: 100, bottom: 100 } });
+		service.registerDropTarget({ el: target, accepts: (): boolean => true, drop });
+	}
+
+	it("показывает Notice при отклонённом async drop вместо console-only", async () => {
+		registerThrowingTarget(async () => Promise.reject(new Error("vault readonly")));
+		const src = makeEl(mainWin, { rect: { left: 0, top: 0, right: 100, bottom: 40 } });
+		dragToDragging(src);
+		mainWin.document.dispatch("pointerup", pointerEvent(10, 20));
+
+		await vi.waitFor(() =>
+			expect(notice).toHaveBeenCalledWith(
+				expect.stringContaining("не удалось перенести карточку: Error: vault readonly"),
+			),
+		);
+	});
+
+	it("показывает Notice при синхронном throw из drop", () => {
+		registerThrowingTarget(() => {
+			throw new Error("target disappeared");
+		});
+		const src = makeEl(mainWin, { rect: { left: 0, top: 0, right: 100, bottom: 40 } });
+		dragToDragging(src);
+		mainWin.document.dispatch("pointerup", pointerEvent(10, 20));
+
+		expect(notice).toHaveBeenCalledWith(
+			expect.stringContaining("не удалось перенести карточку: Error: target disappeared"),
+		);
 	});
 });
 

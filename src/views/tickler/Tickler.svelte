@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { Notice, type App } from "obsidian";
 	import { derived, type Readable } from "svelte/store";
+	import type { Task } from "../../core/model/Task";
 	import { type NamespaceDef, type NamespaceFilter } from "../../core/namespace/namespace";
 	import type { IntentDispatcher } from "../../services/WritebackService";
 	import type { GtdFlowSettings } from "../../settings/Settings";
@@ -20,16 +21,18 @@
 		taskStore,
 		dispatcher,
 		settings,
+		settingsRevision,
 		app,
 		dnd = null,
 		menuPorts = null,
 		activeNamespace,
-		namespaces,
+		namespaces: _namespaces,
 		setActiveNamespace,
 	}: {
 		taskStore: TaskStore;
 		dispatcher: IntentDispatcher;
 		settings: GtdFlowSettings;
+		settingsRevision: Readable<number>;
 		app: App;
 		/** null — drag выключен (телефон / сервис недоступен). */
 		dnd?: DndPort | null;
@@ -43,24 +46,40 @@
 		setActiveNamespace: (name: string) => void;
 	} = $props();
 
+	const liveNamespaces = $derived.by(() => {
+		void $settingsRevision;
+		return settings.namespaces;
+	});
 	// Фильтр пространства для ticklerStore: смена ЛОКАЛЬНОГО пространства вида
 	// инвалидирует мемо стора и пере-рендерит подпиской (эпоху индекса не бампает).
 	// svelte-ignore state_referenced_locally
 	const namespace$: Readable<NamespaceFilter> = derived(activeNamespace, (a) => ({
 		active: a,
-		defs: namespaces,
+		defs: liveNamespaces,
 	}));
 
 	// props фиксированы на время монтирования (вид пересоздаётся с leaf) —
 	// одноразовый снимок при инициализации намеренный
-	// svelte-ignore state_referenced_locally
-	const tasks = ticklerStore(taskStore, settings.debounceMs.queryRecompute, namespace$);
+	let tasks = $state<Task[]>([]);
+	$effect(() => {
+		void $settingsRevision;
+		const store = ticklerStore(
+			taskStore,
+			settings.debounceMs.queryRecompute,
+			namespace$,
+			settingsRevision,
+		);
+		return store.subscribe((value) => (tasks = value));
+	});
 	// svelte-ignore state_referenced_locally
 	const today = taskStore.today;
 
-	const buckets = $derived(bucketize($tasks, $today, settings.firstDayOfWeek));
+	const buckets = $derived.by(() => {
+		void $settingsRevision;
+		return bucketize(tasks, $today, settings.firstDayOfWeek);
+	});
 	/** Метка активного пространства для шапки — только когда настроено. */
-	const nsLabel = $derived(namespaces.length === 0 ? null : namespaceLabel($activeNamespace));
+	const nsLabel = $derived(liveNamespaces.length === 0 ? null : namespaceLabel($activeNamespace));
 
 	let collapsed = $state<Record<BucketId, boolean>>({
 		tomorrow: false,
@@ -91,7 +110,11 @@
 					drop: async (p) => {
 						// Пикер предзаполнен датой бакета; отмена (null) — карточка
 						// остаётся где была, ничего не пишем.
-						const suggested = bucketDeferDate(bucket.id, $today, settings.firstDayOfWeek);
+						const suggested = bucketDeferDate(
+							bucket.id,
+							$today,
+							settings.firstDayOfWeek,
+						);
 						const until = await pickDate(app, "Отложить до", suggested);
 						if (until === null) return;
 						// «🛫 и 📅 взаимоисключающие»: отложить запланированную —
@@ -119,7 +142,12 @@
 						// вида (или не меняется видимо, если 🛫 уже был на эту дату) —
 						// без Notice это читается как «карточка просто исчезла».
 						if (!res.ok) new Notice(`GTD Flow: ${res.reason}`);
-						else new Notice(clearDue ? `Отложена до ${until}, план снят` : `Отложена до ${until}`);
+						else
+							new Notice(
+								clearDue
+									? `Отложена до ${until}, план снят`
+									: `Отложена до ${until}`,
+							);
 					},
 				}),
 			);
@@ -135,42 +163,48 @@
 	{#if nsLabel !== null}
 		<div class="gtd-tickler-header">
 			<span class="gtd-tickler-title">Отложенные · {nsLabel}</span>
-			<NamespaceSwitcher active={activeNamespace} {namespaces} onSelect={setActiveNamespace} />
+			<NamespaceSwitcher
+				active={activeNamespace}
+				namespaces={liveNamespaces}
+				onSelect={setActiveNamespace}
+			/>
 		</div>
 	{/if}
 	<div class="gtd-tickler-body">
-	<!-- Бакеты видны и при пустом тикле: пустая секция — всё ещё drop-цель. -->
-	{#each BUCKET_ORDER as bucket (bucket.id)}
-		{@const list = buckets[bucket.id]}
-		<section class="gtd-bucket" bind:this={sectionEls[bucket.id]}>
-			<button
-				class="gtd-bucket-header"
-				aria-expanded={!collapsed[bucket.id]}
-				onclick={() => (collapsed[bucket.id] = !collapsed[bucket.id])}
-			>
-				<span class="gtd-bucket-chevron" class:is-collapsed={collapsed[bucket.id]}>▸</span>
-				<span class="gtd-bucket-title">{bucket.title}</span>
-				<span class="gtd-bucket-count">{list.length}</span>
-			</button>
-			{#if !collapsed[bucket.id]}
-				{#each list as task (task.key)}
-					<TaskCard
-						{task}
-						{dispatcher}
-						{app}
-						{settings}
-						today={$today}
-						inTickler={true}
-						{dnd}
-						dragPayload={{ taskKey: task.key, sourceViewType: VIEW_TYPES.tickler }}
-						{menuPorts}
-					/>
-				{:else}
-					<div class="gtd-bucket-empty">Пусто</div>
-				{/each}
-			{/if}
-		</section>
-	{/each}
+		<!-- Бакеты видны и при пустом тикле: пустая секция — всё ещё drop-цель. -->
+		{#each BUCKET_ORDER as bucket (bucket.id)}
+			{@const list = buckets[bucket.id]}
+			<section class="gtd-bucket" bind:this={sectionEls[bucket.id]}>
+				<button
+					class="gtd-bucket-header"
+					aria-expanded={!collapsed[bucket.id]}
+					onclick={() => (collapsed[bucket.id] = !collapsed[bucket.id])}
+				>
+					<span class="gtd-bucket-chevron" class:is-collapsed={collapsed[bucket.id]}
+						>▸</span
+					>
+					<span class="gtd-bucket-title">{bucket.title}</span>
+					<span class="gtd-bucket-count">{list.length}</span>
+				</button>
+				{#if !collapsed[bucket.id]}
+					{#each list as task (task.key)}
+						<TaskCard
+							{task}
+							{dispatcher}
+							{app}
+							{settings}
+							today={$today}
+							inTickler={true}
+							{dnd}
+							dragPayload={{ taskKey: task.key, sourceViewType: VIEW_TYPES.tickler }}
+							{menuPorts}
+						/>
+					{:else}
+						<div class="gtd-bucket-empty">Пусто</div>
+					{/each}
+				{/if}
+			</section>
+		{/each}
 	</div>
 </div>
 

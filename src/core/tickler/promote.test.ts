@@ -116,7 +116,14 @@ describe("partition — идемпотентность", () => {
 				container: containerArb,
 				tags: fc.constantFrom<string[]>([], ["#waiting"]),
 			})
-			.map((o) => makeTask({ statusChar: o.statusChar, start: o.start, container: o.container, tags: o.tags }));
+			.map((o) =>
+				makeTask({
+					statusChar: o.statusChar,
+					start: o.start,
+					container: o.container,
+					tags: o.tags,
+				}),
+			);
 
 		fc.assert(
 			fc.property(fc.array(taskArb, { maxLength: 40 }), (tasks) => {
@@ -158,7 +165,9 @@ describe("planPromotions — отбор кандидатов на всплыти
 	it("done/cancelled с прошедшей 🛫 — не кандидаты", () => {
 		const done = makeTask({ start: PAST, statusChar: "x" });
 		const cancelled = makeTask({ start: PAST, statusChar: "-" });
-		expect(planPromotions([done, cancelled], TODAY, { includePlain: false, since: null })).toEqual([]);
+		expect(
+			planPromotions([done, cancelled], TODAY, { includePlain: false, since: null }),
+		).toEqual([]);
 	});
 
 	it("контейнеры вне тикля (recurring/card/events/archive) не всплывают", () => {
@@ -215,7 +224,10 @@ describe("planPromotions — отбор кандидатов на всплыти
 	it("окно (since, today]: исторический бэклог до since не сметается", () => {
 		const old = makeTask({ start: PAST }); // наступила давно, до окна
 		const fresh = makeTask({ start: TODAY }); // наступила в окне
-		const plan = planPromotions([old, fresh], TODAY, { includePlain: true, since: "2026-07-14" });
+		const plan = planPromotions([old, fresh], TODAY, {
+			includePlain: true,
+			since: "2026-07-14",
+		});
 		expect(plan.map((p) => p.task.key)).toEqual([fresh.key]);
 	});
 

@@ -18,7 +18,10 @@ describe("nextOccurrence — daily", () => {
 describe("nextOccurrence — eventTime игнорируется (date-уровень, §события)", () => {
 	it("время вхождения не влияет на выбор даты", () => {
 		expect(
-			nextOccurrence({ freq: "daily", n: 1, eventTime: "09:00", eventTimeEnd: "10:00" }, "2026-07-15"),
+			nextOccurrence(
+				{ freq: "daily", n: 1, eventTime: "09:00", eventTimeEnd: "10:00" },
+				"2026-07-15",
+			),
 		).toBe("2026-07-16");
 		const r: Rule = { freq: "weekly", n: 1, byDay: [4], eventTime: "19:00" };
 		expect(nextOccurrence(r, "2026-07-15")).toBe("2026-07-17"); // как без времени
@@ -52,8 +55,12 @@ describe("nextOccurrence — weekly", () => {
 		expect(nextOccurrence(r, "2026-12-31")).toBe("2027-01-04"); // чт → пн следующего года
 	});
 	it("with empty byDay steps 7*n days from the cursor", () => {
-		expect(nextOccurrence({ freq: "weekly", n: 1, byDay: [] }, "2026-07-15")).toBe("2026-07-22");
-		expect(nextOccurrence({ freq: "weekly", n: 2, byDay: [] }, "2026-07-15")).toBe("2026-07-29");
+		expect(nextOccurrence({ freq: "weekly", n: 1, byDay: [] }, "2026-07-15")).toBe(
+			"2026-07-22",
+		);
+		expect(nextOccurrence({ freq: "weekly", n: 2, byDay: [] }, "2026-07-15")).toBe(
+			"2026-07-29",
+		);
 	});
 	it("n>1 from a non-member 'after' does not skip the nearest listed day (regression)", () => {
 		// after = вс 2026-07-12 (bootstrap today−1) принадлежит ПРЕДЫДУЩЕЙ неделе:
@@ -308,7 +315,13 @@ describe("nextOccurrence — from (нижняя граница, ВКЛЮЧИТЕ
 		expect(nextOccurrence(r, "2026-07-29")).toBe("2026-08-12");
 	});
 	it("weekly без byDay, n>1: from и until вместе", () => {
-		const r: Rule = { freq: "weekly", n: 2, byDay: [], from: "2026-07-15", until: "2026-08-12" };
+		const r: Rule = {
+			freq: "weekly",
+			n: 2,
+			byDay: [],
+			from: "2026-07-15",
+			until: "2026-08-12",
+		};
 		expect(nextOccurrence(r, "2026-07-01")).toBe("2026-07-15");
 		expect(nextOccurrence(r, "2026-07-29")).toBe("2026-08-12"); // ровно until
 		expect(nextOccurrence(r, "2026-08-12")).toBeNull();
@@ -355,9 +368,9 @@ describe("isOccurrence — фаза daily/weekly-без-byDay при n>1 и як
 	});
 	it("n=1: якорь фазу не режет (обратная совместимость)", () => {
 		expect(isOccurrence({ freq: "daily", n: 1 }, "2026-07-16", "2026-07-15")).toBe(true);
-		expect(
-			isOccurrence({ freq: "weekly", n: 1, byDay: [] }, "2026-07-20", "2026-07-15"),
-		).toBe(true);
+		expect(isOccurrence({ freq: "weekly", n: 1, byDay: [] }, "2026-07-20", "2026-07-15")).toBe(
+			true,
+		);
 	});
 });
 
@@ -433,14 +446,12 @@ const arbRuleBase: fc.Arbitrary<Rule> = fc.oneof(
 			fc.integer({ min: 1, max: 12 }),
 			fc.integer({ min: 1, max: 31 }),
 		)
-		.map(
-			([n, month, day]): Rule => ({
-				freq: "yearly",
-				n,
-				month,
-				day: Math.min(day, YEARLY_MAX[month - 1] ?? 28),
-			}),
-		),
+		.map(([n, month, day]): Rule => ({
+			freq: "yearly",
+			n,
+			month,
+			day: Math.min(day, YEARLY_MAX[month - 1] ?? 28),
+		})),
 );
 
 const arbRule: fc.Arbitrary<Rule> = fc
@@ -498,14 +509,12 @@ const arbWeeklyAnchored = fc
 		arbByDay,
 		arbDate, // якорь (from)
 	)
-	.map(
-		([n, byDay, from]): Extract<Rule, { freq: "weekly" }> => ({
-			freq: "weekly",
-			n,
-			byDay,
-			from,
-		}),
-	);
+	.map(([n, byDay, from]): Extract<Rule, { freq: "weekly" }> => ({
+		freq: "weekly",
+		n,
+		byDay,
+		from,
+	}));
 
 describe("nextOccurrence — якорь ⇒ фаза недель кратна n (property)", () => {
 	it("каждое вхождение лежит в неделе, кратно n отстоящей от недели якоря", () => {
@@ -551,11 +560,14 @@ describe("nextOccurrence — якорь ⇒ фаза недель кратна n
 describe("nextFromCompletion — интервал от даты выполнения (§every!)", () => {
 	it("daily / weekly / weekdays: сдвиг в днях от даты ✅", () => {
 		// 2026-07-15 — среда, 07-17 пятница, 07-18 суббота
-		expect(nextFromCompletion({ freq: "daily", n: 3, fromCompletion: true }, "2026-07-15")).toBe(
-			"2026-07-18",
-		);
 		expect(
-			nextFromCompletion({ freq: "weekly", n: 2, byDay: [], fromCompletion: true }, "2026-07-15"),
+			nextFromCompletion({ freq: "daily", n: 3, fromCompletion: true }, "2026-07-15"),
+		).toBe("2026-07-18");
+		expect(
+			nextFromCompletion(
+				{ freq: "weekly", n: 2, byDay: [], fromCompletion: true },
+				"2026-07-15",
+			),
 		).toBe("2026-07-29");
 		// будний строго после: пятница → понедельник; суббота → понедельник
 		expect(nextFromCompletion({ freq: "weekdays", fromCompletion: true }, "2026-07-17")).toBe(
@@ -566,31 +578,33 @@ describe("nextFromCompletion — интервал от даты выполнен
 		);
 	});
 	it("monthly: +n месяцев, день от даты ✅ с клампингом к длине месяца", () => {
-		expect(nextFromCompletion({ freq: "monthly", n: 1, fromCompletion: true }, "2026-07-15")).toBe(
-			"2026-08-15",
-		);
+		expect(
+			nextFromCompletion({ freq: "monthly", n: 1, fromCompletion: true }, "2026-07-15"),
+		).toBe("2026-08-15");
 		// 31 января + 1 месяц → 28 февраля (клампинг)
-		expect(nextFromCompletion({ freq: "monthly", n: 1, fromCompletion: true }, "2027-01-31")).toBe(
-			"2027-02-28",
-		);
+		expect(
+			nextFromCompletion({ freq: "monthly", n: 1, fromCompletion: true }, "2027-01-31"),
+		).toBe("2027-02-28");
 		// пересечение года
-		expect(nextFromCompletion({ freq: "monthly", n: 3, fromCompletion: true }, "2026-11-30")).toBe(
-			"2027-02-28",
-		);
+		expect(
+			nextFromCompletion({ freq: "monthly", n: 3, fromCompletion: true }, "2026-11-30"),
+		).toBe("2027-02-28");
 	});
 	it("yearly: +n лет, 29 февраля → 28 на невисокосном", () => {
-		expect(nextFromCompletion({ freq: "yearly", n: 1, fromCompletion: true }, "2026-07-15")).toBe(
-			"2027-07-15",
-		);
-		expect(nextFromCompletion({ freq: "yearly", n: 1, fromCompletion: true }, "2028-02-29")).toBe(
-			"2029-02-28",
-		);
+		expect(
+			nextFromCompletion({ freq: "yearly", n: 1, fromCompletion: true }, "2026-07-15"),
+		).toBe("2027-07-15");
+		expect(
+			nextFromCompletion({ freq: "yearly", n: 1, fromCompletion: true }, "2028-02-29"),
+		).toBe("2029-02-28");
 	});
 });
 
 describe("fromCompletion-правила не разворачиваются по календарю (§every!)", () => {
 	it("nextOccurrence возвращает null (сканирующие циклы не зацикливаются)", () => {
-		expect(nextOccurrence({ freq: "daily", n: 3, fromCompletion: true }, "2026-07-15")).toBeNull();
+		expect(
+			nextOccurrence({ freq: "daily", n: 3, fromCompletion: true }, "2026-07-15"),
+		).toBeNull();
 		expect(
 			nextOccurrence({ freq: "monthly", n: 1, fromCompletion: true }, "2026-07-15"),
 		).toBeNull();

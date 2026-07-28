@@ -23,8 +23,8 @@ export class KanbanView extends GtdView {
 	private readonly persisted: Writable<KanbanPersistedState> = writable({});
 	private lastState: KanbanPersistedState = {};
 
-	protected override component(): Component<any> {
-		return Kanban as unknown as Component<any>;
+	protected override component(): Component<Record<string, unknown>> {
+		return Kanban as unknown as Component<Record<string, unknown>>;
 	}
 
 	protected override props(): Record<string, unknown> {
@@ -38,6 +38,7 @@ export class KanbanView extends GtdView {
 			taskStore: plugin.taskStore,
 			dispatcher: plugin.dispatcher,
 			settings: plugin.settings,
+			settingsRevision: plugin.settingsRevision.store,
 			app: plugin.app,
 			// ЛОКАЛЬНОЕ пространство вида (per-tab): реактивный источник, список
 			// определений и локальный сеттер — для NamespaceSwitcher в шапке, фильтра

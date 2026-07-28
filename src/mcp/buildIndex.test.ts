@@ -35,7 +35,9 @@ describe("buildIndex", () => {
 		expect(byFile("GTD/Inbox.md").every((t) => t.container === "inbox")).toBe(true);
 		expect(byFile("Работа/Доски/Спринт.md").every((t) => t.container === "board")).toBe(true);
 		expect(byFile("Жизнь/События.md").every((t) => t.container === "events")).toBe(true);
-		expect(byFile("Жизнь/Проекты/Ремонт.md").every((t) => t.container === "project")).toBe(true);
+		expect(byFile("Жизнь/Проекты/Ремонт.md").every((t) => t.container === "project")).toBe(
+			true,
+		);
 
 		// событие-серия несёт правило и место распознаётся (📍 нет тут, но 🔁 есть)
 		const yoga = byFile("Жизнь/События.md").find((t) => t.description === "Йога");

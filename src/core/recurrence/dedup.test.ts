@@ -107,7 +107,11 @@ describe("classifyDuplicates — four outcomes", () => {
 			rawLine: CANONICAL + " и ещё",
 		});
 		const untouched = makeCopy({ lineStart: 77 });
-		const res = classifyDuplicates([carrier(doneHere), carrier(editedThere), carrier(untouched)]);
+		const res = classifyDuplicates([
+			carrier(doneHere),
+			carrier(editedThere),
+			carrier(untouched),
+		]);
 		if (!("conflict" in res)) throw new Error("expected conflict outcome");
 		expect(res.conflict).toEqual([doneHere, editedThere]); // нетронутая не в конфликте, но и не удаляется
 	});

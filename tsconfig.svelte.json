@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.d.ts",
+    "src/**/*.svelte",
+    "browser-tests/**/*.ts",
+    "browser-tests/**/*.svelte",
+    "playwright.config.ts",
+    "vite.browser.config.ts"
+  ]
+}

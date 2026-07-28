@@ -3,6 +3,7 @@
 	import type { Readable } from "svelte/store";
 	import type { ProjectStatus } from "../../core/model/Task";
 	import type { ProjectPort } from "../../services/ProjectService";
+	import type { GtdFlowSettings } from "../../settings/Settings";
 	import type { TaskStore } from "../../stores/taskStore";
 	// Общий переключатель пространств из views/common (создаётся параллельной зоной;
 	// гейт-фаза срастит реальный компонент). Контракт props — см. использование ниже.
@@ -26,8 +27,10 @@
 		taskStore,
 		projects = null,
 		app,
+		settings,
+		settingsRevision,
 		activeNamespace$,
-		namespaces,
+		namespaces: _namespaces,
 		setActiveNamespace,
 		openProject,
 	}: {
@@ -35,6 +38,8 @@
 		/** null до интеграции сервиса проектов в main.ts (plugin.projects). */
 		projects?: ProjectPort | null;
 		app: App;
+		settings: GtdFlowSettings;
+		settingsRevision: Readable<number>;
 		/** Реактивное ЛОКАЛЬНОЕ активное пространство вида (per-tab, см. GtdView). */
 		activeNamespace$: Readable<string>;
 		/** Определения пространств (settings.namespaces); пусто ⇒ switcher скрыт. */
@@ -54,7 +59,11 @@
 	const activeNs = activeNamespace$;
 	// switcher виден только при настроенных пространствах; метка активного для
 	// пустых состояний (DEFAULT_NS → «Общее»).
-	const hasNamespaces = $derived(namespaces.length >= 1);
+	const liveNamespaces = $derived.by(() => {
+		void $settingsRevision;
+		return settings.namespaces;
+	});
+	const hasNamespaces = $derived(liveNamespaces.length >= 1);
 	const activeLabel = $derived(namespaceLabel($activeNs));
 
 	const STATUS_LABELS: Record<ProjectStatus, string> = {
@@ -66,7 +75,7 @@
 	const STATUS_ORDER: ProjectStatus[] = ["active", "on-hold", "done", "archived"];
 
 	// фильтр discovery — ЛОКАЛЬНОЕ пространство вида (не активное глобальное)
-	const nsFilter = $derived<NamespaceFilter>({ active: $activeNs, defs: namespaces });
+	const nsFilter = $derived<NamespaceFilter>({ active: $activeNs, defs: liveNamespaces });
 	// проекты живут в индексе — пересканируем на каждую его смену
 	const rows = $derived.by<ProjectRow[]>(() => {
 		void $epoch;
@@ -104,7 +113,7 @@
 			// именованного, иначе (Общее / без пространств) — рядом с существующими.
 			const dir = nsTargetPath(
 				$activeNs,
-				namespaces,
+				liveNamespaces,
 				NS_CONVENTION.projectsDir,
 				projectDir(existing),
 			);
@@ -139,7 +148,11 @@
 		<span class="gtd-po-title">Проекты</span>
 		{#if hasNamespaces}
 			<!-- Глобальный переключатель пространства; виден только при настроенных пространствах -->
-			<NamespaceSwitcher active={activeNamespace$} {namespaces} setActive={setActiveNamespace} />
+			<NamespaceSwitcher
+				active={activeNamespace$}
+				namespaces={liveNamespaces}
+				setActive={setActiveNamespace}
+			/>
 		{/if}
 		{#if projects !== null}
 			<button class="mod-cta gtd-po-new" onclick={createProject} title="Создать новый проект">
@@ -152,7 +165,11 @@
 		<div class="gtd-po-empty">Вид проектов не подключён (сервис недоступен)</div>
 	{:else if rows.length === 0}
 		<div class="gtd-po-empty">
-			<p>{hasNamespaces ? `В пространстве «${activeLabel}» проектов нет.` : "Пока нет ни одного проекта."}</p>
+			<p>
+				{hasNamespaces
+					? `В пространстве «${activeLabel}» проектов нет.`
+					: "Пока нет ни одного проекта."}
+			</p>
 			<button class="mod-cta" onclick={createProject}>＋ Создать проект</button>
 		</div>
 	{:else}
@@ -207,7 +224,7 @@
 					onkeydown={(e) => e.stopPropagation()}
 					onchange={(e) => onStatusChange(e, row)}
 				>
-					{#each STATUS_ORDER as st}
+					{#each STATUS_ORDER as st (st)}
 						<option value={st}>{STATUS_LABELS[st]}</option>
 					{/each}
 				</select>

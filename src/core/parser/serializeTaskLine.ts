@@ -43,7 +43,9 @@ import {
 function mustTokenize(rawLine: string, opts?: TokenizeOptions): TokenizedTaskLine {
 	const t = tokenizeTaskLine(rawLine, opts);
 	if (t === null) {
-		throw new Error(`serializeTaskLine: строка не является задачей: ${JSON.stringify(rawLine)}`);
+		throw new Error(
+			`serializeTaskLine: строка не является задачей: ${JSON.stringify(rawLine)}`,
+		);
 	}
 	return t;
 }
@@ -51,7 +53,9 @@ function mustTokenize(rawLine: string, opts?: TokenizeOptions): TokenizedTaskLin
 /** id и одиночные значения: без пробелов и запятых (запятая — разделитель ⛔). */
 function assertToken(value: string, what: string): void {
 	if (value === "" || /\s/.test(value) || value.includes(",")) {
-		throw new Error(`serializeTaskLine: недопустимое значение ${what}: ${JSON.stringify(value)}`);
+		throw new Error(
+			`serializeTaskLine: недопустимое значение ${what}: ${JSON.stringify(value)}`,
+		);
 	}
 }
 
@@ -69,7 +73,9 @@ function assertLocation(value: string): string {
 	}
 	for (const e of ALL_FIELD_EMOJI) {
 		if (v.includes(e)) {
-			throw new Error(`serializeTaskLine: эмодзи поля в локации 📍: ${JSON.stringify(value)}`);
+			throw new Error(
+				`serializeTaskLine: эмодзи поля в локации 📍: ${JSON.stringify(value)}`,
+			);
 		}
 	}
 	// #тег в месте обрезался бы при чтении (payload 📍 останавливается перед тегом) —
@@ -159,7 +165,10 @@ function setPayloadField(
 		tok.payload = payload;
 		return serializeTokens(t);
 	}
-	t.segments.push({ kind: "text", text: " " }, { kind: "field", field, emoji, gap: " ", payload });
+	t.segments.push(
+		{ kind: "text", text: " " },
+		{ kind: "field", field, emoji, gap: " ", payload },
+	);
 	return serializeTokens(t);
 }
 
@@ -466,7 +475,11 @@ export function setDescription(rawLine: string, text: string): string {
 			// проверяем позицию ТЕМ ЖЕ isLeadingLocation, что применяет токенизатор к
 			// канону, ставшему первым текст-сегментом (canon уже trim/схлопнут — как
 			// его увидит читатель). Не ведущий 📍 → throw.
-			for (let idx = canon.indexOf(loc); idx !== -1; idx = canon.indexOf(loc, idx + loc.length)) {
+			for (
+				let idx = canon.indexOf(loc);
+				idx !== -1;
+				idx = canon.indexOf(loc, idx + loc.length)
+			) {
 				if (!isLeadingLocation(canon, idx)) {
 					throw new Error(
 						`serializeTaskLine: эмодзи поля в тексте описания: ${JSON.stringify(text)}`,

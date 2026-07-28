@@ -152,19 +152,25 @@ describe("taskToBoardCard", () => {
 
 	// регресс: семантика tag-матча обязана совпадать с board/membership.matchesSpec
 	it("tag-спека без '#' (форма boardFile.parseMatchSpec) матчит '#'-тег задачи", () => {
-		const cols: MinimalColumnSpec[] = [{ id: "todo", match: { kind: "tag", tag: "kanban/dev/todo" } }];
+		const cols: MinimalColumnSpec[] = [
+			{ id: "todo", match: { kind: "tag", tag: "kanban/dev/todo" } },
+		];
 		const t = makeTask({ tags: ["#kanban/dev/todo"] });
 		expect(taskToBoardCard(t, cols).columnId).toBe("todo");
 	});
 
 	it("вложенный тег задачи — член колонки родительского тега (как в membership)", () => {
-		const cols: MinimalColumnSpec[] = [{ id: "todo", match: { kind: "tag", tag: "#kanban/dev/todo" } }];
+		const cols: MinimalColumnSpec[] = [
+			{ id: "todo", match: { kind: "tag", tag: "#kanban/dev/todo" } },
+		];
 		const t = makeTask({ tags: ["#kanban/dev/todo/urgent"] });
 		expect(taskToBoardCard(t, cols).columnId).toBe("todo");
 	});
 
 	it("сосед по префиксу без границы сегмента — НЕ член колонки", () => {
-		const cols: MinimalColumnSpec[] = [{ id: "todo", match: { kind: "tag", tag: "kanban/dev/todo" } }];
+		const cols: MinimalColumnSpec[] = [
+			{ id: "todo", match: { kind: "tag", tag: "kanban/dev/todo" } },
+		];
 		const t = makeTask({ tags: ["#kanban/dev/todoX"] });
 		expect(taskToBoardCard(t, cols).columnId).toBeNull();
 	});

@@ -188,9 +188,9 @@ describe("setField: конец интервала (5-й аргумент)", () =
 	});
 
 	it("timeEnd-строка при опущенном time: существующее время начала сохраняется", () => {
-		expect(setField("- [ ] T 📅 2026-01-05 14:30", "due", "2026-01-05", undefined, "16:00")).toBe(
-			"- [ ] T 📅 2026-01-05 14:30-16:00",
-		);
+		expect(
+			setField("- [ ] T 📅 2026-01-05 14:30", "due", "2026-01-05", undefined, "16:00"),
+		).toBe("- [ ] T 📅 2026-01-05 14:30-16:00");
 	});
 
 	it("оба опущены: замена даты сохраняет и время, и конец (drag по дням)", () => {
@@ -206,9 +206,9 @@ describe("setField: конец интервала (5-й аргумент)", () =
 	});
 
 	it("timeEnd = null снимает конец, время начала остаётся", () => {
-		expect(setField("- [ ] T 📅 2026-01-05 14:30-16:00", "due", "2026-01-05", undefined, null)).toBe(
-			"- [ ] T 📅 2026-01-05 14:30",
-		);
+		expect(
+			setField("- [ ] T 📅 2026-01-05 14:30-16:00", "due", "2026-01-05", undefined, null),
+		).toBe("- [ ] T 📅 2026-01-05 14:30");
 	});
 
 	it("time = null снимает и время, и конец (даже при timeEnd = undefined)", () => {
@@ -246,10 +246,7 @@ describe("setField: конец интервала (5-й аргумент)", () =
 
 	it("throw: мусорный timeEnd (писатель не мягче читателя)", () => {
 		for (const bad of ["24:00", "9:30", "14:60", "16:00:00", "1600", ""]) {
-			expect(
-				() => setField("- [ ] T", "due", "2026-01-01", "14:30", bad),
-				bad,
-			).toThrow();
+			expect(() => setField("- [ ] T", "due", "2026-01-01", "14:30", bad), bad).toThrow();
 		}
 	});
 
@@ -382,9 +379,7 @@ describe("setDescription", () => {
 		});
 
 		it("голый ведущий 📍 и ведущий 📍 с тегом — валидны", () => {
-			expect(setDescription("- [ ] Old 📅 2026-07-20", "📍")).toBe(
-				"- [ ] 📍 📅 2026-07-20",
-			);
+			expect(setDescription("- [ ] Old 📅 2026-07-20", "📍")).toBe("- [ ] 📍 📅 2026-07-20");
 			const out = setDescription("- [ ] Old 📅 2026-07-20", "📍 Встреча #next");
 			expect(out).toBe("- [ ] 📍 Встреча #next 📅 2026-07-20");
 			expect(parseTaskLine(out, ctx())!.location).toBeNull();
@@ -495,9 +490,7 @@ describe("регрессия: хвостовой \\r (CRLF) — вставки �
 		);
 	});
 	it("setField без block-id: поле не попадает после \\r", () => {
-		expect(setField("- [ ] Task\r", "due", "2026-01-05")).toBe(
-			"- [ ] Task 📅 2026-01-05\r",
-		);
+		expect(setField("- [ ] Task\r", "due", "2026-01-05")).toBe("- [ ] Task 📅 2026-01-05\r");
 	});
 	it("no-op правки CRLF-строки дословны", () => {
 		const line = "- [ ] Task 📅 2026-01-05 ^abc\r";
@@ -544,7 +537,11 @@ describe("setValueField 📍 location (свободный текст с проб
 	});
 
 	it("новое поле идёт в конец строки (после 🔁), рядом с правилом не склеивается", () => {
-		const out = setValueField("- [ ] Тр 🔁 every tuesday at 19:00", "location", "Спортзал на Ленина");
+		const out = setValueField(
+			"- [ ] Тр 🔁 every tuesday at 19:00",
+			"location",
+			"Спортзал на Ленина",
+		);
 		expect(out).toBe("- [ ] Тр 🔁 every tuesday at 19:00 📍 Спортзал на Ленина");
 		// повторный парс (как строку-событие) отдаёт и правило, и место раздельно
 		const t = parseTaskLine(out, { ...ctx(), container: "events" })!;
@@ -707,7 +704,10 @@ describe("addTag / removeTag", () => {
 		expect(removeTag(line, "#ghost")).toBe(line);
 	});
 	it("kanban-тег: перенос колонки = removeTag + addTag", () => {
-		const moved = addTag(removeTag("- [ ] Card #kanban/work/todo", "#kanban/work/todo"), "#kanban/work/doing");
+		const moved = addTag(
+			removeTag("- [ ] Card #kanban/work/todo", "#kanban/work/todo"),
+			"#kanban/work/doing",
+		);
 		expect(moved).toBe("- [ ] Card #kanban/work/doing");
 	});
 	it("валидация тега", () => {
@@ -754,7 +754,10 @@ const dateArb = fc
 	.map(([y, m, d]) => `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`);
 
 const idArb = fc
-	.tuple(fc.constantFrom(..."abcdef".split("")), fc.array(fc.constantFrom(..."abcdef0123-".split("")), { maxLength: 5 }))
+	.tuple(
+		fc.constantFrom(..."abcdef".split("")),
+		fc.array(fc.constantFrom(..."abcdef0123-".split("")), { maxLength: 5 }),
+	)
 	.map(([h, t]) => h + t.join(""));
 
 const genArb: fc.Arbitrary<GenLine> = fc.record({
@@ -762,8 +765,15 @@ const genArb: fc.Arbitrary<GenLine> = fc.record({
 	bullet: fc.constantFrom("-", "*", "+"),
 	status: fc.constantFrom(" ", "x", "X", "/", "-"),
 	desc: fc.array(wordArb, { minLength: 0, maxLength: 4 }).map((ws) => ws.join(" ")),
-	tag: fc.option(fc.constantFrom("#home", "#waiting", "#kanban/work/todo", "#next"), { nil: null }),
-	prio: fc.option(fc.constantFrom("highest", "high", "medium", "low", "lowest") as fc.Arbitrary<Exclude<Priority, "none">>, { nil: null }),
+	tag: fc.option(fc.constantFrom("#home", "#waiting", "#kanban/work/todo", "#next"), {
+		nil: null,
+	}),
+	prio: fc.option(
+		fc.constantFrom("highest", "high", "medium", "low", "lowest") as fc.Arbitrary<
+			Exclude<Priority, "none">
+		>,
+		{ nil: null },
+	),
 	rec: fc.option(
 		fc.constantFrom("every day", "every 2 weeks on mon, thu", "every month on the last day"),
 		{ nil: null },
@@ -777,9 +787,7 @@ const genArb: fc.Arbitrary<GenLine> = fc.record({
 	deps: fc.option(fc.array(idArb, { minLength: 1, maxLength: 3 }), { nil: null }),
 	// 🚫 — сорт-уник даты: канон записи setExcludedDates (иначе no-op ≠ тождество)
 	excl: fc.option(
-		fc
-			.array(dateArb, { minLength: 1, maxLength: 3 })
-			.map((ds) => [...new Set(ds)].sort()),
+		fc.array(dateArb, { minLength: 1, maxLength: 3 }).map((ds) => [...new Set(ds)].sort()),
 		{ nil: null },
 	),
 	block: fc.option(fc.constantFrom("^ab1", "^x-9"), { nil: null }),

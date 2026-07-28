@@ -202,6 +202,23 @@ describe("findByFrontmatterValue", () => {
 		expect(adapter.findByFrontmatterValue("gtd-card-of", "999")).toBeNull();
 	});
 
+	it("не смешивает YAML-типы; numeric legacy-коэрция разрешена только для gtd-card-of", () => {
+		const h = makeApp({
+			"boolean.md": { fm: { "gtd-board": true } },
+			"string.md": { fm: { "gtd-board": "true" } },
+			"number.md": { fm: { rank: 1 } },
+			"rank-string.md": { fm: { rank: "1" } },
+			"card.md": { fm: { "gtd-card-of": 42 } },
+		});
+		const adapter = new MetadataAdapter(h.plugin);
+
+		expect(adapter.findByFrontmatterValue("gtd-board", true)).toBe("boolean.md");
+		expect(adapter.findByFrontmatterValue("gtd-board", "true")).toBe("string.md");
+		expect(adapter.findByFrontmatterValue("rank", 1)).toBe("number.md");
+		expect(adapter.findByFrontmatterValue("rank", "1")).toBe("rank-string.md");
+		expect(adapter.findByFrontmatterValue("gtd-card-of", "42")).toBe("card.md");
+	});
+
 	it("повторные запросы не сканируют хранилище заново (O(1) после первого)", () => {
 		const h = makeApp({
 			"a.md": { fm: { "gtd-card-of": "t1" } },
@@ -221,7 +238,8 @@ describe("findByFrontmatterValue", () => {
 			"b.md": { fm: { "gtd-card-of": "t1" } },
 		});
 		const adapter = new MetadataAdapter(h.plugin);
-		const find = (v: unknown): string | null => adapter.findByFrontmatterValue("gtd-card-of", v);
+		const find = (v: unknown): string | null =>
+			adapter.findByFrontmatterValue("gtd-card-of", v);
 		expect(find("t1")).toBe("a.md");
 
 		// удаление наименьшего носителя → следующий
@@ -267,7 +285,11 @@ describe("pathsByFrontmatterValue", () => {
 			"plain.md": {},
 		});
 		const adapter = new MetadataAdapter(h.plugin);
-		expect(adapter.pathsByFrontmatterValue("gtd-board", true)).toEqual(["a.md", "m.md", "z.md"]);
+		expect(adapter.pathsByFrontmatterValue("gtd-board", true)).toEqual([
+			"a.md",
+			"m.md",
+			"z.md",
+		]);
 	});
 
 	it("нет носителей — пустой массив", () => {

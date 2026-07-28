@@ -27,7 +27,11 @@ export interface DayStatusDeps {
 	readFile: (path: string) => Promise<string | null>;
 	processFile: (path: string, transform: (content: string) => string | null) => Promise<boolean>;
 	ensureFile: (path: string) => Promise<void>;
-	processFrontmatter: (path: string, fn: (fm: Record<string, unknown>) => void) => Promise<void>;
+	/** false означает, что файл исчез до правки; это не должен быть тихий успех. */
+	processFrontmatter: (
+		path: string,
+		fn: (fm: Record<string, unknown>) => void,
+	) => Promise<boolean>;
 	/** Путь для создания файла статусов, если его ещё нет (settings.dayStatusFile). */
 	defaultFilePath: () => string;
 	/** Подписка на изменения vault/metadata — колбэк должен звать refresh. */
@@ -68,6 +72,16 @@ export interface DayStatusPort {
 	removeStatusDef: (name: string) => Promise<void>;
 }
 
+/** Операция записи не достигла файла (обычно файл удалили между discovery и write).
+ * Методы порта возвращают rejected Promise, чтобы модал/обработчик мог показать
+ * пользователю ошибку вместо ложного ощущения сохранения. */
+export class DayStatusWriteError extends Error {
+	constructor(path: string) {
+		super(`Day status file is unavailable for writing: ${path}`);
+		this.name = "DayStatusWriteError";
+	}
+}
+
 /** Привести значение frontmatter.statuses к простой карте имя→строка-цвет. */
 function coerceStatusMap(raw: unknown): Record<string, string> {
 	const out: Record<string, string> = {};
@@ -83,6 +97,9 @@ export class DayStatusService implements DayStatusPort {
 	private readonly model$: Writable<DayStatusModel> = writable(EMPTY_DAY_STATUS_MODEL);
 	private current: DayStatusModel = EMPTY_DAY_STATUS_MODEL;
 	private path: string | null = null;
+	/** Последний начатый refresh. Медленное cachedRead старого файла не вправе
+	 * перезаписать результат более нового vault/metadata события. */
+	private refreshGeneration = 0;
 
 	constructor(private readonly deps: DayStatusDeps) {}
 
@@ -95,7 +112,11 @@ export class DayStatusService implements DayStatusPort {
 	 *  до резолва, он навсегда закэшировал бы пустой индекс (события 'changed'
 	 *  правят его лишь инкрементально, 'resolved' — не перестраивает). */
 	start(): void {
-		this.deps.onVaultChange(() => void this.refresh());
+		this.deps.onVaultChange(() => {
+			void this.refresh().catch((error) =>
+				console.error("GTD Flow: failed to refresh day-status model", error),
+			);
+		});
 	}
 
 	/** Текущий путь файла статусов (для gate событий в main.ts). */
@@ -116,14 +137,18 @@ export class DayStatusService implements DayStatusPort {
 	}
 
 	async refresh(): Promise<void> {
+		const generation = ++this.refreshGeneration;
 		const path = this.deps.discoverFile();
-		this.path = path;
 		if (path === null) {
+			if (generation !== this.refreshGeneration) return;
+			this.path = null;
 			this.set(EMPTY_DAY_STATUS_MODEL);
 			return;
 		}
 		const fm = this.deps.readFrontmatter(path);
 		const content = await this.deps.readFile(path);
+		if (generation !== this.refreshGeneration) return;
+		this.path = path;
 		this.set(buildDayStatusModel(fm?.["statuses"], content ?? ""));
 	}
 
@@ -134,26 +159,30 @@ export class DayStatusService implements DayStatusPort {
 
 	async setDay(date: IsoDate, status: string): Promise<void> {
 		const path = await this.ensureTargetFile();
-		await this.deps.processFile(path, (c) => withEditedBody(c, (b) => setSingleDayBody(b, date, status)));
+		await this.writeFile(path, (c) =>
+			withEditedBody(c, (b) => setSingleDayBody(b, date, status)),
+		);
 		await this.refresh();
 	}
 
 	async clearDay(date: IsoDate): Promise<void> {
 		const path = this.deps.discoverFile();
 		if (path === null) return;
-		await this.deps.processFile(path, (c) => withEditedBody(c, (b) => clearSingleDayBody(b, date)));
+		await this.writeFile(path, (c) => withEditedBody(c, (b) => clearSingleDayBody(b, date)));
 		await this.refresh();
 	}
 
 	async setRange(from: IsoDate, to: IsoDate, status: string): Promise<void> {
 		const path = await this.ensureTargetFile();
-		await this.deps.processFile(path, (c) => withEditedBody(c, (b) => setRangeBody(b, from, to, status)));
+		await this.writeFile(path, (c) =>
+			withEditedBody(c, (b) => setRangeBody(b, from, to, status)),
+		);
 		await this.refresh();
 	}
 
 	async addRecurring(ruleText: string, status: string): Promise<void> {
 		const path = await this.ensureTargetFile();
-		await this.deps.processFile(path, (c) =>
+		await this.writeFile(path, (c) =>
 			withEditedBody(c, (b) => setRecurringBody(b, ruleText, status)),
 		);
 		await this.refresh();
@@ -163,7 +192,7 @@ export class DayStatusService implements DayStatusPort {
 		const key = name.trim();
 		if (key === "") return;
 		const path = await this.ensureTargetFile();
-		await this.deps.processFrontmatter(path, (fm) => {
+		await this.writeFrontmatter(path, (fm) => {
 			const statuses = coerceStatusMap(fm["statuses"]);
 			statuses[key] = color;
 			fm["statuses"] = statuses;
@@ -175,7 +204,7 @@ export class DayStatusService implements DayStatusPort {
 		const key = name.trim();
 		if (key === "") return;
 		const path = await this.ensureTargetFile();
-		await this.deps.processFrontmatter(path, (fm) => {
+		await this.writeFrontmatter(path, (fm) => {
 			const statuses = coerceStatusMap(fm["statuses"]);
 			delete statuses[key];
 			fm["statuses"] = statuses;
@@ -188,19 +217,42 @@ export class DayStatusService implements DayStatusPort {
 		this.model$.set(model);
 	}
 
+	/** false от VaultAdapter бывает при файле, удалённом между discovery и
+	 * process(). Отличаем это от обычного no-op: callback был вызван, но текст
+	 * уже совпадал с требуемым состоянием. */
+	private async writeFile(
+		path: string,
+		transform: (content: string) => string | null,
+	): Promise<void> {
+		let transformed = false;
+		await this.deps.processFile(path, (content) => {
+			transformed = true;
+			return transform(content);
+		});
+		if (!transformed) throw new DayStatusWriteError(path);
+	}
+
+	private async writeFrontmatter(
+		path: string,
+		fn: (fm: Record<string, unknown>) => void,
+	): Promise<void> {
+		const wrote = await this.deps.processFrontmatter(path, fn);
+		if (!wrote) throw new DayStatusWriteError(path);
+	}
+
 	/** Гарантирует файл статусов; создаёт со стартовой палитрой, если его нет. */
 	private async ensureTargetFile(): Promise<string> {
 		const existing = this.deps.discoverFile();
 		if (existing !== null) return existing;
 		const path = this.deps.defaultFilePath();
 		await this.deps.ensureFile(path);
-		await this.deps.processFrontmatter(path, (fm) => {
+		await this.writeFrontmatter(path, (fm) => {
 			fm["gtd-day-status"] = true;
 			if (fm["statuses"] === undefined) fm["statuses"] = { ...STARTER_STATUSES };
 		});
 		// Засеять стартовое правило (выходные) ТОЛЬКО в новый файл и только если
 		// тело пусто — существующий файл сюда не попадает (existing === null выше).
-		await this.deps.processFile(path, (c) =>
+		await this.writeFile(path, (c) =>
 			withEditedBody(c, (b) =>
 				b.trim() === "" ? setRecurringBody(b, STARTER_RULE, STARTER_RULE_STATUS) : b,
 			),

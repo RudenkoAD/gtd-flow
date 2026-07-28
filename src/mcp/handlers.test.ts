@@ -83,7 +83,11 @@ describe("MCP handlers", () => {
 
 	it("list_tasks project: члены проекта, include_done", async () => {
 		const s = await session(root);
-		const open = listTasks(s, { namespace: "Жизнь", view: "project", project: "Ремонт кухни" }) as any;
+		const open = listTasks(s, {
+			namespace: "Жизнь",
+			view: "project",
+			project: "Ремонт кухни",
+		}) as any;
 		expect(open.tasks.map((t: any) => t.description)).toEqual(["Выбрать плитку"]);
 		const withDone = listTasks(s, {
 			namespace: "Жизнь",
@@ -371,7 +375,11 @@ describe("MCP handlers", () => {
 
 	it("list_events: разворачивает серии и одноразовые в диапазоне", async () => {
 		const s = await session(root);
-		const res = listEvents(s, { from: "2026-07-20", to: "2026-07-31", namespace: "Жизнь" }) as any;
+		const res = listEvents(s, {
+			from: "2026-07-20",
+			to: "2026-07-31",
+			namespace: "Жизнь",
+		}) as any;
 		// одноразовое «День рождения» на своей дате
 		const bday = res.events.find((e: any) => e.title === "День рождения");
 		expect(bday).toBeDefined();
@@ -401,7 +409,11 @@ describe("MCP handlers", () => {
 		expect(content).toContain("- [ ] Встреча 📅 2026-07-28 15:00-16:00 📍 Офис");
 
 		const s2 = await session(root);
-		const ev = listEvents(s2, { from: "2026-07-28", to: "2026-07-28", namespace: "Жизнь" }) as any;
+		const ev = listEvents(s2, {
+			from: "2026-07-28",
+			to: "2026-07-28",
+			namespace: "Жизнь",
+		}) as any;
 		const meeting = ev.events.find((e: any) => e.title === "Встреча");
 		expect(meeting.time).toBe("15:00");
 		expect(meeting.timeEnd).toBe("16:00");
@@ -471,7 +483,12 @@ describe("MCP handlers", () => {
 	it("add_event: date и rule вместе → ошибка (двусмысленно)", async () => {
 		const s = await session(root);
 		await expect(
-			addEvent(s, { name: "X", namespace: "Работа", date: "2026-07-28", rule: "every tuesday" }),
+			addEvent(s, {
+				name: "X",
+				namespace: "Работа",
+				date: "2026-07-28",
+				rule: "every tuesday",
+			}),
 		).rejects.toThrow(/mutually exclusive/);
 	});
 

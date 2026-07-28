@@ -15,8 +15,8 @@ export class InboxView extends GtdView {
 	// getViewType() вызывается конструктором View до присвоения this.meta (см. GtdView).
 	protected static override staticMeta = VIEW_META.inbox;
 
-	protected override component(): Component<any> {
-		return Inbox as unknown as Component<any>;
+	protected override component(): Component<Record<string, unknown>> {
+		return Inbox as unknown as Component<Record<string, unknown>>;
 	}
 
 	protected override props(): Record<string, unknown> {
@@ -29,6 +29,7 @@ export class InboxView extends GtdView {
 			taskStore: plugin.taskStore,
 			dispatcher: plugin.dispatcher,
 			settings: plugin.settings,
+			settingsRevision: plugin.settingsRevision.store,
 			app: plugin.app,
 			dnd: plugin.dnd ?? null,
 			menuPorts: taskMenuPortsFromPlugin(plugin),

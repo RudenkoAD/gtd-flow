@@ -9,6 +9,7 @@
  */
 import { Modal, Notice, type App } from "obsidian";
 import { createDemoVault, demoVaultNotice, type DemoVaultPort } from "./demoVault";
+import { reportAsync, runVoidAction } from "../views/common/runAction";
 
 export interface WelcomeDeps {
 	/** Порт записи демо-файлов (VaultAdapter плагина). */
@@ -20,6 +21,9 @@ export interface WelcomeDeps {
 }
 
 export class WelcomeModal extends Modal {
+	/** One completion write is shared by the button path and onClose. */
+	private onboarded: Promise<boolean> | null = null;
+
 	constructor(
 		app: App,
 		private readonly deps: WelcomeDeps,
@@ -47,28 +51,35 @@ export class WelcomeModal extends Modal {
 		const create = row.createEl("button", { text: "Создать демо-файлы", cls: "mod-cta" });
 		create.addEventListener("click", () => {
 			this.close();
-			void this.onCreateDemo();
+			reportAsync("не удалось создать демо-файлы", () => this.onCreateDemo());
 		});
 
 		const blank = row.createEl("button", { text: "Начать с чистого листа" });
 		blank.addEventListener("click", () => {
 			this.close();
-			void this.deps.markOnboarded();
 		});
 	}
 
 	override onClose(): void {
 		// Esc/клик по фону = «онбординг пройден»: иначе диалог всплывал бы на
 		// каждом запуске, пока пользователь не нажмёт кнопку. markOnboarded
-		// идемпотентен — после веток кнопок повторный вызов безвреден.
-		void this.deps.markOnboarded();
+		// идемпотентен — кнопка «Создать» ожидает тот же Promise до записи демо.
+		reportAsync("не удалось завершить онбординг", () => this.markOnboarded());
 		this.contentEl.empty();
+	}
+
+	/** Completing onboarding must precede demo writes, yet close remains idempotent. */
+	private markOnboarded(): Promise<boolean> {
+		this.onboarded ??= runVoidAction("не удалось завершить онбординг", () =>
+			this.deps.markOnboarded(),
+		);
+		return this.onboarded;
 	}
 
 	private async onCreateDemo(): Promise<void> {
 		// онбординг помечаем пройденным ДО записи: диалог больше не всплывёт,
 		// даже если создание частично не удастся (флаг в data.json надёжнее файлов)
-		await this.deps.markOnboarded();
+		if (!(await this.markOnboarded())) return;
 		try {
 			const report = await createDemoVault(this.deps.vault);
 			new Notice(demoVaultNotice(report));
@@ -76,6 +87,10 @@ export class WelcomeModal extends Modal {
 			new Notice(`GTD Flow: не удалось создать демо-файлы: ${String(e)}`);
 			return;
 		}
-		await this.deps.openWorkspace();
+		try {
+			await this.deps.openWorkspace();
+		} catch (e) {
+			new Notice(`GTD Flow: не удалось открыть рабочее пространство: ${String(e)}`);
+		}
 	}
 }

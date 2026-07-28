@@ -1,4 +1,4 @@
-import { ItemView, WorkspaceLeaf, type ViewStateResult } from "obsidian";
+import { ItemView, type WorkspaceLeaf, type ViewStateResult } from "obsidian";
 import { mount, unmount, type Component } from "svelte";
 import { writable, type Writable } from "svelte/store";
 import { normalizeActiveNamespace } from "../core/namespace/namespace";
@@ -138,8 +138,8 @@ export class GtdView extends ItemView {
 	}
 
 	/** Компонент вида; пока у всех — заглушка, виды подменяют по мере реализации этапов. */
-	protected component(): Component<any> {
-		return Placeholder as unknown as Component<any>;
+	protected component(): Component<Record<string, unknown>> {
+		return Placeholder as unknown as Component<Record<string, unknown>>;
 	}
 
 	protected props(): Record<string, unknown> {

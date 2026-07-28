@@ -50,7 +50,10 @@ describe("snapshotListItems", () => {
 
 	it("каждому пункту достаётся ближайший заголовок выше", () => {
 		const hs = [heading(0, "A"), heading(5, "B")];
-		const [a, b, c] = snapshotListItems([item(3, 3, "x"), item(6, 6, "x"), item(5, 5, "x")], hs);
+		const [a, b, c] = snapshotListItems(
+			[item(3, 3, "x"), item(6, 6, "x"), item(5, 5, "x")],
+			hs,
+		);
 		expect(a?.heading).toBe("A");
 		expect(b?.heading).toBe("B");
 		expect(c?.heading).toBe("B"); // граница включительно
@@ -76,9 +79,18 @@ describe("nearestHeadingAbove", () => {
 
 describe("fileContextFromFrontmatter", () => {
 	it("без frontmatter — plain", () => {
-		expect(fileContextFromFrontmatter("a.md", undefined)).toEqual({ path: "a.md", container: "plain" });
-		expect(fileContextFromFrontmatter("a.md", null)).toEqual({ path: "a.md", container: "plain" });
-		expect(fileContextFromFrontmatter("a.md", {})).toEqual({ path: "a.md", container: "plain" });
+		expect(fileContextFromFrontmatter("a.md", undefined)).toEqual({
+			path: "a.md",
+			container: "plain",
+		});
+		expect(fileContextFromFrontmatter("a.md", null)).toEqual({
+			path: "a.md",
+			container: "plain",
+		});
+		expect(fileContextFromFrontmatter("a.md", {})).toEqual({
+			path: "a.md",
+			container: "plain",
+		});
 	});
 
 	it("gtd-board: true — board; false/мусор — plain", () => {
@@ -102,7 +114,8 @@ describe("fileContextFromFrontmatter", () => {
 
 	it("неизвестный статус — fail-closed on-hold, пустой — как отсутствие", () => {
 		expect(
-			fileContextFromFrontmatter("p.md", { "gtd-project": true, status: "чепуха" }).projectStatus,
+			fileContextFromFrontmatter("p.md", { "gtd-project": true, status: "чепуха" })
+				.projectStatus,
 		).toBe("on-hold");
 		expect(
 			fileContextFromFrontmatter("p.md", { "gtd-project": true, status: "  " }).projectStatus,
@@ -110,10 +123,17 @@ describe("fileContextFromFrontmatter", () => {
 	});
 
 	it("gtd-card-of с непустым значением — card; пустое — нет", () => {
-		expect(fileContextFromFrontmatter("c.md", { "gtd-card-of": "abc1" }).container).toBe("card");
+		expect(fileContextFromFrontmatter("c.md", { "gtd-card-of": "abc1" }).container).toBe(
+			"card",
+		);
 		expect(fileContextFromFrontmatter("c.md", { "gtd-card-of": 42 }).container).toBe("card");
 		expect(fileContextFromFrontmatter("c.md", { "gtd-card-of": "" }).container).toBe("plain");
 		expect(fileContextFromFrontmatter("c.md", { "gtd-card-of": null }).container).toBe("plain");
+		// Truthy YAML objects/booleans must not accidentally create a card.
+		expect(fileContextFromFrontmatter("c.md", { "gtd-card-of": true }).container).toBe("plain");
+		expect(fileContextFromFrontmatter("c.md", { "gtd-card-of": ["abc1"] }).container).toBe(
+			"plain",
+		);
 	});
 
 	it("gtd-events: true — events; false/мусор — plain", () => {
@@ -123,7 +143,10 @@ describe("fileContextFromFrontmatter", () => {
 	});
 
 	it("gtd-external + gtd-events — контейнер ОСТАЁТСЯ events (зеркало в пайплайне событий), external=true", () => {
-		const ctx = fileContextFromFrontmatter("ext.md", { "gtd-events": true, "gtd-external": true });
+		const ctx = fileContextFromFrontmatter("ext.md", {
+			"gtd-events": true,
+			"gtd-external": true,
+		});
 		// зеркало внешнего календаря подхватывается пайплайном событий БЕЗ изменений
 		expect(ctx.container).toBe("events");
 		expect(ctx.external).toBe(true);
@@ -132,14 +155,24 @@ describe("fileContextFromFrontmatter", () => {
 	it("gtd-external — только read-only маркер; false/мусор → ключ external опущен", () => {
 		expect(fileContextFromFrontmatter("x.md", { "gtd-external": true }).external).toBe(true);
 		expect(fileContextFromFrontmatter("x.md", {})).not.toHaveProperty("external");
-		expect(fileContextFromFrontmatter("x.md", { "gtd-external": false })).not.toHaveProperty("external");
-		expect(fileContextFromFrontmatter("x.md", { "gtd-external": "yes" })).not.toHaveProperty("external");
+		expect(fileContextFromFrontmatter("x.md", { "gtd-external": false })).not.toHaveProperty(
+			"external",
+		);
+		expect(fileContextFromFrontmatter("x.md", { "gtd-external": "yes" })).not.toHaveProperty(
+			"external",
+		);
 	});
 
 	it("gtd-archive: true — archive; false/мусор — plain", () => {
-		expect(fileContextFromFrontmatter("a.md", { "gtd-archive": true }).container).toBe("archive");
-		expect(fileContextFromFrontmatter("a.md", { "gtd-archive": false }).container).toBe("plain");
-		expect(fileContextFromFrontmatter("a.md", { "gtd-archive": "yes" }).container).toBe("plain");
+		expect(fileContextFromFrontmatter("a.md", { "gtd-archive": true }).container).toBe(
+			"archive",
+		);
+		expect(fileContextFromFrontmatter("a.md", { "gtd-archive": false }).container).toBe(
+			"plain",
+		);
+		expect(fileContextFromFrontmatter("a.md", { "gtd-archive": "yes" }).container).toBe(
+			"plain",
+		);
 	});
 
 	it("gtd-inbox: true — inbox; false/мусор — plain", () => {
@@ -163,11 +196,15 @@ describe("fileContextFromFrontmatter", () => {
 			fileContextFromFrontmatter("f.md", { ...all, "gtd-recurring": false }).container,
 		).toBe("events");
 		expect(
-			fileContextFromFrontmatter("f.md", { ...all, "gtd-recurring": false, "gtd-events": false })
-				.container,
+			fileContextFromFrontmatter("f.md", {
+				...all,
+				"gtd-recurring": false,
+				"gtd-events": false,
+			}).container,
 		).toBe("card");
 		expect(
-			fileContextFromFrontmatter("f.md", { "gtd-project": true, "gtd-board": true }).container,
+			fileContextFromFrontmatter("f.md", { "gtd-project": true, "gtd-board": true })
+				.container,
 		).toBe("project");
 		// archive и inbox стоят НИЖЕ содержательных флагов: доска важнее «архива»/«входящих»
 		expect(
@@ -179,7 +216,8 @@ describe("fileContextFromFrontmatter", () => {
 		).toBe("board");
 		// archive выигрывает у inbox при одновременном наличии
 		expect(
-			fileContextFromFrontmatter("f.md", { "gtd-archive": true, "gtd-inbox": true }).container,
+			fileContextFromFrontmatter("f.md", { "gtd-archive": true, "gtd-inbox": true })
+				.container,
 		).toBe("archive");
 	});
 });
@@ -189,9 +227,9 @@ describe("fileContextFromFrontmatter — gtd-namespace (override простра�
 		expect(fileContextFromFrontmatter("x.md", { "gtd-namespace": "Работа" }).nsOverride).toBe(
 			"Работа",
 		);
-		expect(fileContextFromFrontmatter("x.md", { "gtd-namespace": "  Жизнь  " }).nsOverride).toBe(
-			"Жизнь",
-		);
+		expect(
+			fileContextFromFrontmatter("x.md", { "gtd-namespace": "  Жизнь  " }).nsOverride,
+		).toBe("Жизнь");
 	});
 
 	it("отсутствие / пусто / пробелы / не-строка → ключ nsOverride опущен", () => {

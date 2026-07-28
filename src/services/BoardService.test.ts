@@ -7,6 +7,7 @@ import {
 	BoardService,
 	insertIntoColumnOrder,
 	normalizeOrder,
+	secureBoardIdSuffix,
 	slugifyColumnName,
 	uniqueColId,
 } from "./BoardService";
@@ -20,6 +21,8 @@ import type { IntentDispatcher, IntentResult } from "./WritebackService";
 class FakeDispatcher implements IntentDispatcher {
 	intents: unknown[] = [];
 	result: IntentResult = { ok: true };
+	/** Очередь ответов для компенсационных многошаговых операций. */
+	results: IntentResult[] = [];
 	onDispatch: (() => void) | null = null;
 
 	constructor(private readonly queue: string[]) {}
@@ -28,7 +31,7 @@ class FakeDispatcher implements IntentDispatcher {
 		this.intents.push(intent);
 		this.queue.push("dispatch");
 		this.onDispatch?.();
-		return Promise.resolve(this.result);
+		return Promise.resolve(this.results.shift() ?? this.result);
 	}
 }
 
@@ -42,10 +45,25 @@ interface Harness {
 	containers: Set<string>;
 	/** Пути, для которых звался ensureFile. */
 	ensured: string[];
+	/** Управляемый отказ записи frontmatter (проверяет rollback moveCard). */
+	patchFailures: { remaining: number };
 	service: BoardService;
 }
 
-function makeHarness(nsFilter?: () => NamespaceFilter): Harness {
+function sequentialBoardIdSuffix(): () => string {
+	let sequence = 0;
+	return () => `test${++sequence}`;
+}
+
+function boardIdSuffixes(...suffixes: string[]): () => string {
+	let index = 0;
+	return () => suffixes[Math.min(index++, suffixes.length - 1)]!;
+}
+
+function makeHarness(
+	nsFilter?: () => NamespaceFilter,
+	genBoardIdSuffix: () => string = sequentialBoardIdSuffix(),
+): Harness {
 	const queue: string[] = [];
 	const feed = new FakeFeed("2026-07-15");
 	const dispatcher = new FakeDispatcher(queue);
@@ -53,12 +71,17 @@ function makeHarness(nsFilter?: () => NamespaceFilter): Harness {
 	const patched: Array<{ path: string; fm: Record<string, unknown> }> = [];
 	const containers = new Set<string>();
 	const ensured: string[] = [];
+	const patchFailures = { remaining: 0 };
 	const service = new BoardService({
 		feed,
 		dispatcher,
 		readFrontmatter: (path) => frontmatters.get(path) ?? null,
 		patchFrontmatter: async (path, fn) => {
 			queue.push("patch");
+			if (patchFailures.remaining > 0) {
+				patchFailures.remaining--;
+				throw new Error("disk-full");
+			}
 			// живой frontmatter: мутация как в processFrontMatter
 			const fm = frontmatters.get(path) ?? {};
 			fn(fm);
@@ -70,9 +93,20 @@ function makeHarness(nsFilter?: () => NamespaceFilter): Harness {
 			ensured.push(path);
 		},
 		containerPaths: () => [...containers],
+		genBoardIdSuffix,
 		...(nsFilter !== undefined ? { namespaceFilter: nsFilter } : {}),
 	});
-	return { feed, dispatcher, queue, frontmatters, patched, containers, ensured, service };
+	return {
+		feed,
+		dispatcher,
+		queue,
+		frontmatters,
+		patched,
+		containers,
+		ensured,
+		patchFailures,
+		service,
+	};
 }
 
 const TAG_BOARD: BoardDef = {
@@ -90,6 +124,23 @@ const TAG_BOARD: BoardDef = {
 function boardTask(over: Partial<Task> & { filePath: string }): Task {
 	return makeTask(over);
 }
+
+describe("secureBoardIdSuffix", () => {
+	it("uses getRandomValues to produce a tag-safe UUID v4 when randomUUID is unavailable", () => {
+		const suffix = secureBoardIdSuffix({
+			getRandomValues: (bytes) => {
+				for (let i = 0; i < bytes.length; i++) bytes[i] = i;
+				return bytes;
+			},
+		});
+		expect(suffix).toBe("00010203-0405-4607-8809-0a0b0c0d0e0f");
+		expect(suffix).toMatch(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
+	});
+
+	it("does not fall back to Math.random when secure Web Crypto is unavailable", () => {
+		expect(() => secureBoardIdSuffix({})).toThrow("secure-board-id-generator-unavailable");
+	});
+});
 
 // ---------------------------------------------------------------------------
 // discoverBoards
@@ -234,9 +285,13 @@ describe("BoardService.discoverBoards: фильтр по пространств�
 		const h = makeHarness(() => ({ active, defs: DEFS }));
 		seedTwoBoards(h);
 
-		expect(h.service.discoverBoards().boards.map((b) => b.path)).toEqual(["Work/Доски/Спринт.md"]);
+		expect(h.service.discoverBoards().boards.map((b) => b.path)).toEqual([
+			"Work/Доски/Спринт.md",
+		]);
 		active = "Жизнь";
-		expect(h.service.discoverBoards().boards.map((b) => b.path)).toEqual(["Личное/Доски/Дом.md"]);
+		expect(h.service.discoverBoards().boards.map((b) => b.path)).toEqual([
+			"Личное/Доски/Дом.md",
+		]);
 	});
 
 	it("пустой defs ⇒ фильтр прозрачен (обе доски)", () => {
@@ -249,9 +304,9 @@ describe("BoardService.discoverBoards: фильтр по пространств�
 		// инжектированный фильтр — «Работа», но вид передаёт локальный «Жизнь»
 		const h = makeHarness(() => ({ active: "Работа", defs: DEFS }));
 		seedTwoBoards(h);
-		expect(h.service.discoverBoards({ active: "Жизнь", defs: DEFS }).boards.map((b) => b.path)).toEqual([
-			"Личное/Доски/Дом.md",
-		]);
+		expect(
+			h.service.discoverBoards({ active: "Жизнь", defs: DEFS }).boards.map((b) => b.path),
+		).toEqual(["Личное/Доски/Дом.md"]);
 	});
 
 	it("gtd-namespace override уводит доску в другое пространство", () => {
@@ -264,18 +319,28 @@ describe("BoardService.discoverBoards: фильтр по пространств�
 			columns: [{ id: "todo", match: "#kanban/personal/todo" }],
 		});
 		// физически в Work/, но override → видна в «Жизни»
-		expect(h.service.discoverBoards().boards.map((b) => b.path)).toEqual(["Work/Доски/Личная.md"]);
+		expect(h.service.discoverBoards().boards.map((b) => b.path)).toEqual([
+			"Work/Доски/Личная.md",
+		]);
 	});
 
 	it("createBoard видит id ВСЕХ пространств (уникальность #kanban/<id> глобальна)", async () => {
-		const h = makeHarness(() => ({ active: "Работа", defs: DEFS }));
-		seedTwoBoards(h); // есть доска id 'home' в «Жизни», активна «Работа»
-		// создаём доску с именем, чей slug = 'home' → id должен уникализироваться
+		const h = makeHarness(
+			() => ({ active: "Работа", defs: DEFS }),
+			boardIdSuffixes("taken", "fresh"),
+		);
+		seedTwoBoards(h);
+		// Есть доска в «Жизни» с ровно тем id, который первым предложил генератор.
+		// createBoard обязан увидеть её несмотря на active namespace «Работа».
+		h.frontmatters.set("Личное/Доски/Дом.md", {
+			"gtd-board": true,
+			id: "home-taken",
+			columns: [{ id: "todo", match: "#kanban/home-taken/todo" }],
+		});
 		const res = await h.service.createBoard("Work/Доски/home.md", "home");
 		expect(res.ok).toBe(true);
 		const created = h.frontmatters.get("Work/Доски/home.md")!;
-		// 'home' занят в другом пространстве → суффикс, иначе карточки слились бы по тегу
-		expect(created["id"]).toBe("home-2");
+		expect(created["id"]).toBe("home-fresh");
 	});
 });
 
@@ -290,9 +355,24 @@ describe("BoardService.boardModel", () => {
 	});
 
 	it("раскладывает активные задачи по колонкам и применяет order", () => {
-		const a = boardTask({ filePath: "x.md", taskId: "a", key: "id:a", tags: ["#kanban/dev/todo"] });
-		const b = boardTask({ filePath: "x.md", taskId: "b", key: "id:b", tags: ["#kanban/dev/todo"] });
-		const c = boardTask({ filePath: "x.md", taskId: "c", key: "id:c", tags: ["#kanban/dev/doing"] });
+		const a = boardTask({
+			filePath: "x.md",
+			taskId: "a",
+			key: "id:a",
+			tags: ["#kanban/dev/todo"],
+		});
+		const b = boardTask({
+			filePath: "x.md",
+			taskId: "b",
+			key: "id:b",
+			tags: ["#kanban/dev/todo"],
+		});
+		const c = boardTask({
+			filePath: "x.md",
+			taskId: "c",
+			key: "id:c",
+			tags: ["#kanban/dev/doing"],
+		});
 		const off = boardTask({ filePath: "x.md", key: "off", tags: [] }); // без тега — не на доске
 		h.feed.replaceFile("x.md", [a, b, c, off]);
 
@@ -318,9 +398,19 @@ describe("BoardService.boardModel", () => {
 
 	it("TICKLER (🛫 в будущем) спрятан; задачи прочих статусов видны", () => {
 		h.feed.replaceFile("x.md", [
-			boardTask({ filePath: "x.md", key: "t", start: "2026-08-01", tags: ["#kanban/dev/todo"] }),
+			boardTask({
+				filePath: "x.md",
+				key: "t",
+				start: "2026-08-01",
+				tags: ["#kanban/dev/todo"],
+			}),
 			boardTask({ filePath: "x.md", key: "ok", tags: ["#kanban/dev/todo"] }),
-			boardTask({ filePath: "x.md", key: "done", statusChar: "x", tags: ["#kanban/dev/todo"] }),
+			boardTask({
+				filePath: "x.md",
+				key: "done",
+				statusChar: "x",
+				tags: ["#kanban/dev/todo"],
+			}),
 		]);
 		const model = h.service.boardModel("Board.md", TAG_BOARD);
 		expect(model.columns[0]!.tasks.map((t) => t.key).sort()).toEqual(["done", "ok"]);
@@ -338,7 +428,12 @@ describe("BoardService.boardModel", () => {
 	it("чужая задача из другого файла без тега колонки не протекает на доску", () => {
 		// живой баг: «пометил в календаре сделанной → появилась на чужой доске»
 		h.feed.replaceFile("b.md", [
-			boardTask({ filePath: "b.md", key: "own", container: "board", tags: ["#kanban/dev/todo"] }),
+			boardTask({
+				filePath: "b.md",
+				key: "own",
+				container: "board",
+				tags: ["#kanban/dev/todo"],
+			}),
 		]);
 		h.feed.replaceFile("other.md", [
 			boardTask({ filePath: "other.md", key: "foreign", statusChar: "x" }),
@@ -460,7 +555,12 @@ describe("BoardService.moveCard", () => {
 
 	it("drop в ту же колонку = только перестановка порядка, без intent", async () => {
 		const mk = (id: string): Task =>
-			boardTask({ filePath: "x.md", taskId: id, key: "id:" + id, tags: ["#kanban/dev/todo"] });
+			boardTask({
+				filePath: "x.md",
+				taskId: id,
+				key: "id:" + id,
+				tags: ["#kanban/dev/todo"],
+			});
 		h.feed.replaceFile("x.md", [mk("a"), mk("b"), mk("c")]);
 		const def: BoardDef = { ...TAG_BOARD, order: { todo: ["a", "b", "c"] } };
 
@@ -531,6 +631,157 @@ describe("BoardService.moveCard", () => {
 		});
 		expect(h.queue).toEqual([]);
 	});
+
+	it("отказ записи order компенсирует уже перенесённый тег колонки", async () => {
+		h.feed.replaceFile("x.md", [
+			boardTask({ filePath: "x.md", taskId: "a", key: "id:a", tags: ["#kanban/dev/todo"] }),
+		]);
+		h.patchFailures.remaining = 1;
+
+		const res = await h.service.moveCard("Board.md", TAG_BOARD, "id:a", "doing", 0);
+
+		expect(res.ok).toBe(false);
+		if (!res.ok) expect(res.reason).toContain("order-write-failed");
+		expect(h.dispatcher.intents).toEqual([
+			{
+				type: "move-column",
+				key: "id:a",
+				fromTag: "#kanban/dev/todo",
+				toTag: "#kanban/dev/doing",
+				index: 0,
+			},
+			{
+				type: "move-column",
+				key: "id:a",
+				fromTag: "#kanban/dev/doing",
+				toTag: "#kanban/dev/todo",
+			},
+		]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// moveCardFromTickler — составная операция с компенсацией
+// ---------------------------------------------------------------------------
+
+describe("BoardService.moveCardFromTickler", () => {
+	let h: Harness;
+	beforeEach(() => {
+		h = makeHarness();
+	});
+
+	it("снимает 🛫 и переносит тег/порядок как одну логическую операцию", async () => {
+		h.feed.replaceFile("x.md", [
+			boardTask({
+				filePath: "x.md",
+				taskId: "a",
+				key: "id:a",
+				start: "2026-07-20",
+				startTime: "09:30",
+				startTimeEnd: "10:00",
+				tags: ["#kanban/dev/todo"],
+			}),
+		]);
+
+		const res = await h.service.moveCardFromTickler("Board.md", TAG_BOARD, "id:a", "doing", 0);
+
+		expect(res).toEqual({ ok: true });
+		expect(h.dispatcher.intents).toEqual([
+			{ type: "set-date", key: "id:a", field: "start", date: null },
+			{
+				type: "move-column",
+				key: "id:a",
+				fromTag: "#kanban/dev/todo",
+				toTag: "#kanban/dev/doing",
+				index: 0,
+			},
+		]);
+		expect(h.frontmatters.get("Board.md")!["order"]).toEqual({ doing: ["a"] });
+	});
+
+	it("если перенос колонки отклонён, восстанавливает полный 🛫 вместо скрытой полузадачи", async () => {
+		h.feed.replaceFile("x.md", [
+			boardTask({
+				filePath: "x.md",
+				taskId: "a",
+				key: "id:a",
+				start: "2026-07-20",
+				startTime: "09:30",
+				startTimeEnd: "10:00",
+				tags: ["#kanban/dev/todo"],
+			}),
+		]);
+		h.dispatcher.results = [
+			{ ok: true },
+			{ ok: false, reason: "line-not-found" },
+			{ ok: true },
+		];
+
+		const res = await h.service.moveCardFromTickler("Board.md", TAG_BOARD, "id:a", "doing", 0);
+
+		expect(res).toEqual({ ok: false, reason: "line-not-found" });
+		expect(h.dispatcher.intents).toEqual([
+			{ type: "set-date", key: "id:a", field: "start", date: null },
+			{
+				type: "move-column",
+				key: "id:a",
+				fromTag: "#kanban/dev/todo",
+				toTag: "#kanban/dev/doing",
+				index: 0,
+			},
+			{
+				type: "set-date",
+				key: "id:a",
+				field: "start",
+				date: "2026-07-20",
+				time: "09:30",
+				timeEnd: "10:00",
+			},
+		]);
+		expect(h.patched).toEqual([]);
+	});
+
+	it("отказ записи order компенсирует и тег, и 🛫", async () => {
+		h.feed.replaceFile("x.md", [
+			boardTask({
+				filePath: "x.md",
+				taskId: "a",
+				key: "id:a",
+				start: "2026-07-20",
+				tags: ["#kanban/dev/todo"],
+			}),
+		]);
+		h.patchFailures.remaining = 1;
+
+		const res = await h.service.moveCardFromTickler("Board.md", TAG_BOARD, "id:a", "doing", 0);
+
+		expect(res.ok).toBe(false);
+		if (!res.ok) expect(res.reason).toContain("order-write-failed");
+		expect(h.dispatcher.intents).toEqual([
+			{ type: "set-date", key: "id:a", field: "start", date: null },
+			{
+				type: "move-column",
+				key: "id:a",
+				fromTag: "#kanban/dev/todo",
+				toTag: "#kanban/dev/doing",
+				index: 0,
+			},
+			{
+				type: "move-column",
+				key: "id:a",
+				fromTag: "#kanban/dev/doing",
+				toTag: "#kanban/dev/todo",
+			},
+			{
+				type: "set-date",
+				key: "id:a",
+				field: "start",
+				date: "2026-07-20",
+				time: null,
+				timeEnd: null,
+			},
+		]);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -585,7 +836,11 @@ describe("BoardService.addColumn", () => {
 		const res = await h.service.addColumn("Board.md", "В работе");
 		expect(res).toEqual({ ok: true, colId: "v-rabote" });
 		const cols = h.frontmatters.get("Board.md")!["columns"] as Array<Record<string, unknown>>;
-		expect(cols[2]).toEqual({ id: "v-rabote", name: "В работе", match: "#kanban/dev/v-rabote" });
+		expect(cols[2]).toEqual({
+			id: "v-rabote",
+			name: "В работе",
+			match: "#kanban/dev/v-rabote",
+		});
 	});
 
 	it("коллизия id разрешается суффиксом", async () => {
@@ -781,12 +1036,12 @@ describe("BoardService.createBoard", () => {
 		expect(h.queue).toEqual(["ensure", "patch"]);
 		const fm = h.frontmatters.get("GTD/Моя доска.md")!;
 		expect(fm["gtd-board"]).toBe(true);
-		expect(fm["id"]).toBe("moya-doska");
+		expect(fm["id"]).toBe("moya-doska-test1");
 		expect(fm["name"]).toBe("Моя доска");
 		expect(fm["columns"]).toEqual([
-			{ id: "todo", name: "Очередь", match: "#kanban/moya-doska/todo" },
-			{ id: "doing", name: "В работе", match: "#kanban/moya-doska/doing" },
-			{ id: "done", name: "Готово", match: "#kanban/moya-doska/done" },
+			{ id: "todo", name: "Очередь", match: "#kanban/moya-doska-test1/todo" },
+			{ id: "doing", name: "В работе", match: "#kanban/moya-doska-test1/doing" },
+			{ id: "done", name: "Готово", match: "#kanban/moya-doska-test1/done" },
 		]);
 	});
 
@@ -802,7 +1057,7 @@ describe("BoardService.createBoard", () => {
 	it("id-fallback 'board' при имени без ASCII/кириллицы (эмодзи)", async () => {
 		await h.service.createBoard("B.md", "🔥🔥");
 		const fm = h.frontmatters.get("B.md")!;
-		expect(fm["id"]).toBe("board");
+		expect(fm["id"]).toBe("board-test1");
 		expect(fm["name"]).toBe("🔥🔥");
 	});
 
@@ -827,8 +1082,150 @@ describe("BoardService.createBoard", () => {
 	});
 
 	it("пустое имя — отказ без ensureFile/записи", async () => {
-		expect(await h.service.createBoard("B.md", "   ")).toEqual({ ok: false, reason: "empty-name" });
+		expect(await h.service.createBoard("B.md", "   ")).toEqual({
+			ok: false,
+			reason: "empty-name",
+		});
 		expect(h.ensured).toEqual([]);
+		expect(h.patched).toEqual([]);
+	});
+
+	it("unavailable secure generator fails closed without frontmatter write", async () => {
+		h = makeHarness(undefined, () => {
+			throw new Error("secure-board-id-generator-unavailable");
+		});
+		expect(await h.service.createBoard("B.md", "Релиз")).toEqual({
+			ok: false,
+			reason: "id-generation-failed",
+		});
+		expect(h.patched).toEqual([]);
+	});
+
+	it("same-process collision suffix retry остаётся безопасным", async () => {
+		h = makeHarness(undefined, boardIdSuffixes("same", "same", "next"));
+		const [first, second] = await Promise.all([
+			h.service.createBoard("A.md", "Релиз"),
+			h.service.createBoard("B.md", "Релиз"),
+		]);
+		expect(first).toEqual({ ok: true, path: "A.md" });
+		expect(second).toEqual({ ok: true, path: "B.md" });
+		expect(h.frontmatters.get("A.md")?.["id"]).toBe("reliz-same");
+		expect(h.frontmatters.get("B.md")?.["id"]).toBe("reliz-next");
+	});
+
+	it("повторно проверяет id внутри commit и retry-ит, если внешняя доска появилась после scan", async () => {
+		const frontmatters = new Map<string, Record<string, unknown>>();
+		const containers = new Set<string>();
+		let injected = false;
+		const service = new BoardService({
+			feed: h.feed,
+			dispatcher: h.dispatcher,
+			readFrontmatter: (path) => frontmatters.get(path) ?? null,
+			patchFrontmatter: async (path, fn) => {
+				if (!injected) {
+					injected = true;
+					containers.add("External.md");
+					frontmatters.set("External.md", {
+						"gtd-board": true,
+						id: "reliz-race",
+						columns: [{ id: "todo", match: "#kanban/reliz-race/todo" }],
+					});
+				}
+				const fm = frontmatters.get(path) ?? {};
+				fn(fm);
+				frontmatters.set(path, fm);
+			},
+			ensureFile: async () => undefined,
+			containerPaths: () => [...containers],
+			genBoardIdSuffix: boardIdSuffixes("race", "fresh"),
+		});
+
+		expect(await service.createBoard("Mine.md", "Релиз")).toEqual({
+			ok: true,
+			path: "Mine.md",
+		});
+		expect(frontmatters.get("Mine.md")?.["id"]).toBe("reliz-fresh");
+	});
+
+	it("independent stale services give same-named boards distinct ids and #kanban tags", async () => {
+		const makeStaleService = (
+			frontmatters: Map<string, Record<string, unknown>>,
+			suffix: string,
+		) =>
+			new BoardService({
+				feed: h.feed,
+				dispatcher: h.dispatcher,
+				// Each device has the same stale empty discovery when it creates its board.
+				readFrontmatter: (path) => frontmatters.get(path) ?? null,
+				patchFrontmatter: async (path, fn) => {
+					const fm = frontmatters.get(path) ?? {};
+					fn(fm);
+					frontmatters.set(path, fm);
+				},
+				ensureFile: async () => undefined,
+				containerPaths: () => [],
+				genBoardIdSuffix: () => suffix,
+			});
+
+		const work = new Map<string, Record<string, unknown>>();
+		const personal = new Map<string, Record<string, unknown>>();
+		const left = makeStaleService(work, "device-a");
+		const right = makeStaleService(personal, "device-b");
+
+		await Promise.all([
+			left.createBoard("Work/Доски/Релиз.md", "Релиз"),
+			right.createBoard("Personal/Boards/Release.md", "Релиз"),
+		]);
+
+		const leftId = work.get("Work/Доски/Релиз.md")!["id"] as string;
+		const rightId = personal.get("Personal/Boards/Release.md")!["id"] as string;
+		expect(leftId).toBe("reliz-device-a");
+		expect(rightId).toBe("reliz-device-b");
+		expect(leftId).not.toBe(rightId);
+		expect(work.get("Work/Доски/Релиз.md")!["columns"]).toContainEqual({
+			id: "todo",
+			name: "Очередь",
+			match: "#kanban/reliz-device-a/todo",
+		});
+		expect(personal.get("Personal/Boards/Release.md")!["columns"]).toContainEqual({
+			id: "todo",
+			name: "Очередь",
+			match: "#kanban/reliz-device-b/todo",
+		});
+	});
+
+	it("generator collision retries a known id, then fails closed after the bounded limit", async () => {
+		h = makeHarness(undefined, boardIdSuffixes("taken", "fresh"));
+		h.containers.add("Existing.md");
+		h.frontmatters.set("Existing.md", {
+			"gtd-board": true,
+			id: "reliz-taken",
+			columns: [{ id: "todo", match: "#kanban/reliz-taken/todo" }],
+		});
+
+		expect(await h.service.createBoard("Mine.md", "Релиз")).toEqual({
+			ok: true,
+			path: "Mine.md",
+		});
+		expect(h.frontmatters.get("Mine.md")?.["id"]).toBe("reliz-fresh");
+
+		let attempts = 0;
+		h = makeHarness(undefined, () => {
+			attempts++;
+			return "taken";
+		});
+		h.containers.add("Existing.md");
+		h.frontmatters.set("Existing.md", {
+			"gtd-board": true,
+			id: "reliz-taken",
+			columns: [{ id: "todo", match: "#kanban/reliz-taken/todo" }],
+		});
+
+		expect(await h.service.createBoard("Mine.md", "Релиз")).toEqual({
+			ok: false,
+			reason: "id-allocation-conflict",
+		});
+		expect(attempts).toBe(32);
 		expect(h.patched).toEqual([]);
 	});
 });
@@ -902,7 +1299,11 @@ describe("slugifyColumnName / uniqueColId", () => {
 describe("insertIntoColumnOrder", () => {
 	const vis = (ids: Array<string | null>): Task[] =>
 		ids.map((id, i) =>
-			makeTask({ filePath: "x.md", lineStart: i, ...(id !== null ? { taskId: id, key: "id:" + id } : {}) }),
+			makeTask({
+				filePath: "x.md",
+				lineStart: i,
+				...(id !== null ? { taskId: id, key: "id:" + id } : {}),
+			}),
 		);
 
 	it("вставляет id на видимую позицию", () => {

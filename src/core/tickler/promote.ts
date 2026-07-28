@@ -75,6 +75,19 @@ export interface PlannedPromotion {
 	needsMove: boolean;
 }
 
+/**
+ * Durable journal entry for a promotion that may span several file writes.
+ * `target === null` means the task only needs its source-line cleanup; otherwise
+ * the final durable postcondition is one carrier in this inbox file.
+ */
+export interface PromotionRetry {
+	taskId: string;
+	/** Source path at journal creation.  Distinguishes a completed move from an
+	 * invalid attempt to use the source itself as its configured inbox target. */
+	source: string;
+	target: string | null;
+}
+
 /** Теги колонок досок на задаче, нормализованные к ведущему '#'. */
 function boardTagsOf(t: Task): string[] {
 	return t.tags

@@ -238,7 +238,9 @@ describe("CardService: openOrCreate — ленивый 🆔", () => {
 		const { port, feed, dispatcher, svc, sync } = makeHarness({ genId: () => "gen001" });
 		port.files.set(INBOX, "- [ ] Позвонить в банк\n");
 		sync(INBOX);
-		const key = [...feed.getIndex().all()].find((t) => t.description === "Позвонить в банк")!.key;
+		const key = [...feed.getIndex().all()].find(
+			(t) => t.description === "Позвонить в банк",
+		)!.key;
 
 		const res = await svc.openOrCreate(key);
 
@@ -318,8 +320,6 @@ describe("CardService: openOrCreate — идемпотентность", () => {
 
 		expect(res).toEqual({ ok: true, path: "GTD/Cards/Переименованная.md" });
 		expect(ensured).toEqual([]); // ничего не создавалось
-		expect(port.files.get(INBOX)).toBe(
-			"- [ ] Собрать сметы [[Переименованная]] 🆔 m3q9z4\n",
-		);
+		expect(port.files.get(INBOX)).toBe("- [ ] Собрать сметы [[Переименованная]] 🆔 m3q9z4\n");
 	});
 });

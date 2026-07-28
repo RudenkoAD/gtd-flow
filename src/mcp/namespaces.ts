@@ -12,12 +12,13 @@ import {
 	type NamespaceDef,
 	type NamespaceFilter,
 } from "../core/namespace/namespace";
+import { ALL_NAMESPACES_LABEL, COMMON_NAMESPACE_LABEL } from "../core/namespace/labels";
 import type { GtdFlowSettings } from "../settings/Settings";
 
 /** Отображаемое имя встроенного пространства «Общее» (всё вне корней). */
-export const COMMON_LABEL = "Общее";
+export const COMMON_LABEL = COMMON_NAMESPACE_LABEL;
 /** Отображаемое имя агрегата «Все пространства». */
-export const ALL_LABEL = "Все";
+export const ALL_LABEL = ALL_NAMESPACES_LABEL;
 
 /** Внутреннее активное имя пространства → человекочитаемая метка для ответов. */
 export function nsLabel(active: string): string {

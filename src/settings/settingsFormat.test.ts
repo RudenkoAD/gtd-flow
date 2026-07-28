@@ -39,7 +39,9 @@ describe("parsePathList / formatPathList", () => {
 
 describe("parseDeferPresets / formatDeferPresets", () => {
 	it("разбирает «Метка|дни», пропуская пустые строки", () => {
-		const { presets, invalid } = parseDeferPresets("Завтра|1\n\n  Через неделю | 7 \r\n+3 дня|3");
+		const { presets, invalid } = parseDeferPresets(
+			"Завтра|1\n\n  Через неделю | 7 \r\n+3 дня|3",
+		);
 		expect(invalid).toEqual([]);
 		expect(presets).toEqual([
 			{ label: "Завтра", offsetDays: 1 },
@@ -49,7 +51,9 @@ describe("parseDeferPresets / formatDeferPresets", () => {
 	});
 
 	it("невалидные строки попадают в invalid, валидные — сохраняются", () => {
-		const { presets, invalid } = parseDeferPresets("Завтра|1\nбез разделителя\n|5\nМетка|1.5\nМетка|-2\nОк|0");
+		const { presets, invalid } = parseDeferPresets(
+			"Завтра|1\nбез разделителя\n|5\nМетка|1.5\nМетка|-2\nОк|0",
+		);
 		expect(presets).toEqual([
 			{ label: "Завтра", offsetDays: 1 },
 			{ label: "Ок", offsetDays: 0 },
@@ -65,13 +69,18 @@ describe("parseDeferPresets / formatDeferPresets", () => {
 
 	it("round-trip дефолтных пресетов", () => {
 		const text = formatDeferPresets(DEFAULT_SETTINGS.deferPresets);
-		expect(parseDeferPresets(text)).toEqual({ presets: DEFAULT_SETTINGS.deferPresets, invalid: [] });
+		expect(parseDeferPresets(text)).toEqual({
+			presets: DEFAULT_SETTINGS.deferPresets,
+			invalid: [],
+		});
 	});
 });
 
 describe("parseNamespaces / formatNamespaces", () => {
 	it("разбирает «Имя: Папка», trim и CRLF, нормализует хвостовой /", () => {
-		const { namespaces, invalid } = parseNamespaces("Работа: Areas/Work\r\n  Личное : Personal/ \n");
+		const { namespaces, invalid } = parseNamespaces(
+			"Работа: Areas/Work\r\n  Личное : Personal/ \n",
+		);
 		expect(invalid).toEqual([]);
 		expect(namespaces).toEqual([
 			{ name: "Работа", root: "Areas/Work" },
@@ -135,16 +144,32 @@ describe("parseIntInRange", () => {
 
 describe("reorderCalendarPlacement", () => {
 	it("выбранное поле — в голову, остальные сохраняют относительный порядок", () => {
-		expect(reorderCalendarPlacement(["due", "scheduled", "start"], "start")).toEqual(["start", "due", "scheduled"]);
-		expect(reorderCalendarPlacement(["start", "due", "scheduled"], "due")).toEqual(["due", "start", "scheduled"]);
+		expect(reorderCalendarPlacement(["due", "scheduled", "start"], "start")).toEqual([
+			"start",
+			"due",
+			"scheduled",
+		]);
+		expect(reorderCalendarPlacement(["start", "due", "scheduled"], "due")).toEqual([
+			"due",
+			"start",
+			"scheduled",
+		]);
 	});
 
 	it("выбор уже первого поля — порядок не меняется", () => {
-		expect(reorderCalendarPlacement(["due", "scheduled", "start"], "due")).toEqual(["due", "scheduled", "start"]);
+		expect(reorderCalendarPlacement(["due", "scheduled", "start"], "due")).toEqual([
+			"due",
+			"scheduled",
+			"start",
+		]);
 	});
 
 	it("нормализует руками правленный data.json: дубликаты и пропуски", () => {
-		expect(reorderCalendarPlacement(["due", "due"], "scheduled")).toEqual(["scheduled", "due", "start"]);
+		expect(reorderCalendarPlacement(["due", "due"], "scheduled")).toEqual([
+			"scheduled",
+			"due",
+			"start",
+		]);
 		expect(reorderCalendarPlacement([], "start")).toEqual(["start", "due", "scheduled"]);
 	});
 });
@@ -159,7 +184,10 @@ describe("planSubNameCommit", () => {
 	});
 
 	it("имя изменилось → renamed=true, значение обрезано", () => {
-		expect(planSubNameCommit("Новый календарь", "  Луна  ")).toEqual({ value: "Луна", renamed: true });
+		expect(planSubNameCommit("Новый календарь", "  Луна  ")).toEqual({
+			value: "Луна",
+			renamed: true,
+		});
 	});
 
 	it("очистка в пусто → renamed=true, value пустой (строка покажет «(без имени)»)", () => {

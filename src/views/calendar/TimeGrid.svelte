@@ -136,9 +136,7 @@
 		}),
 	);
 	/** allDay-вхождения событий по дню — в полосу «Весь день» (DayCell top). */
-	const eventAllDayByDate = $derived(
-		new Map(eventDayLayouts.map((d) => [d.date, d.allDay])),
-	);
+	const eventAllDayByDate = $derived(new Map(eventDayLayouts.map((d) => [d.date, d.allDay])));
 
 	let scrollEl: HTMLElement | null = $state(null);
 	// Автоскролл к 08:00 один раз при открытии; смена день↔3 дня компонент
@@ -186,9 +184,7 @@
 				onQuickAddEvent={onQuickAddEvent === null
 					? null
 					: (date, text, location) => onQuickAddEvent(date, text, null, null, location)}
-				onCreateEvent={onCreateEvent === null
-					? null
-					: (date) => onCreateEvent(date, null)}
+				onCreateEvent={onCreateEvent === null ? null : (date) => onCreateEvent(date, null)}
 				{quickAddKind}
 				{onQuickAddKindChange}
 			/>

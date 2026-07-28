@@ -279,7 +279,13 @@ describe("resolveLineTransform — однострочные intents", () => {
 
 	it("set-date scheduled + clearStart: флаг игнорируется (политика только для 📅)", () => {
 		const out = resolveLineTransform(
-			{ type: "set-date", key: "k", field: "scheduled", date: "2026-07-20", clearStart: true },
+			{
+				type: "set-date",
+				key: "k",
+				field: "scheduled",
+				date: "2026-07-20",
+				clearStart: true,
+			},
 			"- [ ] Позвонить маме 🛫 2026-09-01",
 		);
 		expect(out).toContain("🛫 2026-09-01");

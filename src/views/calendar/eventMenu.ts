@@ -29,6 +29,7 @@ import {
 import { EventSeriesModal } from "./EventSeriesModal";
 import { SingleEventModal } from "./SingleEventModal";
 import { preservedTimeEnd } from "./timeGrid";
+import { reportAsync } from "../common/runAction";
 
 // ---------------------------------------------------------------------------
 // Чистая модель пунктов
@@ -75,7 +76,11 @@ export function buildEventMenuModel(
 	// (создаёт НАШЕ одноразовое событие в обычном файле) и «Открыть файл».
 	if (external) {
 		return [
-			{ id: kind === "series" ? "copy-occurrence" : "copy-single", title: "Копировать…", icon: "copy" },
+			{
+				id: kind === "series" ? "copy-occurrence" : "copy-single",
+				title: "Копировать…",
+				icon: "copy",
+			},
 			{ id: "open-file", title: "Открыть файл", icon: "file" },
 		];
 	}
@@ -123,6 +128,23 @@ function hasLocation(occ: EventOccurrence): boolean {
 	return occ.location !== null && occ.location.trim() !== "";
 }
 
+/** Modal callbacks are fire-and-forget; retain the action result notice and
+ * surface thrown storage failures at their only UI boundary. */
+function runEventAction(
+	label: string,
+	action: () => Promise<{ ok: boolean; reason?: string }>,
+	successNotice?: string,
+): void {
+	reportAsync(label, async () => {
+		const result = await action();
+		if (!result.ok) {
+			new Notice(`GTD Flow: ${result.reason ?? "операция отклонена"}`);
+			return;
+		}
+		if (successNotice !== undefined) new Notice(successNotice);
+	});
+}
+
 /** «Изменить серию»: модал серии, преднаполненный названием/правилом/временем/местом. */
 function openEdit(deps: EventMenuDeps): void {
 	const { occ, app, vault } = deps;
@@ -132,9 +154,9 @@ function openEdit(deps: EventMenuDeps): void {
 		{ name: occ.title, rule, time, location: occ.location ?? "" },
 		"Изменить серию",
 		(name, ruleText, location) => {
-			void editEventSeries({ vault, task: occ.task, name, ruleText, location }).then((res) => {
-				if (!res.ok) new Notice(`GTD Flow: ${res.reason}`);
-			});
+			runEventAction("не удалось изменить серию", () =>
+				editEventSeries({ vault, task: occ.task, name, ruleText, location }),
+			);
 		},
 	).open();
 }
@@ -147,13 +169,13 @@ function openLocation(deps: EventMenuDeps): void {
 		app,
 		"Место события",
 		(value) => {
-			void setEventLocation({
-				vault,
-				task: occ.task,
-				location: value === "" ? null : value,
-			}).then((res) => {
-				if (!res.ok) new Notice(`GTD Flow: ${res.reason}`);
-			});
+			runEventAction("не удалось изменить место события", () =>
+				setEventLocation({
+					vault,
+					task: occ.task,
+					location: value === "" ? null : value,
+				}),
+			);
 		},
 		occ.location ?? "",
 		"Адрес или место (пусто — убрать)",
@@ -191,7 +213,8 @@ function openTransfer(deps: EventMenuDeps): void {
 	new DatePromptModal(
 		app,
 		title,
-		(date, time) => void applyTransfer(deps, date, time),
+		(date, time) =>
+			reportAsync("не удалось перенести событие", () => applyTransfer(deps, date, time)),
 		occ.date,
 		true,
 		occ.time,
@@ -219,18 +242,20 @@ function openCopyAsSingle(deps: EventMenuDeps, modalTitle: string): void {
 		},
 		modalTitle,
 		(name, date, time, timeEnd, location) => {
-			void createSingleEvent({
-				vault,
-				eventsFile,
-				name,
-				date,
-				time,
-				timeEnd,
-				location,
-			}).then((res) => {
-				if (res.ok) new Notice("GTD Flow: событие создано");
-				else new Notice(`GTD Flow: ${res.reason}`);
-			});
+			runEventAction(
+				"не удалось скопировать событие",
+				() =>
+					createSingleEvent({
+						vault,
+						eventsFile,
+						name,
+						date,
+						time,
+						timeEnd,
+						location,
+					}),
+				"GTD Flow: событие создано",
+			);
 		},
 	).open();
 }
@@ -242,7 +267,9 @@ function openEventFile(deps: EventMenuDeps): void {
 		new Notice("GTD Flow: файл события не найден");
 		return;
 	}
-	void deps.app.workspace.getLeaf(true).openFile(file);
+	reportAsync("не удалось открыть файл события", () =>
+		deps.app.workspace.getLeaf(true).openFile(file),
+	);
 }
 
 /** Копировать серию: модал серии → НОВАЯ серия со свежим 🆔 в том же файле. */
@@ -254,11 +281,17 @@ function openCopySeries(deps: EventMenuDeps): void {
 		{ name: occ.title, rule, time, location: occ.location ?? "" },
 		"Копировать серию",
 		(name, ruleText, location) => {
-			void copyEventSeries({ vault, eventsFile: occ.task.filePath, name, ruleText, location }).then(
-				(res) => {
-					if (res.ok) new Notice("GTD Flow: серия создана");
-					else new Notice(`GTD Flow: ${res.reason}`);
-				},
+			runEventAction(
+				"не удалось скопировать серию",
+				() =>
+					copyEventSeries({
+						vault,
+						eventsFile: occ.task.filePath,
+						name,
+						ruleText,
+						location,
+					}),
+				"GTD Flow: серия создана",
 			);
 		},
 	).open();
@@ -317,11 +350,11 @@ function runEventMenuAction(id: EventMenuItemId, deps: EventMenuDeps): void {
 		case "copy-single":
 			return openCopyAsSingle(deps, "Копировать событие");
 		case "delete-occurrence":
-			return void deleteOccurrence(deps);
+			return reportAsync("не удалось удалить вхождение", () => deleteOccurrence(deps));
 		case "delete-series":
-			return void deleteSeries(deps);
+			return reportAsync("не удалось удалить серию", () => deleteSeries(deps));
 		case "delete-single":
-			return void deleteSingle(deps);
+			return reportAsync("не удалось удалить событие", () => deleteSingle(deps));
 		case "open-file":
 			return openEventFile(deps);
 	}

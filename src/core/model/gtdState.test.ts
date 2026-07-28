@@ -62,7 +62,9 @@ function resolverFrom(tasks: Task[]): ResolveDep {
 
 describe("deriveGtdState — каждое состояние цепочки", () => {
 	it("TEMPLATE: container recurring", () => {
-		expect(deriveGtdState(makeTask({ container: "recurring" }), TODAY, noDeps)).toBe("TEMPLATE");
+		expect(deriveGtdState(makeTask({ container: "recurring" }), TODAY, noDeps)).toBe(
+			"TEMPLATE",
+		);
 	});
 
 	it("DETAIL: container card", () => {
@@ -240,7 +242,9 @@ describe("хелперы eligible/ready/blocked/isActive", () => {
 		const resolve = resolverFrom([dep]);
 		expect(ready(makeTask({ dependsOn: ["a1"] }), TODAY, resolve)).toBe(true);
 		expect(ready(makeTask({ dependsOn: ["ghost"] }), TODAY, resolve)).toBe(false);
-		expect(ready(makeTask({ dependsOn: ["a1"], tags: ["#waiting"] }), TODAY, resolve)).toBe(false);
+		expect(ready(makeTask({ dependsOn: ["a1"], tags: ["#waiting"] }), TODAY, resolve)).toBe(
+			false,
+		);
 	});
 
 	it("blocked: только container project и только при невыполненных ⛔", () => {

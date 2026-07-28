@@ -6,6 +6,7 @@ import {
 	SyncService,
 	safeMirrorFileName,
 	subIdSlug,
+	type ManagedMirror,
 	type SyncResult,
 	type SyncVaultPort,
 } from "./SyncService";
@@ -24,6 +25,14 @@ class FakeVault implements SyncVaultPort {
 	async delete(path: string): Promise<void> {
 		this.deletes.push(path);
 		this.files.delete(path);
+	}
+	async listManagedMirrors(): Promise<readonly ManagedMirror[]> {
+		return [...this.files.entries()]
+			.filter(([, content]) => content.includes("gtd-external: true"))
+			.map(([path, content]) => ({
+				path,
+				subscriptionId: content.match(/^gtd-external-id: "([^"]+)"$/m)?.[1] ?? null,
+			}));
 	}
 }
 
@@ -49,6 +58,8 @@ interface Harness {
 	subs: ExternalCalendarSub[];
 	defs: NamespaceDef[];
 	commonRoot: string;
+	feedTimeoutMs?: number;
+	warnings: string[];
 }
 
 function makeService(over: Partial<Harness> = {}) {
@@ -59,6 +70,7 @@ function makeService(over: Partial<Harness> = {}) {
 		subs: [sub()],
 		defs: [],
 		commonRoot: "GTD",
+		warnings: [],
 		...over,
 	};
 	const svc = new SyncService({
@@ -69,6 +81,7 @@ function makeService(over: Partial<Harness> = {}) {
 		namespaces: () => h.defs,
 		commonRoot: () => h.commonRoot,
 		intervalMin: () => 5,
+		feedTimeoutMs: () => h.feedTimeoutMs ?? 30_000,
 		onResult: (id, result) => {
 			// как main: пишем статус в саму подписку
 			const s = h.subs.find((x) => x.id === id);
@@ -80,6 +93,7 @@ function makeService(over: Partial<Harness> = {}) {
 			}
 			results.push({ id, result });
 		},
+		onLifecycleWarning: (message) => h.warnings.push(message),
 	});
 	return { svc, vault, results, h };
 }
@@ -154,7 +168,9 @@ describe("SyncService — статус и устойчивость", () => {
 	});
 
 	it("syncById синхронизирует одну подписку по id", async () => {
-		const { svc, vault } = makeService({ subs: [sub({ id: "a" }), sub({ id: "b", name: "Второй" })] });
+		const { svc, vault } = makeService({
+			subs: [sub({ id: "a" }), sub({ id: "b", name: "Второй" })],
+		});
 		await svc.syncById("b");
 		expect(vault.writes).toBe(1);
 		expect([...vault.files.keys()]).toEqual([`GTD/External/Второй-${subIdSlug("b")}.md`]);
@@ -223,8 +239,8 @@ describe("SyncService — webcal / CRLF / гонки / выгрузка", () => 
 		expect(vault.writes).toBe(1); // \r-различие не считается изменением
 	});
 
-	// --- FIX-9: syncById через per-sub гейт (нет двойного syncOne) ---
-	it("конкурентный syncById той же подписки во время висящего fetch — второй пропускается", async () => {
+	// Второй caller разделяет активный promise, а не получает ложный успешный no-op.
+	it("конкурентный syncById той же подписки во время висящего fetch ждёт тот же проход", async () => {
 		let fetchCalls = 0;
 		let release!: (v: string) => void;
 		const gate = new Promise<string>((res) => {
@@ -237,14 +253,50 @@ describe("SyncService — webcal / CRLF / гонки / выгрузка", () => 
 			},
 		});
 		const p1 = svc.syncById("s1"); // стартует, висит на fetch (in-flight гейт занят)
-		const p2 = svc.syncById("s1"); // конкурентный клик — должен пропуститься
-		await p2;
+		const p2 = svc.syncById("s1"); // конкурентный клик ждёт существующий проход
+		let secondSettled = false;
+		void p2.then(() => {
+			secondSettled = true;
+		});
+		await Promise.resolve();
 		expect(fetchCalls).toBe(1); // второй syncOne не запущен
+		expect(secondSettled).toBe(false);
 		release(ICS_ONE_EVENT);
-		await p1;
+		await Promise.all([p1, p2]);
 		expect(fetchCalls).toBe(1);
 		expect(vault.writes).toBe(1);
 		expect(results.filter((r) => !r.result.ok)).toHaveLength(0); // без ложной ошибки гонки
+	});
+
+	it("configuration change during active sync promptly runs a fresh generation", async () => {
+		let releaseOld!: (value: string) => void;
+		const oldGate = new Promise<string>((resolve) => {
+			releaseOld = resolve;
+		});
+		const urls: string[] = [];
+		const s = sub({ id: "generation-race", name: "Before", url: "https://example/old.ics" });
+		const { svc, vault } = makeService({
+			subs: [s],
+			fetchImpl: async (url) => {
+				urls.push(url);
+				return urls.length === 1 ? oldGate : ICS_ONE_EVENT;
+			},
+		});
+
+		const active = svc.syncAll();
+		await Promise.resolve();
+		s.name = "After";
+		s.url = "https://example/new.ics";
+		svc.configurationChanged();
+		releaseOld(ICS_ONE_EVENT);
+		await active;
+
+		expect(urls).toEqual(["https://example/old.ics", "https://example/new.ics"]);
+		expect(vault.writes).toBe(1);
+		expect([...vault.files.keys()]).toEqual([
+			`GTD/External/After-${subIdSlug("generation-race")}.md`,
+		]);
+		svc.dispose();
 	});
 
 	// --- FIX-8: dispose во время висящего fetch → без записи и без статуса ---
@@ -292,5 +344,107 @@ describe("SyncService.deleteMirror (FIX-11)", () => {
 		// эмулируем обёртку без поддержки удаления
 		(vault as { delete?: unknown }).delete = undefined;
 		await expect(svc.deleteMirror(s)).resolves.toBeUndefined();
+	});
+});
+
+describe("SyncService — deadlines and mirror lifecycle hardening", () => {
+	it("a timed-out feed is reported while a healthy feed completes in the same shared syncAll pass", async () => {
+		let calls = 0;
+		const { svc, vault, results } = makeService({
+			subs: [
+				sub({ id: "slow" }),
+				sub({ id: "fast", name: "Healthy", url: "https://example/fast.ics" }),
+			],
+			feedTimeoutMs: 10,
+			fetchImpl: async (url) => {
+				calls++;
+				if (url.includes("basic")) return new Promise<string>(() => undefined);
+				return ICS_ONE_EVENT;
+			},
+		});
+
+		await Promise.all([svc.syncAll(), svc.syncAll()]);
+		expect(calls).toBe(2); // duplicate syncAll shared its active pass
+		expect(vault.files.has(`GTD/External/Healthy-${subIdSlug("fast")}.md`)).toBe(true);
+		expect(results.find((r) => r.id === "slow")!.result).toMatchObject({ ok: false });
+		expect(results.find((r) => r.id === "slow")!.result).toMatchObject({
+			error: expect.stringContaining("timed out"),
+		});
+		expect(results.find((r) => r.id === "fast")!.result).toMatchObject({ ok: true });
+	});
+
+	it("deletion tombstone fences a delayed fetch so it cannot resurrect the trashed mirror", async () => {
+		let release!: (text: string) => void;
+		const gate = new Promise<string>((resolve) => {
+			release = resolve;
+		});
+		const s = sub({ id: "delete-race" });
+		const { svc, vault, h, results } = makeService({ subs: [s], fetchImpl: async () => gate });
+		const pending = svc.syncById(s.id);
+		await Promise.resolve();
+		await svc.removeSubscription(s);
+		h.subs.splice(0, 1);
+		release(ICS_ONE_EVENT);
+		await pending;
+		expect(vault.files.size).toBe(0);
+		expect(results).toHaveLength(0);
+	});
+
+	it("failed removal rollback clears its tombstone so syncById can resume", async () => {
+		const s = sub({ id: "restore-after-save-failure" });
+		const { svc, vault, results } = makeService({ subs: [s] });
+
+		// Settings persistence failed after removeSubscription completed, so the
+		// restored settings still contain this exact subscription.
+		await svc.removeSubscription(s);
+		svc.rollbackSubscriptionRemoval(s.id);
+		await svc.syncById(s.id);
+
+		expect(vault.writes).toBe(1);
+		expect(results.at(-1)).toMatchObject({ id: s.id, result: { ok: true } });
+		svc.dispose();
+	});
+
+	it("path-affecting configuration change trashes the old stable-id mirror and writes exactly one new one", async () => {
+		const s = sub({ id: "move-root", name: "Relocate" });
+		const { svc, vault, h } = makeService({ subs: [s] });
+		await svc.syncAll();
+		const oldPath = `GTD/External/Relocate-${subIdSlug(s.id)}.md`;
+		expect(vault.files.get(oldPath)).toContain('gtd-external-id: "move-root"');
+
+		h.commonRoot = "Elsewhere";
+		svc.configurationChanged();
+		await svc.reconcileMirrors();
+		await svc.syncAll();
+
+		const newPath = `Elsewhere/External/Relocate-${subIdSlug(s.id)}.md`;
+		expect(vault.deletes).toContain(oldPath);
+		expect(vault.files.has(oldPath)).toBe(false);
+		expect(vault.files.has(newPath)).toBe(true);
+		expect(vault.files.size).toBe(1);
+	});
+
+	it("startup reconciliation removes an orphan with a stable subscription marker and reports it", async () => {
+		const { svc, vault, h } = makeService({ subs: [] });
+		vault.files.set(
+			"GTD/External/orphan.md",
+			'---\ngtd-events: true\ngtd-external: true\ngtd-external-id: "removed-sub"\n---\n',
+		);
+		await svc.reconcileMirrors();
+		expect(vault.files.has("GTD/External/orphan.md")).toBe(false);
+		expect(h.warnings.join("\n")).toContain("removed-sub");
+	});
+
+	it("startup reconciliation preserves a pre-marker mirror at its current path, then upgrades it in place", async () => {
+		const s = sub({ id: "legacy-current", name: "Legacy" });
+		const { svc, vault, h } = makeService({ subs: [s] });
+		const path = `GTD/External/Legacy-${subIdSlug(s.id)}.md`;
+		vault.files.set(path, "---\ngtd-events: true\ngtd-external: true\n---\nold\n");
+		await svc.reconcileMirrors();
+		expect(vault.files.has(path)).toBe(true);
+		expect(h.warnings.join("\n")).toContain("Will add stable id");
+		await svc.syncAll();
+		expect(vault.files.get(path)).toContain('gtd-external-id: "legacy-current"');
+		expect(vault.files.size).toBe(1);
 	});
 });

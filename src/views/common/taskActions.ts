@@ -5,11 +5,7 @@
  * структурные порты, совместимые с VaultAdapter, и IntentDispatcher.
  */
 import type { IsoDate, Task } from "../../core/model/Task";
-import {
-	DEFAULT_NS,
-	type NamespaceDef,
-	resolveNamespace,
-} from "../../core/namespace/namespace";
+import { DEFAULT_NS, type NamespaceDef, resolveNamespace } from "../../core/namespace/namespace";
 import { parseNlDate } from "../../core/parser/nlDate";
 import { parseTaskLine } from "../../core/parser/parseTaskLine";
 import { setField } from "../../core/parser/serializeTaskLine";
@@ -286,10 +282,7 @@ export function recurringTemplateTarget(
  *  Общий для «Сделать шаблоном…» (gtd-recurring) и «Архивировать» (gtd-archive). */
 export interface FrontmatterVaultPort {
 	ensureFile(path: string): Promise<void>;
-	processFrontmatter(
-		path: string,
-		fn: (fm: Record<string, unknown>) => void,
-	): Promise<unknown>;
+	processFrontmatter(path: string, fn: (fm: Record<string, unknown>) => void): Promise<unknown>;
 }
 
 export interface MoveToTemplatesDeps {
@@ -397,8 +390,7 @@ export async function ensureCaptureFileNs(
 	defs: readonly NamespaceDef[],
 ): Promise<boolean> {
 	// override нужен, только если именованное пространство НЕ выводится из папки
-	const needsOverride =
-		name !== DEFAULT_NS && resolveNamespace(path, null, defs) !== name;
+	const needsOverride = name !== DEFAULT_NS && resolveNamespace(path, null, defs) !== name;
 	try {
 		await vault.ensureFile(path);
 		await vault.processFrontmatter(path, (fm) => {

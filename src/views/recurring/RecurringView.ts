@@ -2,7 +2,6 @@ import type { Component } from "svelte";
 import type GtdFlowPlugin from "../../main";
 import type { CardPort } from "../../services/CardService";
 import type { RecurrencePort } from "../../services/RecurrenceService";
-import type { IntentDispatcher } from "../../services/WritebackService";
 import { GtdView } from "../GtdView";
 import { VIEW_META } from "../registry";
 import Recurring from "./Recurring.svelte";
@@ -16,8 +15,8 @@ export class RecurringView extends GtdView {
 	// getViewType() вызывается конструктором View до присвоения this.meta (см. GtdView).
 	protected static override staticMeta = VIEW_META.recurring;
 
-	protected override component(): Component<any> {
-		return Recurring as unknown as Component<any>;
+	protected override component(): Component<Record<string, unknown>> {
+		return Recurring as unknown as Component<Record<string, unknown>>;
 	}
 
 	protected override props(): Record<string, unknown> {
@@ -31,6 +30,7 @@ export class RecurringView extends GtdView {
 			taskStore: plugin.taskStore,
 			dispatcher: plugin.dispatcher,
 			settings: plugin.settings,
+			settingsRevision: plugin.settingsRevision.store,
 			app: plugin.app,
 			recurrence: plugin.recurrence ?? null,
 			cards: plugin.cards ?? null,

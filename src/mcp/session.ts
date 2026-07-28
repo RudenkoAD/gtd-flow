@@ -1,21 +1,41 @@
 /**
- * GtdSession — единица работы одного вызова инструмента: свежий индекс vault'а
+ * GtdSession — единица работы одного вызова инструмента: актуальный индекс vault'а
  * плюс связанные над ним сервисы (WritebackService, BoardService, ProjectService).
  *
- * Индекс строится полным сканом на КАЖДЫЙ вызов (см. buildIndex): проще кэша по
- * mtime и всегда согласован с диском после внешних правок пользователя/Obsidian.
- * Сервисы переиспользуются целиком — те же, что в плагине, но с fs-портами вместо
- * адаптеров Obsidian: запись идёт read-modify-write через FsVault, адресация строк
- * по 🆔/content-key/occurrenceIndex — из ядра.
+ * FsVault делает metadata-скан каждого вызова, но повторно читает лишь изменившиеся
+ * файлы. Этот модуль поверх него переиспользует уже построенный TaskIndex, пока
+ * revision скана тот же. Поэтому серия MCP reads не парсит весь vault заново, а
+ * внешние правки всё ещё обнаруживаются до следующего инструмента.
  */
-import { BoardService } from "../services/BoardService";
+import { BoardService, secureBoardIdSuffix } from "../services/BoardService";
 import { ProjectService } from "../services/ProjectService";
 import type { IndexFeed } from "../services/types";
 import { WritebackService } from "../services/WritebackService";
 import type { GtdFlowSettings } from "../settings/Settings";
 import type { Task } from "../core/model/Task";
-import { buildIndex } from "./buildIndex";
-import { FsVault } from "./fsVault";
+import { buildIndex, type BuiltIndex } from "./buildIndex";
+import type { FsVault } from "./fsVault";
+
+interface CachedIndex {
+	revision: string;
+	today: string;
+	built: BuiltIndex;
+}
+
+/** Маленький LRU: MCP обычно обслуживает один vault, но не держим все vault'ы
+ * процесса навечно (важно для интеграционных тестов и переиспользуемых hosts). */
+const indexCache = new Map<string, CachedIndex>();
+const MAX_INDEX_CACHES = 16;
+
+function rememberIndex(key: string, value: CachedIndex): void {
+	indexCache.delete(key);
+	indexCache.set(key, value);
+	while (indexCache.size > MAX_INDEX_CACHES) {
+		const oldest = indexCache.keys().next().value as string | undefined;
+		if (oldest === undefined) break;
+		indexCache.delete(oldest);
+	}
+}
 
 export interface GtdSession {
 	feed: IndexFeed;
@@ -43,8 +63,20 @@ export interface SessionDeps {
 
 export async function openSession(deps: SessionDeps): Promise<GtdSession> {
 	const { vault, settings, today } = deps;
-	const files = await vault.listMarkdownFiles();
-	const { feed, boardPaths, projectPaths, externalPaths } = await buildIndex(files, today);
+	const scan = await vault.scanMarkdownFiles();
+	const cacheKey = vault.cacheIdentity;
+	const cached = indexCache.get(cacheKey);
+	const built =
+		cached !== undefined && cached.revision === scan.revision && cached.today === today
+			? cached.built
+			: await buildIndex(scan.files, today);
+	if (cached === undefined || cached.revision !== scan.revision || cached.today !== today) {
+		rememberIndex(cacheKey, { revision: scan.revision, today, built });
+	} else {
+		// Refresh LRU order even on a cache hit.
+		rememberIndex(cacheKey, cached);
+	}
+	const { feed, boardPaths, projectPaths, externalPaths } = built;
 
 	const writeback = new WritebackService({
 		write: vault,
@@ -62,7 +94,8 @@ export async function openSession(deps: SessionDeps): Promise<GtdSession> {
 		path: string,
 		fn: (fm: Record<string, unknown>) => void,
 	): Promise<void> => {
-		await vault.processFrontmatter(path, fn);
+		const changed = await vault.processFrontmatter(path, fn);
+		if (!changed) throw new Error(`board-frontmatter-write-failed:${path}`);
 	};
 
 	const boards = new BoardService({
@@ -73,6 +106,7 @@ export async function openSession(deps: SessionDeps): Promise<GtdSession> {
 		ensureFile: (path) => vault.ensureFile(path),
 		containerPaths: () => boardPaths,
 		knownTaskId: (key) => writeback.knownTaskId(key),
+		genBoardIdSuffix: secureBoardIdSuffix,
 		// namespaceFilter не инжектируем: discovery всегда с ЯВНЫМ фильтром из инструмента.
 	});
 

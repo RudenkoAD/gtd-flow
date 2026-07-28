@@ -1,10 +1,11 @@
 <script lang="ts">
-	import { Menu, type App } from "obsidian";
+	import { Menu, Notice, type App } from "obsidian";
 	import type { IsoDate } from "../../core/model/Task";
 	import type { IntentDispatcher } from "../../services/WritebackService";
 	import type { GtdFlowSettings, QuickAddKind } from "../../settings/Settings";
 	import type { TaskMenuPorts } from "../common/taskMenu";
 	import type { DndPort, OccurrenceDrag } from "../dnd/types";
+	import { addDaysIso } from "../common/dates";
 	import EventOccurrenceChip from "./EventOccurrenceChip.svelte";
 	import QuickAddKindSwitch from "./QuickAddKindSwitch.svelte";
 	import TimeGridBlock from "./TimeGridBlock.svelte";
@@ -18,6 +19,8 @@
 		timeTopPct,
 		type TimedBlock,
 	} from "./timeGrid";
+	import { occurrenceKeyboardAction, surfaceKeyboardAction } from "./calendarKeyboard";
+	import { reportAsync } from "../common/runAction";
 
 	let {
 		date,
@@ -231,6 +234,69 @@
 		menu.showAtMouseEvent(e);
 	}
 
+	const KEYBOARD_SLOT_MIN = 9 * 60;
+
+	function openQuickAddAt(min: number): void {
+		draft = "";
+		addingMin = snapMinutes(min);
+		addingEndMin = null;
+	}
+
+	function openContextMenuFromKeyboard(): void {
+		if (colEl === null) return;
+		const rect = colEl.getBoundingClientRect();
+		onColContextMenu(
+			new MouseEvent("contextmenu", {
+				bubbles: true,
+				clientX: rect.left + rect.width / 2,
+				clientY: rect.top + (KEYBOARD_SLOT_MIN / MINUTES_PER_DAY) * rect.height,
+			}),
+		);
+	}
+
+	/** Keyboard parity for an otherwise pointer-only time grid.  A focused empty
+	 * column starts quick-add at 09:00; ContextMenu/Shift+F10 opens the recurring
+	 * event menu at that same documented slot. */
+	function onColKeydown(e: KeyboardEvent): void {
+		if (e.target !== e.currentTarget) return;
+		const action = surfaceKeyboardAction(e.key, e.shiftKey);
+		if (action === "quick-add") {
+			e.preventDefault();
+			openQuickAddAt(KEYBOARD_SLOT_MIN);
+			return;
+		}
+		if (action === "menu") {
+			e.preventDefault();
+			openContextMenuFromKeyboard();
+		}
+	}
+
+	/** Arrow keys on a focused timed occurrence are the keyboard counterpart of
+	 * dragging its block: ←/→ move day, ↑/↓ move by the 15-minute snap. */
+	function moveOccurrenceFromKeyboard(occ: EventOccurrence, key: string): void {
+		if (onMoveOccurrence === null || occ.time === null) return;
+		const action = occurrenceKeyboardAction(key);
+		if (action === null) return;
+		let toDate = date;
+		let minutes = Number(occ.time.slice(0, 2)) * 60 + Number(occ.time.slice(3, 5));
+		if (action === "move-left") toDate = addDaysIso(date, -1);
+		else if (action === "move-right") toDate = addDaysIso(date, 1);
+		else if (action === "move-up") minutes = Math.max(0, minutes - SNAP_STEP_MIN);
+		else minutes = Math.min(MINUTES_PER_DAY - SNAP_STEP_MIN, minutes + SNAP_STEP_MIN);
+		const drag: OccurrenceDrag = {
+			kind: occ.kind,
+			date: occ.date,
+			time: occ.time,
+			timeEnd: occ.timeEnd,
+		};
+		void onMoveOccurrence(
+			occ.task.key,
+			drag,
+			toDate,
+			minutesToTime(snapMinutes(minutes)),
+		).catch((error) => new Notice(`GTD Flow: не удалось перенести событие: ${String(error)}`));
+	}
+
 	function focusInput(el: HTMLInputElement): void {
 		el.focus();
 	}
@@ -266,31 +332,53 @@
 		const endMin = addingEndMin;
 		const kind = quickAddKind;
 		const text = draft;
-		const location = locationDraft.trim() === "" ? null : locationDraft.trim();
+		const locationText = locationDraft;
+		const location = locationText.trim() === "" ? null : locationText.trim();
 		cancelDraft();
 		if (min === null || text.trim() === "") return;
 		const time = minutesToTime(min);
 		const timeEnd = endMin !== null ? minutesToTime(endMin) : null;
 		// «Событие» → инлайн-создание события с временем слота; иначе — задача (как прежде).
 		// Место (📍) идёт в обе ветки: у события — в createSingleEvent, у задачи — полем 📍.
-		if (kind === "event" && onQuickAddEvent !== null)
-			void onQuickAddEvent(date, text, time, timeEnd, location);
-		else void onQuickAdd(date, text, time, timeEnd, location);
+		const action =
+			kind === "event" && onQuickAddEvent !== null
+				? () => onQuickAddEvent(date, text, time, timeEnd, location)
+				: () => onQuickAdd(date, text, time, timeEnd, location);
+		reportAsync(
+			kind === "event" ? "не удалось создать событие" : "не удалось добавить задачу",
+			async () => {
+				try {
+					await action();
+				} catch (error) {
+					// A later quick-add must win over restoring this failed write's draft.
+					if (addingMin === null) {
+						addingMin = min;
+						addingEndMin = endMin;
+						draft = text;
+						locationDraft = locationText;
+					}
+					throw error;
+				}
+			},
+		);
 	}
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
 <div
 	class="gtd-tg-col"
 	class:is-today={date === today}
 	class:has-status={statusColor !== null}
 	style={statusColor !== null ? `--gtd-ds-color: ${statusColor}` : undefined}
 	bind:this={colEl}
+	role="gridcell"
+	tabindex="0"
+	aria-label={`Расписание ${date}. Enter — новая задача на 09:00, Shift+F10 — меню события`}
 	onpointerdown={onColPointerDown}
 	onpointermove={onColPointerMove}
 	onpointerup={onColPointerUp}
 	onpointercancel={onColPointerCancel}
 	oncontextmenu={onColContextMenu}
+	onkeydown={onColKeydown}
 >
 	{#each blocks as b (b.ev.task.key)}
 		<TimeGridBlock
@@ -307,7 +395,16 @@
 	{/each}
 	{#each eventBlocks as eb (eb.occ.task.key)}
 		{#if vault !== null}
-			<EventOccurrenceChip occ={eb.occ} block={eb.block} {app} {dispatcher} {vault} {dnd} {settings} />
+			<EventOccurrenceChip
+				occ={eb.occ}
+				block={eb.block}
+				{app}
+				{dispatcher}
+				{vault}
+				{dnd}
+				{settings}
+				onKeyboardMove={(key) => moveOccurrenceFromKeyboard(eb.occ, key)}
+			/>
 		{/if}
 	{/each}
 	{#if nowMinutes !== null && date === today}
@@ -341,8 +438,12 @@
 			<input
 				class="gtd-tg-quickadd-input"
 				type="text"
-				placeholder="{quickAddKind === 'event' ? 'Новое событие' : 'Новая задача'} {slotRange}…"
-				aria-label="{quickAddKind === 'event' ? 'Новое событие' : 'Новая задача'} на {date} {slotRange}"
+				placeholder="{quickAddKind === 'event'
+					? 'Новое событие'
+					: 'Новая задача'} {slotRange}…"
+				aria-label="{quickAddKind === 'event'
+					? 'Новое событие'
+					: 'Новая задача'} на {date} {slotRange}"
 				bind:value={draft}
 				use:focusInput
 				onkeydown={(e) => {

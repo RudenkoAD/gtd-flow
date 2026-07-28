@@ -150,7 +150,11 @@ const ORDINAL_RE = /^(\d+)(st|nd|rd|th)?$/;
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 export function parseRule(text: string): Rule | ParseError {
-	const tokens = text.trim().toLowerCase().split(/[\s,]+/).filter((t) => t.length > 0);
+	const tokens = text
+		.trim()
+		.toLowerCase()
+		.split(/[\s,]+/)
+		.filter((t) => t.length > 0);
 	let i = 0;
 
 	// префикс: «every» (календарь) либо «every!» (от выполнения, §every!)
@@ -227,7 +231,8 @@ export function parseRule(text: string): Rule | ParseError {
 					return { error: `invalid time range '${spec}' after 'at'` };
 				}
 				// лексикографика "HH:mm" == хронология: конец строго позже начала
-				if (endPart <= startPart) return { error: "'at' end time must be after start time" };
+				if (endPart <= startPart)
+					return { error: "'at' end time must be after start time" };
 				eventTime = startPart;
 				eventTimeEnd = endPart;
 			}

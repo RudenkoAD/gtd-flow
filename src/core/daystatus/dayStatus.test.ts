@@ -16,7 +16,12 @@ import {
 
 describe("normalizeStatusDefs", () => {
 	it("объект имя→цвет; мусор отброшен", () => {
-		const m = normalizeStatusDefs({ работаю: "#4c8bf5", "": "#000", учусь: "", выходной: "#4caf50" });
+		const m = normalizeStatusDefs({
+			работаю: "#4c8bf5",
+			"": "#000",
+			учусь: "",
+			выходной: "#4caf50",
+		});
 		expect([...m]).toEqual([
 			["работаю", "#4c8bf5"],
 			["выходной", "#4caf50"],
@@ -140,11 +145,12 @@ describe("writeback тела", () => {
 
 describe("withEditedBody", () => {
 	it("сохраняет frontmatter, правит только тело", () => {
-		const content = '---\ngtd-day-status: true\nstatuses:\n  работаю: "#4c8bf5"\n---\n2026-07-20: работаю\n';
+		const content =
+			'---\ngtd-day-status: true\nstatuses:\n  работаю: "#4c8bf5"\n---\n2026-07-20: работаю\n';
 		const out = withEditedBody(content, (b) => setSingleDayBody(b, "2026-07-21", "работаю"));
-		expect(out.startsWith('---\ngtd-day-status: true\nstatuses:\n  работаю: "#4c8bf5"\n---\n')).toBe(
-			true,
-		);
+		expect(
+			out.startsWith('---\ngtd-day-status: true\nstatuses:\n  работаю: "#4c8bf5"\n---\n'),
+		).toBe(true);
 		expect(out).toContain("2026-07-21: работаю");
 		expect(out).toContain("2026-07-20: работаю");
 	});

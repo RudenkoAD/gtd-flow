@@ -10,6 +10,7 @@
  */
 import { Modal, Notice, type App } from "obsidian";
 import { isParseError, parseRule } from "../../core/recurrence/grammar";
+import { reportAsync } from "../common/runAction";
 
 /** Примеры-подсказки правил именно для покраски дней; клик подставляет пример. */
 export const DAY_RULE_EXAMPLES: readonly string[] = [
@@ -106,7 +107,8 @@ export class DayStatusRuleModal extends Modal {
 			if (status === "") return;
 			const rule = input.value.trim();
 			this.close();
-			void this.port.addRecurring(rule, status).then(() => {
+			reportAsync("добавление правила статусов дней", async () => {
+				await this.port.addRecurring(rule, status);
 				new Notice(`Правило добавлено: ${rule} → ${status}`);
 			});
 		};
@@ -118,11 +120,10 @@ export class DayStatusRuleModal extends Modal {
 		paint.addEventListener("click", submit);
 
 		// Статусы нужны для select: если палитры ещё нет — создаём файл со стартовой.
-		const init = async (): Promise<void> => {
+		reportAsync("подготовка статусов дней", async () => {
 			if (this.port.statuses().length === 0) await this.port.ensureConfig();
 			fillStatuses();
-		};
-		void init();
+		});
 
 		validate();
 		input.focus();

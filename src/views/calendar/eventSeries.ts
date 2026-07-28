@@ -57,7 +57,11 @@ function applyLocation(line: string, location: string | null): string | null {
  * null (не пишем). Непустое место дописывается полем 📍 (setValueField ядра);
  * недопустимое место (эмодзи поля) — тоже null.
  */
-export function buildEventLine(name: string, ruleText: string, location: string | null = null): string | null {
+export function buildEventLine(
+	name: string,
+	ruleText: string,
+	location: string | null = null,
+): string | null {
 	const n = name.replace(/\s+/g, " ").trim();
 	if (n === "") return null;
 	return applyLocation(`- [ ] ${n} 🔁 ${ruleText.trim()}`, location);
@@ -229,7 +233,9 @@ export async function createEventSeries(deps: {
 	} catch {
 		return { ok: false, reason: "events-file-create-failed" };
 	}
-	const ok = await deps.vault.processFile(deps.eventsFile, (content) => appendLine(content, line));
+	const ok = await deps.vault.processFile(deps.eventsFile, (content) =>
+		appendLine(content, line),
+	);
 	return ok ? { ok: true } : { ok: false, reason: "write-failed" };
 }
 
@@ -265,7 +271,9 @@ export async function createSingleEvent(deps: {
 	} catch {
 		return { ok: false, reason: "events-file-create-failed" };
 	}
-	const ok = await deps.vault.processFile(deps.eventsFile, (content) => appendLine(content, line));
+	const ok = await deps.vault.processFile(deps.eventsFile, (content) =>
+		appendLine(content, line),
+	);
 	return ok ? { ok: true } : { ok: false, reason: "write-failed" };
 }
 
@@ -353,7 +361,8 @@ export async function editEventSeries(deps: {
 	if (isParseError(parsedRule)) return { ok: false, reason: "invalid-rule" };
 	// серии событий с «every!» запрещены — событие не «выполняется» (§every!)
 	if (parsedRule.fromCompletion) return { ok: false, reason: EVENT_COMPLETION_REASON };
-	if (buildEventLine(deps.name, deps.ruleText) === null) return { ok: false, reason: "empty-name" };
+	if (buildEventLine(deps.name, deps.ruleText) === null)
+		return { ok: false, reason: "empty-name" };
 	let failure: string | null = "file-not-found";
 	try {
 		await deps.vault.processFile(deps.task.filePath, (content) => {
@@ -364,7 +373,12 @@ export async function editEventSeries(deps: {
 				failure = "line-not-found";
 				return null;
 			}
-			const next = editEventLine(lines[idx]!, deps.name, deps.ruleText, deps.location ?? null);
+			const next = editEventLine(
+				lines[idx]!,
+				deps.name,
+				deps.ruleText,
+				deps.location ?? null,
+			);
 			if (next === null) {
 				// имя (стр. выше) и правило (parseRule) уже валидны — значит null
 				// дало недопустимое место; отделяем его от прочих сбоев правкой без

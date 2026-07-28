@@ -37,7 +37,10 @@ describe("expandOccurrences — границы диапазона", () => {
 
 	it("уважает until (включительно)", () => {
 		const r: Rule = { freq: "daily", n: 1, until: "2026-07-16" };
-		expect(expandOccurrences(r, "2026-07-15", "2026-07-20")).toEqual(["2026-07-15", "2026-07-16"]);
+		expect(expandOccurrences(r, "2026-07-15", "2026-07-20")).toEqual([
+			"2026-07-15",
+			"2026-07-16",
+		]);
 	});
 });
 
@@ -127,7 +130,10 @@ describe("expandOccurrences — from (нижняя граница)", () => {
 			from: "2026-07-15",
 			until: "2026-07-22",
 		};
-		expect(expandOccurrences(r, "2026-07-01", "2026-08-31")).toEqual(["2026-07-15", "2026-07-22"]);
+		expect(expandOccurrences(r, "2026-07-01", "2026-08-31")).toEqual([
+			"2026-07-15",
+			"2026-07-22",
+		]);
 	});
 
 	it("from сочетается с исключениями (🚫)", () => {
@@ -163,9 +169,18 @@ describe("expandOccurrences — weekly n>1 чётность недель (яко
 	it("фаза НЕ зависит от начала видимого диапазона (регресс «появляется каждую неделю»)", () => {
 		const r: Rule = { freq: "weekly", n: 2, byDay: [1], from: "2026-07-14" };
 		// диапазон, начинающийся до/после вторника, даёт ОДНУ И ТУ ЖЕ фазу
-		expect(expandOccurrences(r, "2026-07-01", "2026-07-31")).toEqual(["2026-07-14", "2026-07-28"]);
-		expect(expandOccurrences(r, "2026-07-02", "2026-07-31")).toEqual(["2026-07-14", "2026-07-28"]);
-		expect(expandOccurrences(r, "2026-06-29", "2026-08-09")).toEqual(["2026-07-14", "2026-07-28"]);
+		expect(expandOccurrences(r, "2026-07-01", "2026-07-31")).toEqual([
+			"2026-07-14",
+			"2026-07-28",
+		]);
+		expect(expandOccurrences(r, "2026-07-02", "2026-07-31")).toEqual([
+			"2026-07-14",
+			"2026-07-28",
+		]);
+		expect(expandOccurrences(r, "2026-06-29", "2026-08-09")).toEqual([
+			"2026-07-14",
+			"2026-07-28",
+		]);
 	});
 
 	it("несколько дней в неделю сохраняют фазу", () => {
@@ -223,9 +238,9 @@ describe("expandOccurrences — weekly n>1 чётность недель (яко
 
 	it("явный anchor-аргумент задаёт фазу при отсутствии from", () => {
 		const r: Rule = { freq: "weekly", n: 2, byDay: [1] };
-		expect(expandOccurrences(r, "2026-07-01", "2026-08-01", undefined, undefined, "2026-07-14")).toEqual(
-			["2026-07-14", "2026-07-28"],
-		);
+		expect(
+			expandOccurrences(r, "2026-07-01", "2026-08-01", undefined, undefined, "2026-07-14"),
+		).toEqual(["2026-07-14", "2026-07-28"]);
 	});
 
 	it("n=1 с byDay не режется якорем (обратная совместимость)", () => {
@@ -344,7 +359,9 @@ describe("expandOccurrences — cap", () => {
 	});
 
 	it("cap<=0 — пусто", () => {
-		expect(expandOccurrences({ freq: "daily", n: 1 }, "2026-01-01", "2026-12-31", 0)).toEqual([]);
+		expect(expandOccurrences({ freq: "daily", n: 1 }, "2026-01-01", "2026-12-31", 0)).toEqual(
+			[],
+		);
 	});
 
 	it("дефолтный потолок ограничивает очень широкий разворот", () => {

@@ -1,0 +1,17 @@
+# Dependency and build output are not authored source.
+node_modules/
+dist/
+coverage/
+test-results/
+playwright-report/
+test-vault/
+main.js
+mcp-server.js
+widget-core.js
+*.map
+
+# npm owns the lockfile; formatting it outside npm makes reviews noisy.
+package-lock.json
+
+# Managed separately; formatting is deliberately out of scope for TD-18.
+docs/TECHNICAL_DEBT_REPORT.md

@@ -1,11 +1,12 @@
 /**
  * Загрузка настроек и разрешение пространств для виджет-бандла.
  *
- * Настройки читаются из СЫРОГО data.json тем же mergeSettings + DEFAULT_SETTINGS +
- * normalizeActiveNamespace, что и плагин/MCP (config.ts) — namespaces, commonRoot,
- * eventsFile, calendarPlacement, inboxIncludePlain трактуются идентично. Отличие от
- * mcp/config: источник — строка из входа (а не файл на диске), поэтому здесь нет fs.
- * null / битый JSON ⇒ чистые дефолты (виджет работает и без плагина).
+ * Настройки читаются из СЫРОГО data.json и нормализуются к widget-подмножеству
+ * (namespaces, commonRoot, calendarPlacement, inboxIncludePlain). Полная
+ * versioned Zod-валидация живёт в plugin-only settings/mergeSettings: тащить её
+ * в QuickJS-бандл нельзя, потому что зависимость использует Node globals. Отличие
+ * от mcp/config: источник — строка из входа (а не файл на диске), поэтому здесь
+ * нет fs. null / битый JSON ⇒ чистые дефолты (виджет работает и без плагина).
  *
  * Разрешение имени пространства (аргумент виджета «Работа»/«Общее»/«Все»/null) —
  * ЛЕНИЕНТНОЕ (в отличие от mcp/namespaces.resolveNamespaceFilter, который бросает):
@@ -19,14 +20,14 @@ import {
 	type NamespaceDef,
 	type NamespaceFilter,
 } from "../core/namespace/namespace";
+import { ALL_NAMESPACES_LABEL, COMMON_NAMESPACE_LABEL } from "../core/namespace/labels";
 import { normalizeActiveNamespace } from "../core/namespace/namespace";
-import { DEFAULT_SETTINGS, type GtdFlowSettings } from "../settings/Settings";
-import { mergeSettings } from "../settings/mergeSettings";
+import { DEFAULT_SETTINGS, type CalendarField, type GtdFlowSettings } from "../settings/Settings";
 
 /** Отображаемое имя встроенного пространства «Общее» (всё вне корней). */
-export const COMMON_LABEL = "Общее";
+export const COMMON_LABEL = COMMON_NAMESPACE_LABEL;
 /** Отображаемое имя агрегата «Все пространства». */
-export const ALL_LABEL = "Все";
+export const ALL_LABEL = ALL_NAMESPACES_LABEL;
 
 export interface LoadedSettings {
 	settings: GtdFlowSettings;
@@ -46,9 +47,79 @@ export function loadWidgetSettings(dataJson: string | null): LoadedSettings {
 			loaded = null;
 		}
 	}
-	const merged = mergeSettings(DEFAULT_SETTINGS, loaded);
+	const merged = mergeWidgetSettings(loaded);
 	merged.activeNamespace = normalizeActiveNamespace(merged.activeNamespace, merged.namespaces);
 	return { settings: merged, error };
+}
+
+/**
+ * Widget reads only four persisted settings. Validate precisely those fields and
+ * deep-copy their collections; everything else remains a factory default. This
+ * keeps the standalone QuickJS artifact free of Node-oriented validation code
+ * while malformed data.json still cannot crash namespace/calendar rendering.
+ */
+function mergeWidgetSettings(raw: unknown): GtdFlowSettings {
+	const settings: GtdFlowSettings = {
+		...DEFAULT_SETTINGS,
+		calendarPlacement: [...DEFAULT_SETTINGS.calendarPlacement],
+		namespaces: [],
+	};
+	if (!isRecord(raw)) return settings;
+	if (
+		typeof raw.commonRoot === "string" &&
+		raw.commonRoot.length <= 1024 &&
+		!raw.commonRoot.includes("\u0000")
+	) {
+		settings.commonRoot = raw.commonRoot.trim();
+	}
+	if (typeof raw.inboxIncludePlain === "boolean")
+		settings.inboxIncludePlain = raw.inboxIncludePlain;
+	if (typeof raw.activeNamespace === "string" && raw.activeNamespace.length <= 256) {
+		settings.activeNamespace = raw.activeNamespace;
+	}
+	const placement = raw.calendarPlacement;
+	if (isCalendarPlacement(placement)) settings.calendarPlacement = [...placement];
+	const namespaces = raw.namespaces;
+	if (Array.isArray(namespaces)) {
+		const seen = new Set<string>();
+		for (const entry of namespaces) {
+			if (
+				!isRecord(entry) ||
+				typeof entry.name !== "string" ||
+				typeof entry.root !== "string"
+			)
+				continue;
+			const name = entry.name.trim();
+			const root = entry.root.trim().replace(/\/+$/, "");
+			if (
+				name === "" ||
+				root === "" ||
+				seen.has(name) ||
+				name.length > 256 ||
+				root.length > 1024
+			)
+				continue;
+			seen.add(name);
+			settings.namespaces.push({ name, root });
+		}
+	}
+	return settings;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isCalendarPlacement(value: unknown): value is CalendarField[] {
+	return (
+		Array.isArray(value) &&
+		value.length === 3 &&
+		value.every(
+			(field): field is CalendarField =>
+				field === "due" || field === "scheduled" || field === "start",
+		) &&
+		new Set(value).size === 3
+	);
 }
 
 /** Внутреннее активное имя пространства → человекочитаемая метка. */
@@ -82,6 +153,9 @@ export function resolveWidgetActive(
 ): string {
 	if (arg === null || arg === undefined || arg.trim() === "") return DEFAULT_NS;
 	const a = arg.trim();
+	// Same precedence as MCP: a real namespace named "All"/"Default" remains
+	// addressable instead of being shadowed by a convenient alias.
+	if (settings.namespaces.some((d) => d.name === a)) return a;
 	const lower = a.toLowerCase();
 	if (a === ALL_LABEL || lower === "all" || a === "*") {
 		return allowAll ? ALL_NS : DEFAULT_NS;

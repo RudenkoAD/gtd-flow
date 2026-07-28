@@ -57,7 +57,11 @@ export function formatDeferPresets(presets: readonly DeferPreset[]): string {
  * Строгое целое в диапазоне [min, max]; всё прочее (пусто, дробь, «12abc»,
  * NaN) → null. Строже Number(): «» и «  » Number превращает в 0.
  */
-export function parseIntInRange(raw: string, min: number, max = Number.MAX_SAFE_INTEGER): number | null {
+export function parseIntInRange(
+	raw: string,
+	min: number,
+	max = Number.MAX_SAFE_INTEGER,
+): number | null {
 	const s = raw.trim();
 	if (!/^[+-]?\d+$/.test(s)) return null;
 	const n = Number(s);
@@ -114,7 +118,10 @@ export const CALENDAR_FIELDS: readonly CalendarField[] = ["due", "scheduled", "s
  * относительный порядок (fallback). Дубликаты и пропуски из руками
  * правленного data.json нормализуются: результат — всегда все три поля.
  */
-export function reorderCalendarPlacement(current: readonly CalendarField[], primary: CalendarField): CalendarField[] {
+export function reorderCalendarPlacement(
+	current: readonly CalendarField[],
+	primary: CalendarField,
+): CalendarField[] {
 	const rest: CalendarField[] = [];
 	for (const f of [...current, ...CALENDAR_FIELDS]) {
 		if (f !== primary && CALENDAR_FIELDS.includes(f) && !rest.includes(f)) rest.push(f);

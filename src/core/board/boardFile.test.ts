@@ -53,8 +53,16 @@ describe("parseBoardFrontmatter: valid input", () => {
 	});
 
 	it("accepts groupBy 'status' via either key spelling (метаданные, колонки — теги)", () => {
-		const a = parseBoardFrontmatter({ id: "b", columns: [{ id: "c", match: "#c" }], "group-by": "status" });
-		const b = parseBoardFrontmatter({ id: "b", columns: [{ id: "c", match: "#c" }], groupBy: "status" });
+		const a = parseBoardFrontmatter({
+			id: "b",
+			columns: [{ id: "c", match: "#c" }],
+			"group-by": "status",
+		});
+		const b = parseBoardFrontmatter({
+			id: "b",
+			columns: [{ id: "c", match: "#c" }],
+			groupBy: "status",
+		});
 		if (isBoardError(a) || isBoardError(b)) throw new Error("expected valid boards");
 		expect(a.groupBy).toBe("status");
 		expect(b.groupBy).toBe("status");
@@ -113,7 +121,11 @@ describe("parseBoardFrontmatter: malformed input", () => {
 	it("column without id or match, and invalid match spec", () => {
 		const res = parseBoardFrontmatter({
 			id: "b",
-			columns: [{ name: "x" }, { id: "c1", match: "tag-without-hash" }, { id: "c2", match: "plain" }],
+			columns: [
+				{ name: "x" },
+				{ id: "c1", match: "tag-without-hash" },
+				{ id: "c2", match: "plain" },
+			],
 		});
 		expect(isBoardError(res)).toBe(true);
 		if (!isBoardError(res)) return;
@@ -143,23 +155,42 @@ describe("parseBoardFrontmatter: malformed input", () => {
 	});
 
 	it("order of wrong shape", () => {
-		const notMap = parseBoardFrontmatter({ id: "b", columns: [{ id: "c", match: "#a" }], order: "xx" });
+		const notMap = parseBoardFrontmatter({
+			id: "b",
+			columns: [{ id: "c", match: "#a" }],
+			order: "xx",
+		});
 		expect(isBoardError(notMap)).toBe(true);
 
-		const notArray = parseBoardFrontmatter({ id: "b", columns: [{ id: "c", match: "#a" }], order: { c: "t1" } });
+		const notArray = parseBoardFrontmatter({
+			id: "b",
+			columns: [{ id: "c", match: "#a" }],
+			order: { c: "t1" },
+		});
 		expect(isBoardError(notArray)).toBe(true);
 
-		const nonString = parseBoardFrontmatter({ id: "b", columns: [{ id: "c", match: "#a" }], order: { c: ["t1", 5] } });
+		const nonString = parseBoardFrontmatter({
+			id: "b",
+			columns: [{ id: "c", match: "#a" }],
+			order: { c: ["t1", 5] },
+		});
 		expect(isBoardError(nonString)).toBe(true);
 	});
 
 	it("non-string scope", () => {
-		const res = parseBoardFrontmatter({ id: "b", columns: [{ id: "c", match: "#a" }], scope: 7 });
+		const res = parseBoardFrontmatter({
+			id: "b",
+			columns: [{ id: "c", match: "#a" }],
+			scope: 7,
+		});
 		expect(isBoardError(res)).toBe(true);
 	});
 
 	it("collects several errors at once", () => {
-		const res = parseBoardFrontmatter({ columns: [{ id: "c", match: "bad" }], "group-by": "nope" });
+		const res = parseBoardFrontmatter({
+			columns: [{ id: "c", match: "bad" }],
+			"group-by": "nope",
+		});
 		expect(isBoardError(res)).toBe(true);
 		if (!isBoardError(res)) return;
 		expect(res.messages.length).toBeGreaterThanOrEqual(3);

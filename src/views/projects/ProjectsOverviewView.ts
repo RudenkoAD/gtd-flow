@@ -1,6 +1,7 @@
 import type { Component } from "svelte";
 import type GtdFlowPlugin from "../../main";
 import type { ProjectPort } from "../../services/ProjectService";
+import { reportAsync } from "../common/runAction";
 import { GtdView } from "../GtdView";
 import { VIEW_META, VIEW_TYPES } from "../registry";
 import ProjectsOverview from "./ProjectsOverview.svelte";
@@ -15,8 +16,8 @@ export class ProjectsOverviewView extends GtdView {
 	// без staticMeta вид падает на Obsidian ≥1.12.
 	protected static override staticMeta = VIEW_META.projects;
 
-	protected override component(): Component<any> {
-		return ProjectsOverview as unknown as Component<any>;
+	protected override component(): Component<Record<string, unknown>> {
+		return ProjectsOverview as unknown as Component<Record<string, unknown>>;
 	}
 
 	protected override props(): Record<string, unknown> {
@@ -25,6 +26,8 @@ export class ProjectsOverviewView extends GtdView {
 			taskStore: plugin.taskStore,
 			projects: plugin.projects ?? null,
 			app: plugin.app,
+			settings: plugin.settings,
+			settingsRevision: plugin.settingsRevision.store,
 			// ЛОКАЛЬНОЕ пространство вида (per-tab): реактивный источник, список
 			// определений и локальный сеттер — для NamespaceSwitcher в шапке, фильтра
 			// discovery проектов и ns-цели нового проекта. Смена активного эпоху
@@ -32,7 +35,8 @@ export class ProjectsOverviewView extends GtdView {
 			activeNamespace$: { subscribe: this.localNamespace$.subscribe },
 			namespaces: plugin.settings.namespaces,
 			setActiveNamespace: (name: string) => this.setLocalNamespace(name),
-			openProject: (projectPath: string) => void this.openProjectGraph(projectPath),
+			openProject: (projectPath: string) =>
+				reportAsync("открытие проекта", () => this.openProjectGraph(projectPath)),
 		};
 	}
 

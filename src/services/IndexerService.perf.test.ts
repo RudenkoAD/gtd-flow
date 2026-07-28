@@ -182,7 +182,10 @@ describe(`перф-смоук: ${FILES} файлов × ${TASKS_PER_FILE} зад
 
 	it(`инкрементальная правка одного файла < ${INCREMENTAL_BUDGET_MS}мс`, async () => {
 		const snaps = genVault();
-		const { events, indexer } = makeIndexer({ initialScan: () => scanOf(snaps), debounceMs: 0 });
+		const { events, indexer } = makeIndexer({
+			initialScan: () => scanOf(snaps),
+			debounceMs: 0,
+		});
 		await indexer.start();
 
 		// правка «тёплого» файла: тот же путь, новый текст всех 20 задач

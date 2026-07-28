@@ -15,6 +15,18 @@ function matchesSpec(task: Task, spec: MatchSpec): boolean {
 }
 
 /**
+ * `scope: path:<folder>` означает именно папку и её потомков, а не простой
+ * строковый префикс. Поэтому `path:GTD` и документированный `path:GTD/`
+ * одинаково включают `GTD/a.md`, но никогда `GTD2/a.md`. Пустой path-scope не
+ * расширяет охват: доска всё ещё видит собственный файл и свои column tags.
+ */
+export function matchesPathScope(filePath: string, rawScopePath: string): boolean {
+	const scope = rawScopePath.trim().replace(/\/+$/, "");
+	const path = filePath.trim().replace(/\/+$/, "");
+	return scope !== "" && (path === scope || path.startsWith(scope + "/"));
+}
+
+/**
  * Колонка задачи на доске или null, если ни одна не подходит.
  * Задача может подходить нескольким колонкам — ПЕРВАЯ по порядку
  * board.columns побеждает (детерминизм вместо дублирования карточки).
@@ -33,7 +45,8 @@ export function resolveColumn(task: Task, board: BoardDef): string | null {
  * если выполнено хотя бы одно из:
  *   (a) строка задачи в самом файле доски (task.filePath === boardPath);
  *   (b) на задаче есть тег колонки ЭТОЙ доски '#kanban/<def.id>/…';
- *   (c) у доски задан scope 'path:…' и путь задачи под этим префиксом.
+ *   (c) у доски задан scope 'path:…' и путь задачи в этой папке либо её
+ *       потомке (сегментная, а не строковая граница).
  * Иначе чужая задача (в т.ч. выполненная из другого файла или помеченная
  * тегом другой доски) на доску не протекает — иначе выполненные со всего
  * хранилища собирались бы на первой попавшейся доске.
@@ -48,7 +61,7 @@ export function belongsToBoard(task: Task, boardPath: string, board: BoardDef): 
 	});
 	if (hasColumnTag) return true;
 	if (board.scope !== undefined && board.scope.startsWith("path:")) {
-		return task.filePath.startsWith(board.scope.slice("path:".length));
+		return matchesPathScope(task.filePath, board.scope.slice("path:".length));
 	}
 	return false;
 }

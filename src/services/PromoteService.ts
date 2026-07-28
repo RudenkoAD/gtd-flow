@@ -17,9 +17,13 @@
  * ensureCaptureFileNs), как spawnTargetFor/ensureFile у RecurrenceService.
  */
 import type { IsoDate, Task } from "../core/model/Task";
-import { planPromotions, type PlannedPromotion } from "../core/tickler/promote";
+import {
+	planPromotions,
+	type PlannedPromotion,
+	type PromotionRetry,
+} from "../core/tickler/promote";
 import type { IndexFeed } from "./types";
-import type { IntentDispatcher } from "./WritebackService";
+import type { EnsureTaskIdResult, IntentDispatcher } from "./WritebackService";
 
 export interface PromoteReport {
 	/** Сколько задач полностью промоутнуто (все шаги успешны). */
@@ -54,8 +58,16 @@ export interface PromoteDeps {
 	 *  ещё не было. Кандидаты каждого прохода — start ∈ (lastRun, today]. */
 	lastRun: () => IsoDate | null;
 	/** Персист последнего обработанного дня (продвигается КАЖДЫМ проходом,
-	 *  независимо от режима — включение "inbox" позже не сметает origin-бэклог). */
+	 *  независимо от режима — включение "inbox" позже не сметает origin-бэклог).
+	 * Не вызывается, пока хотя бы одна promotion-операция не подтверждена. */
 	setLastRun: (day: IsoDate) => Promise<void>;
+	/** Обязательная стабилизация id специально для многошагового promotion. Не
+	 * зависит от настройки autoInjectId: журнал должен пережить рестарт процесса. */
+	ensureTaskId: (key: string) => Promise<EnsureTaskIdResult>;
+	/** Долговечный журнал незавершённых операций. Запись сохраняется ДО первой
+	 * мутации строки и удаляется только после подтверждения финального состояния. */
+	promotionRetries: () => readonly PromotionRetry[];
+	setPromotionRetries: (retries: readonly PromotionRetry[]) => Promise<void>;
 }
 
 export class PromoteService implements PromotePort {
@@ -88,19 +100,35 @@ export class PromoteService implements PromotePort {
 		if (!this.deps.indexReady()) return report;
 		const today = this.deps.todayIso();
 		const last = this.deps.lastRun();
+
+		// Journalled work is always attempted first, including on the same day and
+		// after the user has switched the policy back to "origin".  Otherwise a
+		// line whose start marker was already removed would become invisible to the
+		// normal planner forever.
+		const retryPlan = this.retryPlan(report);
+		const retryIds = retryPlan.taskIds;
+		for (const retry of retryPlan.executable) {
+			if (await this.resumeRetry(retry, report)) report.promoted++;
+		}
+		if (this.deps.promotionRetries().length > 0) {
+			// The error is already specific above where possible.  This guard also
+			// covers a failed journal cleanup, which must not permit checkpointing.
+			if (report.errors.length === 0) report.errors.push("promotion retry is still pending");
+		}
+
 		// первый проход в жизни хранилища «усыновляет» сегодняшний день БЕЗ обработки:
 		// исторический бэклог давно наступивших 🛫 не сметается массовой перезаписью
 		// (ревью) — старые задачи продолжают всплывать чистой деривацией на месте
 		if (last === null) {
-			await this.deps.setLastRun(today);
+			if (report.errors.length === 0) await this.deps.setLastRun(today);
 			return report;
 		}
-		if (last >= today) return report; // день уже обработан
+		if (last >= today) return report; // журнал выше уже попробовали
 		const s = this.deps.settings();
 		// "origin" — прежнее поведение §5 (ноль записей), но день продвигаем: смена
 		// режима на "inbox" позже не должна ретроспективно обработать origin-период
 		if (s.promoteTo !== "inbox") {
-			await this.deps.setLastRun(today);
+			if (report.errors.length === 0) await this.deps.setLastRun(today);
 			return report;
 		}
 
@@ -109,72 +137,186 @@ export class PromoteService implements PromotePort {
 			since: last,
 		});
 		for (const p of plan) {
+			// A reindexed retry is also present in this window.  It was handled from
+			// its durable entry above, so never run a second, stale plan for it.
+			if (p.task.taskId !== null && retryIds.has(p.task.taskId)) continue;
 			if (await this.promoteOne(p, report)) report.promoted++;
 		}
-		await this.deps.setLastRun(today);
+		if (report.errors.length === 0 && this.deps.promotionRetries().length === 0)
+			await this.deps.setLastRun(today);
 		return report;
 	}
 
 	/**
-	 * Порядок шагов важен:
-	 *  1) снять 🛫 (интент «Вернуть во входящие») — первый и главный: задача
-	 *     перестаёт быть отложенной; на двух устройствах раннее снятие 🛫 сужает
-	 *     окно, в котором второе устройство ещё видит её кандидатом;
-	 *  2) снять теги колонок досок — иначе hasBoardTag прячет из входящих;
-	 *  3) перенос в inbox-файл (только needsMove) — СТРОГО последним: он двигает
-	 *     физическую строку, после чего индекс отстаёт и адресация шагов 1–2 по
-	 *     ключу целилась бы уже в исходный (пустой) файл. move-line сам вписывает
-	 *     🆔 и пропускает append при уже присутствующем 🆔 (идемпотентность повтора).
-	 *
-	 * Любой отказ прерывает задачу и копится в errors: неполная обработка
-	 * безопасна (потери строки нет — move-line атомарен пофайлово), пользователь
-	 * может перетащить карточку вручную. false ⇒ задача не засчитана promoted.
+	 * First anchor the task with an id and persist a retry record.  Every following
+	 * write is individually idempotent, so a restart after *any* substep resumes
+	 * from the journal rather than depending on the start marker still existing.
 	 */
 	private async promoteOne(p: PlannedPromotion, report: PromoteReport): Promise<boolean> {
-		const key = p.task.key;
+		const anchored = await this.deps.ensureTaskId(p.task.key);
+		if (!anchored.ok) {
+			report.errors.push(`ensure-id ${p.task.key}: ${anchored.reason}`);
+			return false;
+		}
+		const retry: PromotionRetry = {
+			taskId: anchored.taskId,
+			source: p.task.filePath,
+			target: p.needsMove ? this.deps.inboxTargetFor(p.task) : null,
+		};
+		if (!(await this.rememberRetry(retry, report))) return false;
+		return this.applyPromotion(p.task, p.stripTags, retry, report);
+	}
 
-		// 1. снять 🛫 — тот же интент, что «Вернуть во входящие» в меню тикля
-		const clr = await this.deps.dispatcher.dispatch({
+	/** Replay one persisted operation against the current index. */
+	private async resumeRetry(retry: PromotionRetry, report: PromoteReport): Promise<boolean> {
+		const carriers = this.deps.feed.getIndex().resolveDep(retry.taskId);
+		if (carriers.length === 0) {
+			report.errors.push(`promotion retry ${retry.taskId}: task-not-found`);
+			return false;
+		}
+		let task: Task | undefined;
+		if (retry.target === null) {
+			if (carriers.length === 1) task = carriers[0];
+		} else {
+			const inTarget = carriers.filter((carrier) => carrier.filePath === retry.target);
+			const inSource = carriers.filter((carrier) => carrier.filePath === retry.source);
+			if (inTarget.length <= 1 && inSource.length === 1) task = inSource[0];
+			else if (inTarget.length === 1 && inSource.length === 0 && carriers.length === 1)
+				task = inTarget[0];
+		}
+		if (task === undefined) {
+			report.errors.push(`promotion retry ${retry.taskId}: duplicate-id-conflict`);
+			return false;
+		}
+		return this.applyPromotion(task, boardTagsOf(task), retry, report);
+	}
+
+	/** Execute each write in a journalled operation.  The journal record is removed
+	 * only after all postconditions are confirmed by successful write calls. */
+	private async applyPromotion(
+		task: Task,
+		stripTags: readonly string[],
+		retry: PromotionRetry,
+		report: PromoteReport,
+	): Promise<boolean> {
+		const key = task.key;
+		if (retry.target !== null && retry.source === retry.target) {
+			report.errors.push(`move-line ${key}: same-file`);
+			return false;
+		}
+		const clear = await this.deps.dispatcher.dispatch({
 			type: "set-date",
 			key,
 			field: "start",
 			date: null,
 		});
-		if (!clr.ok) {
-			report.errors.push(`clear-start ${key}: ${clr.reason}`);
-			return false;
-		}
+		if (!clear.ok) return this.promotionError(report, `clear-start ${key}`, clear);
 
-		// 2. снять теги колонок досок (если есть)
-		if (p.stripTags.length > 0) {
+		if (stripTags.length > 0) {
 			const strip = await this.deps.dispatcher.dispatch({
 				type: "move-column",
 				key,
 				fromTag: null,
 				toTag: null,
-				fromTags: p.stripTags,
+				fromTags: [...stripTags],
 			});
-			if (!strip.ok) {
-				report.errors.push(`strip-tags ${key}: ${strip.reason}`);
-				return false;
-			}
+			if (!strip.ok) return this.promotionError(report, `strip-tags ${key}`, strip);
 		}
 
-		// 3. перенос в inbox-файл пространства — только если на месте задача
-		//    осталась бы скрытой формулой входящих (board / plain без includePlain)
-		if (p.needsMove) {
-			const target = this.deps.inboxTargetFor(p.task);
-			if (!(await this.deps.ensureInboxFile(target, p.task))) {
-				report.errors.push(`ensure-inbox ${key}: ${target}`);
+		if (retry.target !== null && task.filePath !== retry.target) {
+			if (!(await this.deps.ensureInboxFile(retry.target, task))) {
+				report.errors.push(`ensure-inbox ${key}: ${retry.target}`);
 				return false;
 			}
-			const mv = await this.deps.dispatcher.dispatch({ type: "move-line", key, toFile: target });
-			if (!mv.ok) {
-				report.errors.push(`move-line ${key}: ${mv.reason}`);
-				return false;
-			}
+			const moved = await this.deps.dispatcher.dispatch({
+				type: "move-line",
+				key,
+				toFile: retry.target,
+			});
+			if (!moved.ok) return this.promotionError(report, `move-line ${key}`, moved);
 			report.moved++;
 		}
+
+		if (!(await this.forgetRetry(retry.taskId, report))) return false;
 		return true;
 	}
+
+	private promotionError(
+		report: PromoteReport,
+		operation: string,
+		result: { ok: false; reason: string },
+	): false {
+		report.errors.push(`${operation}: ${result.reason}`);
+		return false;
+	}
+
+	private retryPlan(report: PromoteReport): {
+		executable: PromotionRetry[];
+		taskIds: Set<string>;
+	} {
+		const byId = new Map<string, PromotionRetry>();
+		const conflictingIds = new Set<string>();
+		for (const retry of this.deps.promotionRetries()) {
+			const previous = byId.get(retry.taskId);
+			if (previous === undefined) {
+				byId.set(retry.taskId, retry);
+				continue;
+			}
+			if (previous.target !== retry.target || previous.source !== retry.source) {
+				conflictingIds.add(retry.taskId);
+			}
+		}
+		for (const taskId of conflictingIds) {
+			report.errors.push(`promotion retry ${taskId}: journal-conflict`);
+		}
+		return {
+			executable: [...byId.values()].filter((retry) => !conflictingIds.has(retry.taskId)),
+			// Every persisted retry suppresses the normal planner.  In particular,
+			// corrupted conflicting entries must not fall through to a fresh move.
+			taskIds: new Set(byId.keys()),
+		};
+	}
+
+	private async rememberRetry(retry: PromotionRetry, report: PromoteReport): Promise<boolean> {
+		const current = this.deps.promotionRetries();
+		const conflicting = current.find(
+			(entry) =>
+				entry.taskId === retry.taskId &&
+				(entry.target !== retry.target || entry.source !== retry.source),
+		);
+		if (conflicting !== undefined) {
+			report.errors.push(`promotion retry ${retry.taskId}: target-conflict`);
+			return false;
+		}
+		if (current.some((entry) => entry.taskId === retry.taskId)) return true;
+		try {
+			await this.deps.setPromotionRetries([...current, retry]);
+			return true;
+		} catch (error) {
+			report.errors.push(`remember-promotion ${retry.taskId}: ${errorMessage(error)}`);
+			return false;
+		}
+	}
+
+	private async forgetRetry(taskId: string, report: PromoteReport): Promise<boolean> {
+		try {
+			await this.deps.setPromotionRetries(
+				this.deps.promotionRetries().filter((retry) => retry.taskId !== taskId),
+			);
+			return true;
+		} catch (error) {
+			report.errors.push(`complete-promotion ${taskId}: ${errorMessage(error)}`);
+			return false;
+		}
+	}
+}
+
+function boardTagsOf(task: Task): string[] {
+	return task.tags
+		.map((tag) => (tag.startsWith("#") ? tag : `#${tag}`))
+		.filter((tag) => tag.startsWith("#kanban/"));
+}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
 }

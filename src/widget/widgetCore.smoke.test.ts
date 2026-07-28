@@ -77,7 +77,10 @@ describe("widget-core bundle в QuickJS-подобном контексте", ()
 			agendaDays: 3,
 		});
 		const data = JSON.parse(json) as {
-			today: { items: { title: string; itemKind: string; rawLine: string }[]; generatedAt: string };
+			today: {
+				items: { title: string; itemKind: string; rawLine: string }[];
+				generatedAt: string;
+			};
 			agenda: { days: { date: string; items: { title: string }[] }[] };
 			inbox: { items: { title: string; namespace: string }[] };
 			errors: string[];
@@ -94,7 +97,9 @@ describe("widget-core bundle в QuickJS-подобном контексте", ()
 			"2026-07-21",
 			"2026-07-22",
 		]);
-		expect(data.agenda.days.every((d) => d.items.some((i) => i.title === "Планёрка"))).toBe(true);
+		expect(data.agenda.days.every((d) => d.items.some((i) => i.title === "Планёрка"))).toBe(
+			true,
+		);
 
 		// синхронные экспорты тоже работают в этом контексте
 		expect(api.buildCaptureLine("купить хлеб")).toBe("- [ ] купить хлеб");
@@ -111,7 +116,9 @@ describe("widget-core bundle в QuickJS-подобном контексте", ()
 		);
 
 		// buildEditedLine — синхронная правка строки, JSON-результат
-		const edited = JSON.parse(api.buildEditedLine("- [ ] задача из виджета", { title: "переименовано" })) as {
+		const edited = JSON.parse(
+			api.buildEditedLine("- [ ] задача из виджета", { title: "переименовано" }),
+		) as {
 			ok: boolean;
 			line?: string;
 		};

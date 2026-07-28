@@ -115,7 +115,12 @@ describe("WritebackService: локализация строки", () => {
 			"текст\n- [ ] позвонить в банк\nещё текст\n- [ ] позвонить в банк 🆔 abc\n",
 		);
 
-		const res = await svc.dispatch({ type: "set-date", key: task.key, field: "due", date: "2026-08-01" });
+		const res = await svc.dispatch({
+			type: "set-date",
+			key: task.key,
+			field: "due",
+			date: "2026-08-01",
+		});
 
 		expect(res).toEqual({ ok: true });
 		expect(port.files.get(INBOX)).toBe(
@@ -128,11 +133,19 @@ describe("WritebackService: локализация строки", () => {
 		const t0 = parseLine(INBOX, "- [ ] дубль", 0);
 		const t5 = parseLine(INBOX, "- [ ] дубль", 5);
 		feed.replaceFile(INBOX, [t0, t5]); // индекс уникализирует второй ключ сам
-		const stored5 = feed.getIndex().fileTasks(INBOX).find((t) => t.lineStart === 5)!;
+		const stored5 = feed
+			.getIndex()
+			.fileTasks(INBOX)
+			.find((t) => t.lineStart === 5)!;
 		// строка удалена выше — второй дубль съехал с 5-й на 4-ю
 		port.files.set(INBOX, "- [ ] дубль\nзаметка\nзаметка\nзаметка\n- [ ] дубль\n");
 
-		const res = await svc.dispatch({ type: "set-date", key: stored5.key, field: "due", date: "2026-08-01" });
+		const res = await svc.dispatch({
+			type: "set-date",
+			key: stored5.key,
+			field: "due",
+			date: "2026-08-01",
+		});
 
 		expect(res).toEqual({ ok: true });
 		expect(port.files.get(INBOX)).toBe(
@@ -147,7 +160,12 @@ describe("WritebackService: локализация строки", () => {
 		// единственная строка с тем же описанием несёт 🆔 — она принадлежит id-ключу
 		port.files.set(INBOX, "- [ ] дубль 🆔 zzz\n");
 
-		const res = await svc.dispatch({ type: "set-date", key: task.key, field: "due", date: "2026-08-01" });
+		const res = await svc.dispatch({
+			type: "set-date",
+			key: task.key,
+			field: "due",
+			date: "2026-08-01",
+		});
 
 		expect(res).toEqual({ ok: false, reason: "line-not-found" });
 		expect(port.files.get(INBOX)).toBe("- [ ] дубль 🆔 zzz\n");
@@ -177,7 +195,12 @@ describe("WritebackService: локализация строки", () => {
 
 	it("task-not-found при неизвестном key: порт не трогаем", async () => {
 		const { port, svc } = makeSvc();
-		const res = await svc.dispatch({ type: "set-date", key: "нет такого", field: "due", date: "2026-08-01" });
+		const res = await svc.dispatch({
+			type: "set-date",
+			key: "нет такого",
+			field: "due",
+			date: "2026-08-01",
+		});
 		expect(res).toEqual({ ok: false, reason: "task-not-found" });
 		expect(port.calls).toBe(0);
 	});
@@ -190,7 +213,10 @@ describe("WritebackService: протухший индекс при двойни�
 		const t0 = parseLine(INBOX, "- [ ] позвонить маме", 0);
 		const t1 = parseLine(INBOX, "- [ ] позвонить маме", 1);
 		h.feed.replaceFile(INBOX, [t0, t1]);
-		const stored0 = h.feed.getIndex().fileTasks(INBOX).find((t) => t.lineStart === 0)!;
+		const stored0 = h.feed
+			.getIndex()
+			.fileTasks(INBOX)
+			.find((t) => t.lineStart === 0)!;
 		return { ...h, stored0 };
 	}
 
@@ -255,7 +281,11 @@ describe("WritebackService: протухший индекс при двойни�
 		port.files.set(INBOX, "- [ ] позвонить маме 🆔 zz9\n- [ ] позвонить маме\n");
 		port.files.set("GTD/Project.md", "");
 
-		const res = await svc.dispatch({ type: "move-line", key: stored0.key, toFile: "GTD/Project.md" });
+		const res = await svc.dispatch({
+			type: "move-line",
+			key: stored0.key,
+			toFile: "GTD/Project.md",
+		});
 
 		expect(res).toEqual({ ok: false, reason: "stale-index" });
 		expect(port.writes).toHaveLength(0); // чужой двойник не уехал в другой файл
@@ -267,11 +297,17 @@ describe("WritebackService: протухший индекс при двойни�
 		port.files.set("GTD/Project.md", "");
 
 		await svc.dispatch({ type: "defer", key: stored0.key, until: "2026-07-20" }); // впишет 🆔 aa1
-		const res = await svc.dispatch({ type: "move-line", key: stored0.key, toFile: "GTD/Project.md" });
+		const res = await svc.dispatch({
+			type: "move-line",
+			key: stored0.key,
+			toFile: "GTD/Project.md",
+		});
 
 		expect(res).toEqual({ ok: true });
 		expect(port.files.get(INBOX)).toBe("- [ ] позвонить маме\n"); // двойник остался
-		expect(port.files.get("GTD/Project.md")).toBe("- [ ] позвонить маме 🆔 aa1 🛫 2026-07-20\n");
+		expect(port.files.get("GTD/Project.md")).toBe(
+			"- [ ] позвонить маме 🆔 aa1 🛫 2026-07-20\n",
+		);
 	});
 });
 
@@ -282,7 +318,12 @@ describe("WritebackService: ленивый 🆔", () => {
 		feed.replaceFile(INBOX, [task]);
 		port.files.set(INBOX, "- [ ] новая задача\n");
 
-		const res = await svc.dispatch({ type: "set-date", key: task.key, field: "due", date: "2026-08-01" });
+		const res = await svc.dispatch({
+			type: "set-date",
+			key: task.key,
+			field: "due",
+			date: "2026-08-01",
+		});
 
 		expect(res).toEqual({ ok: true });
 		expect(port.files.get(INBOX)).toBe("- [ ] новая задача 🆔 aa1 📅 2026-08-01\n");
@@ -340,7 +381,12 @@ describe("WritebackService: ленивый 🆔", () => {
 		feed.replaceFile(INBOX, [task]);
 		port.files.set(INBOX, "- [ ] свежая\n");
 
-		const res = await svc.dispatch({ type: "set-date", key: task.key, field: "due", date: "2026-08-01" });
+		const res = await svc.dispatch({
+			type: "set-date",
+			key: task.key,
+			field: "due",
+			date: "2026-08-01",
+		});
 
 		expect(res).toEqual({ ok: false, reason: "id-collision" });
 		expect(port.writes).toHaveLength(0);
@@ -356,7 +402,11 @@ describe("WritebackService: advance-cursor", () => {
 		feed.replaceFile(REC, [parseLine(REC, line, 0)]);
 		port.files.set(REC, `${line}\n`);
 
-		const res = await svc.dispatch({ type: "advance-cursor", templateId: "tpl1", date: "2026-08-31" });
+		const res = await svc.dispatch({
+			type: "advance-cursor",
+			templateId: "tpl1",
+			date: "2026-08-31",
+		});
 
 		expect(res).toEqual({ ok: true });
 		expect(port.files.get(REC)).toBe("- [ ] ревью 🔁 every month 🆔 tpl1 🔜 2026-08-31\n");
@@ -367,7 +417,11 @@ describe("WritebackService: advance-cursor", () => {
 		feed.replaceFile("a.md", [parseLine("a.md", "- [ ] ш 🆔 tpl1 🔜 2026-07-31", 0)]);
 		feed.replaceFile("b.md", [parseLine("b.md", "- [ ] ш 🆔 tpl1 🔜 2026-07-31", 0)]);
 
-		const res = await svc.dispatch({ type: "advance-cursor", templateId: "tpl1", date: "2026-08-31" });
+		const res = await svc.dispatch({
+			type: "advance-cursor",
+			templateId: "tpl1",
+			date: "2026-08-31",
+		});
 
 		expect(res).toEqual({ ok: false, reason: "duplicate-id" });
 		expect(port.calls).toBe(0);
@@ -376,6 +430,84 @@ describe("WritebackService: advance-cursor", () => {
 
 describe("WritebackService: move-line", () => {
 	const TARGET = "GTD/Project.md";
+
+	it("same-file отклоняется до любых записей", async () => {
+		const { port, feed, svc } = makeSvc({ genId: () => "mv1" });
+		const task = parseLine(INBOX, "- [ ] остаётся на месте", 0);
+		feed.replaceFile(INBOX, [task]);
+		const original = "- [ ] остаётся на месте\n";
+		port.files.set(INBOX, original);
+
+		const res = await svc.dispatch({ type: "move-line", key: task.key, toFile: INBOX });
+
+		expect(res).toEqual({ ok: false, reason: "same-file" });
+		expect(port.files.get(INBOX)).toBe(original);
+		expect(port.calls).toBe(0);
+		expect(port.writes).toHaveLength(0);
+	});
+
+	it("лексический alias того же файла отклоняется до любых записей", async () => {
+		const path = "GTD/Note.md";
+		const { port, feed, svc } = makeSvc();
+		const task = parseLine(path, "- [ ] не удалить 🆔 same1", 0);
+		feed.replaceFile(path, [task]);
+		const original = "- [ ] не удалить 🆔 same1\n";
+		port.files.set(path, original);
+
+		const res = await svc.dispatch({
+			type: "move-line",
+			key: task.key,
+			toFile: "GTD/folder/../Note.md",
+		});
+
+		expect(res).toEqual({ ok: false, reason: "same-file" });
+		expect(port.files.get(path)).toBe(original);
+		expect(port.calls).toBe(0);
+		expect(port.writes).toHaveLength(0);
+	});
+
+	it("цель, выходящая выше корня vault, отклоняется до записи", async () => {
+		const { port, feed, svc } = makeSvc();
+		const task = parseLine(INBOX, "- [ ] не вынести 🆔 safe1", 0);
+		feed.replaceFile(INBOX, [task]);
+		port.files.set(INBOX, "- [ ] не вынести 🆔 safe1\n");
+
+		expect(
+			await svc.dispatch({ type: "move-line", key: task.key, toFile: "../outside.md" }),
+		).toEqual({ ok: false, reason: "invalid-target-path" });
+		expect(port.calls).toBe(0);
+	});
+
+	it("чужой носитель того же 🆔 в цели — conflict без изменений источника", async () => {
+		const { port, feed, svc } = makeSvc();
+		const task = parseLine(INBOX, "- [ ] исходная 🆔 shared", 0);
+		feed.replaceFile(INBOX, [task]);
+		const source = "- [ ] исходная 🆔 shared\n";
+		const target = "- [ ] совершенно другая 🆔 shared\n";
+		port.files.set(INBOX, source);
+		port.files.set(TARGET, target);
+
+		const res = await svc.dispatch({ type: "move-line", key: task.key, toFile: TARGET });
+
+		expect(res).toEqual({ ok: false, reason: "duplicate-id-conflict" });
+		expect(port.files.get(INBOX)).toBe(source);
+		expect(port.files.get(TARGET)).toBe(target);
+		expect(port.writes).toHaveLength(0);
+	});
+
+	it("точно совпавшая строка в цели — идемпотентный retry и удаление источника", async () => {
+		const { port, feed, svc } = makeSvc();
+		const task = parseLine(INBOX, "- [ ] переезд 🆔 retry1", 0);
+		feed.replaceFile(INBOX, [task]);
+		port.files.set(INBOX, "- [ ] переезд 🆔 retry1\n");
+		port.files.set(TARGET, "- [ ] переезд 🆔 retry1\n");
+
+		const res = await svc.dispatch({ type: "move-line", key: task.key, toFile: TARGET });
+
+		expect(res).toEqual({ ok: true });
+		expect(port.files.get(INBOX)).toBe("");
+		expect(port.files.get(TARGET)).toBe("- [ ] переезд 🆔 retry1\n");
+	});
 
 	it("append в цель → delete из источника; ленивый 🆔 перед append", async () => {
 		const { port, feed, svc } = makeSvc({ genId: () => "mv1" });
@@ -413,8 +545,8 @@ describe("WritebackService: move-line", () => {
 		feed.replaceFile(INBOX, [task]);
 		port.files.set(INBOX, "- [ ] переезд 🆔 mvX\n");
 		port.files.set(TARGET, "");
-		// вызовы: 1 — локализация (read-only), 2 — append, 3 — delete; валим delete
-		port.failOnCall = 3;
+		// вызовы: 1 — локализация, 2 — preflight цели, 3 — append, 4 — delete; валим delete
+		port.failOnCall = 4;
 
 		const first = await svc.dispatch({ type: "move-line", key: task.key, toFile: TARGET });
 
@@ -447,6 +579,21 @@ describe("WritebackService: move-line", () => {
 	});
 });
 
+describe("WritebackService: explicit stable ids", () => {
+	it("ensureTaskId вписывает якорь при autoInjectId=false и помнит его до реиндекса", async () => {
+		const { port, feed, svc } = makeSvc({ autoInjectId: false, genId: () => "stable1" });
+		const task = parseLine(INBOX, "- [ ] составная операция", 0);
+		feed.replaceFile(INBOX, [task]);
+		port.files.set(INBOX, "- [ ] составная операция\n");
+
+		const result = await svc.ensureTaskId(task.key);
+
+		expect(result).toEqual({ ok: true, taskId: "stable1" });
+		expect(port.files.get(INBOX)).toBe("- [ ] составная операция 🆔 stable1\n");
+		expect(svc.knownTaskId(task.key)).toBe("stable1");
+	});
+});
+
 describe("WritebackService: сохранность содержимого", () => {
 	it("CRLF-файл: правка не корёжит \\r\\n и вставляет поле перед \\r", async () => {
 		const { port, feed, svc } = makeSvc();
@@ -455,10 +602,17 @@ describe("WritebackService: сохранность содержимого", () =
 		feed.replaceFile(path, [task]);
 		port.files.set(path, "- [ ] один\r\n- [ ] цель 🆔 c1\r\nхвост\r\n");
 
-		const res = await svc.dispatch({ type: "set-date", key: task.key, field: "due", date: "2026-09-01" });
+		const res = await svc.dispatch({
+			type: "set-date",
+			key: task.key,
+			field: "due",
+			date: "2026-09-01",
+		});
 
 		expect(res).toEqual({ ok: true });
-		expect(port.files.get(path)).toBe("- [ ] один\r\n- [ ] цель 🆔 c1 📅 2026-09-01\r\nхвост\r\n");
+		expect(port.files.get(path)).toBe(
+			"- [ ] один\r\n- [ ] цель 🆔 c1 📅 2026-09-01\r\nхвост\r\n",
+		);
 	});
 
 	it("no-op трансформ — успех без записи (идемпотентность)", async () => {
@@ -485,7 +639,12 @@ describe("WritebackService: сохранность содержимого", () =
 		feed.replaceFile(INBOX, [task]);
 		port.files.set(INBOX, "- [ ] дата 🆔 e1\n");
 
-		const res = await svc.dispatch({ type: "set-date", key: task.key, field: "due", date: "2026-13-05" });
+		const res = await svc.dispatch({
+			type: "set-date",
+			key: task.key,
+			field: "due",
+			date: "2026-13-05",
+		});
 
 		expect(res).toEqual({ ok: false, reason: "transform-failed" });
 		expect(port.writes).toHaveLength(0);
@@ -511,7 +670,10 @@ describe("WritebackService: delete-line", () => {
 		const second = parseLine(INBOX, "- [x] копия 🆔 dup1 ✅ 2026-07-15", 2);
 		feed.replaceFile(INBOX, [first, second]);
 		// хранимый ключ второго носителя уникализирован индексом — берём его оттуда
-		const storedFirst = feed.getIndex().fileTasks(INBOX).find((t) => t.lineStart === 0)!;
+		const storedFirst = feed
+			.getIndex()
+			.fileTasks(INBOX)
+			.find((t) => t.lineStart === 0)!;
 		port.files.set(INBOX, "- [ ] копия 🆔 dup1\nтекст\n- [x] копия 🆔 dup1 ✅ 2026-07-15\n");
 
 		const res = await svc.dispatch({ type: "delete-line", key: storedFirst.key });
@@ -686,7 +848,10 @@ describe("WritebackService: непокрытые этапы", () => {
 			{ type: "move-node", projectPath: "p.md", positions: {} },
 		];
 		for (const intent of intents) {
-			expect(await svc.dispatch(intent)).toEqual({ ok: false, reason: "not-implemented-stage" });
+			expect(await svc.dispatch(intent)).toEqual({
+				ok: false,
+				reason: "not-implemented-stage",
+			});
 		}
 		expect(port.calls).toBe(0);
 	});
@@ -757,9 +922,7 @@ describe("WritebackService: детерминизм дублей по occurrenceI
 		});
 
 		expect(res).toEqual({ ok: true });
-		expect(port.files.get(INBOX)).toBe(
-			"- [ ] дубль\n- [x] дубль ✅ 2026-07-15\n- [ ] дубль\n",
-		);
+		expect(port.files.get(INBOX)).toBe("- [ ] дубль\n- [x] дубль ✅ 2026-07-15\n- [ ] дубль\n");
 	});
 
 	it("перенос ВТОРОЙ из двух одинаковых в другой файл (move-line) уносит именно вторую", async () => {
@@ -789,7 +952,12 @@ describe("WritebackService: детерминизм дублей по occurrenceI
 		// пользователь дописал вторую строку — двойников в файле уже не два, а один
 		port.files.set(INBOX, "- [ ] дубль\n- [ ] дубль и ещё дело\n");
 
-		const res = await svc.dispatch({ type: "set-date", key: second.key, field: "due", date: "2026-08-01" });
+		const res = await svc.dispatch({
+			type: "set-date",
+			key: second.key,
+			field: "due",
+			date: "2026-08-01",
+		});
 
 		expect(res).toEqual({ ok: false, reason: "stale-index" });
 		expect(port.writes).toHaveLength(0); // первый дубль не тронут
@@ -806,7 +974,11 @@ describe("WritebackService: delete-line withChildren (пункт «Удалит�
 			"- [ ] родитель 🆔 p1\n    заметка под задачей\n    - [ ] подпункт\n- [ ] сосед\n",
 		);
 
-		const res = await svc.dispatch({ type: "delete-line", key: victim.key, withChildren: true });
+		const res = await svc.dispatch({
+			type: "delete-line",
+			key: victim.key,
+			withChildren: true,
+		});
 
 		expect(res).toEqual({ ok: true });
 		expect(port.files.get(INBOX)).toBe("- [ ] сосед\n");
@@ -821,7 +993,11 @@ describe("WritebackService: delete-line withChildren (пункт «Удалит�
 			"- [ ] родитель 🆔 p1\n    ребёнок родителя\n- [ ] сиблинг\n    ребёнок сиблинга\n",
 		);
 
-		const res = await svc.dispatch({ type: "delete-line", key: victim.key, withChildren: true });
+		const res = await svc.dispatch({
+			type: "delete-line",
+			key: victim.key,
+			withChildren: true,
+		});
 
 		expect(res).toEqual({ ok: true });
 		expect(port.files.get(INBOX)).toBe("- [ ] сиблинг\n    ребёнок сиблинга\n");
@@ -833,7 +1009,11 @@ describe("WritebackService: delete-line withChildren (пункт «Удалит�
 		feed.replaceFile(INBOX, [victim]);
 		port.files.set(INBOX, "- [ ] родитель 🆔 p1\n\n    осиротевший ребёнок\n");
 
-		const res = await svc.dispatch({ type: "delete-line", key: victim.key, withChildren: true });
+		const res = await svc.dispatch({
+			type: "delete-line",
+			key: victim.key,
+			withChildren: true,
+		});
 
 		expect(res).toEqual({ ok: true });
 		expect(port.files.get(INBOX)).toBe("\n    осиротевший ребёнок\n");
@@ -853,8 +1033,7 @@ describe("WritebackService: delete-line withChildren (пункт «Удалит�
 
 	it("детерминизм: «Удалить» ВТОРОЙ из двух одинаковых убирает вторую с её детьми", async () => {
 		const { port, feed, svc } = makeSvc();
-		const content =
-			"- [ ] дубль\n    ребёнок первого\n- [ ] дубль\n    ребёнок второго\n";
+		const content = "- [ ] дубль\n    ребёнок первого\n- [ ] дубль\n    ребёнок второго\n";
 		port.files.set(INBOX, content);
 		indexContent(feed, INBOX, content);
 
@@ -1001,7 +1180,12 @@ describe("WritebackService: read-only защита зеркал внешних �
 		feed.replaceFile(MIRROR, [ev]);
 		port.files.set(MIRROR, "- [ ] Внешнее 📅 2026-07-06 🆔 ext1\n");
 
-		const res = await svc.dispatch({ type: "set-date", key: ev.key, field: "due", date: "2026-08-01" });
+		const res = await svc.dispatch({
+			type: "set-date",
+			key: ev.key,
+			field: "due",
+			date: "2026-08-01",
+		});
 
 		expect(res).toEqual({ ok: false, reason: EXTERNAL_READONLY_REASON });
 		expect(port.calls).toBe(0); // до processFile даже не дошли

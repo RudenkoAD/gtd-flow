@@ -9,6 +9,7 @@
 	import { openTaskInFile } from "../common/openTask";
 	import { displayText } from "../common/cardFormat";
 	import { buildTaskMenu, type TaskMenuPorts } from "../common/taskMenu";
+	import { runAction, runVoidAction } from "../common/runAction";
 	import ProjectGraph from "./ProjectGraph.svelte";
 	import type { ProjectPort } from "../../services/ProjectService";
 	// Общий переключатель пространств из views/common (создаётся параллельной зоной;
@@ -37,8 +38,9 @@
 		app,
 		projects,
 		settings,
+		settingsRevision,
 		activeNamespace$,
-		namespaces,
+		namespaces: _namespaces,
 		setActiveNamespace,
 		menuPorts = null,
 		persisted,
@@ -51,6 +53,7 @@
 		/** null до интеграции сервиса проектов в main.ts (plugin.projects). */
 		projects: ProjectPort | null;
 		settings: GtdFlowSettings;
+		settingsRevision: Readable<number>;
 		/** Реактивное ЛОКАЛЬНОЕ активное пространство вида (per-tab, см. GtdView). */
 		activeNamespace$: Readable<string>;
 		/** Определения пространств (settings.namespaces); пусто ⇒ switcher скрыт. */
@@ -77,7 +80,11 @@
 	const activeNs = activeNamespace$;
 	// switcher виден только при настроенных пространствах; метка активного для
 	// пустых состояний (DEFAULT_NS → «Общее»).
-	const hasNamespaces = $derived(namespaces.length >= 1);
+	const liveNamespaces = $derived.by(() => {
+		void $settingsRevision;
+		return settings.namespaces;
+	});
+	const hasNamespaces = $derived(liveNamespaces.length >= 1);
 	const activeLabel = $derived(namespaceLabel($activeNs));
 
 	// ТЗ §7: на телефоне Svelte Flow не монтируется вообще — read-only список
@@ -93,7 +100,7 @@
 	);
 
 	// фильтр discovery — ЛОКАЛЬНОЕ пространство вида (не активное глобальное)
-	const nsFilter = $derived<NamespaceFilter>({ active: $activeNs, defs: namespaces });
+	const nsFilter = $derived<NamespaceFilter>({ active: $activeNs, defs: liveNamespaces });
 	const summaries = $derived.by(() => {
 		void $epoch; // проекты живут в индексе — пересканируем на каждую его смену
 		return projects === null ? [] : sortProjectSummaries(projects.discoverProjects(nsFilter));
@@ -125,7 +132,7 @@
 			// именованного, иначе (Общее / без пространств) — рядом с существующими.
 			const dir = nsTargetPath(
 				$activeNs,
-				namespaces,
+				liveNamespaces,
 				NS_CONVENTION.projectsDir,
 				projectDir(existing),
 			);
@@ -164,7 +171,10 @@
 					.setTitle(STATUS_LABELS[status])
 					.setChecked(shown.status === status)
 					.onClick(() => {
-						if (shown.status !== status) void projects.setProjectStatus(shownPath, status);
+						if (shown.status !== status)
+							void runVoidAction("не удалось изменить статус проекта", () =>
+								projects.setProjectStatus(shownPath, status),
+							);
 					}),
 			);
 		}
@@ -182,18 +192,25 @@
 
 	async function toggleStatus(task: Task): Promise<void> {
 		const isDone = task.statusChar === "x" || task.statusChar === "X";
-		const res = await dispatcher.dispatch(
-			isDone
-				? { type: "set-status", key: task.key, statusChar: " " }
-				: { type: "set-status", key: task.key, statusChar: "x", date: $today },
+		await runAction("не удалось изменить статус", () =>
+			dispatcher.dispatch(
+				isDone
+					? { type: "set-status", key: task.key, statusChar: " " }
+					: { type: "set-status", key: task.key, statusChar: "x", date: $today },
+			),
 		);
-		if (!res.ok) new Notice(`GTD Flow: ${res.reason}`);
 	}
 
 	/** Паритет без drag на телефоне (ТЗ §8): общее меню задачи из списка. */
 	function openItemMenu(e: MouseEvent, task: Task): void {
-		buildTaskMenu({ task, app, dispatcher, settings, today: $today, ports: menuPorts })
-			.showAtMouseEvent(e);
+		buildTaskMenu({
+			task,
+			app,
+			dispatcher,
+			settings,
+			today: $today,
+			ports: menuPorts,
+		}).showAtMouseEvent(e);
 	}
 </script>
 
@@ -211,7 +228,11 @@
 		{/if}
 		{#if hasNamespaces}
 			<!-- Глобальный переключатель пространства; виден только при настроенных пространствах -->
-			<NamespaceSwitcher active={activeNamespace$} {namespaces} setActive={setActiveNamespace} />
+			<NamespaceSwitcher
+				active={activeNamespace$}
+				namespaces={liveNamespaces}
+				setActive={setActiveNamespace}
+			/>
 		{/if}
 		<select
 			class="dropdown gtd-project-select"
@@ -253,7 +274,11 @@
 		<div class="gtd-project-empty">Вид проектов не подключён (сервис недоступен)</div>
 	{:else if shownPath === null}
 		<div class="gtd-project-empty">
-			<p>{hasNamespaces ? `В пространстве «${activeLabel}» проектов нет.` : "Проектов не найдено."}</p>
+			<p>
+				{hasNamespaces
+					? `В пространстве «${activeLabel}» проектов нет.`
+					: "Проектов не найдено."}
+			</p>
 			<button class="mod-cta" onclick={createProject}>＋ Создать проект</button>
 		</div>
 	{:else if isPhone}
@@ -263,7 +288,10 @@
 				<div class="gtd-project-mgroup">
 					<div class="gtd-project-mdepth">Уровень {group.depth}</div>
 					{#each group.nodes as n (n.task.key)}
-						<div class="gtd-project-mitem {stateColorClass(n.state)}" class:is-ghost={n.ghost}>
+						<div
+							class="gtd-project-mitem {stateColorClass(n.state)}"
+							class:is-ghost={n.ghost}
+						>
 							<input
 								type="checkbox"
 								checked={n.state === "done"}
@@ -299,7 +327,14 @@
 	{:else}
 		{#key shownPath}
 			<SvelteFlowProvider>
-				<ProjectGraph path={shownPath} port={projects} {dispatcher} {taskStore} {app} {menuPorts} />
+				<ProjectGraph
+					path={shownPath}
+					port={projects}
+					{dispatcher}
+					{taskStore}
+					{app}
+					{menuPorts}
+				/>
 			</SvelteFlowProvider>
 		{/key}
 	{/if}

@@ -28,11 +28,7 @@
  *     строго позже начала (правило 'at' и запись на диск требуют этого).
  */
 import type { IsoDate } from "../core/model/Task";
-import {
-	setDescription,
-	setField,
-	setValueField,
-} from "../core/parser/serializeTaskLine";
+import { setDescription, setField, setValueField } from "../core/parser/serializeTaskLine";
 import {
 	serializeTokens,
 	TIME_RE,
@@ -176,7 +172,8 @@ function applyDateTime(
 	if (dateEdit === undefined) newDate = existingDate;
 	else if (dateEdit === null) newDate = null;
 	else {
-		if (typeof dateEdit !== "string" || !ISO_DATE_SHAPE_RE.test(dateEdit)) return err("invalid-date");
+		if (typeof dateEdit !== "string" || !ISO_DATE_SHAPE_RE.test(dateEdit))
+			return err("invalid-date");
 		newDate = dateEdit;
 	}
 

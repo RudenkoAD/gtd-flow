@@ -66,7 +66,8 @@ export function edgeScrollDelta(
 ): { dx: number; dy: number } {
 	if (!rectContains(rect, x, y)) return { dx: 0, dy: 0 };
 	// ceil: внутри зоны шаг всегда ненулевой, иначе у самой границы скролл замирает
-	const ramp = (dist: number): number => (dist >= edge ? 0 : Math.ceil(((edge - dist) / edge) * maxStep));
+	const ramp = (dist: number): number =>
+		dist >= edge ? 0 : Math.ceil(((edge - dist) / edge) * maxStep);
 	return {
 		dx: ramp(rect.right - x) - ramp(x - rect.left),
 		dy: ramp(rect.bottom - y) - ramp(y - rect.top),

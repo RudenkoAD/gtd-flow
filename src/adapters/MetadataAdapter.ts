@@ -17,7 +17,7 @@ function isMarkdownFile(file: TAbstractFile): file is TFile {
 	return (file as Partial<TFile>).extension === "md";
 }
 
-/** Обратная карта одного frontmatter-ключа: String(value) → пути носителей.
+/** Обратная карта одного frontmatter-ключа: тип-тегированное значение → пути носителей.
  *  byPath хранит текущий вклад файла, чтобы снять его при изменении/удалении. */
 interface FmKeyIndex {
 	byValue: Map<string, Set<string>>;
@@ -45,7 +45,9 @@ export class MetadataAdapter implements VaultEvents {
 	 *  посреди сессии — 'resolved' тогда не придёт до следующей правки файла. */
 	isResolved(): boolean {
 		if (this.resolvedSeen) return true;
-		return (this.app.metadataCache as unknown as { initialized?: boolean }).initialized === true;
+		return (
+			(this.app.metadataCache as unknown as { initialized?: boolean }).initialized === true
+		);
 	}
 
 	/** Однократный колбэк по полному resolve кэша метаданных (ТЗ §2:
@@ -116,7 +118,8 @@ export class MetadataAdapter implements VaultEvents {
 			});
 			void this.snapshotFile(file).then(
 				// delete мог прилететь раньше, чем cachedRead завершился
-				(snap) => cb(oldPath, this.app.vault.getFileByPath(file.path) !== null ? snap : gone()),
+				(snap) =>
+					cb(oldPath, this.app.vault.getFileByPath(file.path) !== null ? snap : gone()),
 				() => cb(oldPath, gone()),
 			);
 		});
@@ -160,8 +163,11 @@ export class MetadataAdapter implements VaultEvents {
 	 * Первый markdown-файл, чей frontmatter[key] совпадает со value; null — нет.
 	 * При нескольких носителях — лексикографически наименьший путь (детерминизм:
 	 * два вызова/устройства сходятся к одному файлу без координации).
-	 * YAML читает голые скаляры типизированно (`gtd-card-of: 123` → число),
-	 * поэтому карта ключуется через String(v) — id "123" находит и число, и строку.
+	 * Индекс различает YAML-типы: строка "true" никогда не найдёт флаг `true`.
+	 * Единственное явное legacy-исключение — `gtd-card-of`: старые карточки могли
+	 * хранить голый числовой id, тогда как все новые карточки сериализуют id
+	 * строкой. Для этого конкретного ключа number и string нормализуются к одному
+	 * id; прочие ключи никогда не проходят неявный String(value).
 	 *
 	 * Стоимость: полный обход хранилища только при ПЕРВОМ запросе ключа
 	 * (карточки рендерятся на каждый bump эпохи — O(карточек × файлов) здесь
@@ -197,7 +203,8 @@ export class MetadataAdapter implements VaultEvents {
 			idx = this.buildFmIndex(key);
 			indexes.set(key, idx);
 		}
-		return idx.byValue.get(String(value)) ?? EMPTY_PATH_SET;
+		const valueKey = fmValueKey(key, value);
+		return valueKey === null ? EMPTY_PATH_SET : (idx.byValue.get(valueKey) ?? EMPTY_PATH_SET);
 	}
 
 	/** Подключает поддержание обратных карт к событиям (однократно).
@@ -271,7 +278,8 @@ function fmAdd(
 ): void {
 	const v: unknown = fm?.[key];
 	if (v === undefined || v === null) return;
-	const vs = String(v);
+	const vs = fmValueKey(key, v);
+	if (vs === null) return;
 	idx.byPath.set(path, vs);
 	let set = idx.byValue.get(vs);
 	if (set === undefined) {
@@ -279,6 +287,25 @@ function fmAdd(
 		idx.byValue.set(vs, set);
 	}
 	set.add(path);
+}
+
+/**
+ * Ключ обратного индекса. Объекты/массивы намеренно не индексируются: их
+ * строковое представление (`[object Object]`, `a,b`) не является безопасной
+ * семантикой равенства frontmatter. `gtd-card-of` — единственное поле с
+ * документированной legacy-коэрцией numeric id → string id.
+ */
+function fmValueKey(key: string, value: unknown): string | null {
+	if (key === "gtd-card-of") {
+		if (typeof value === "string") return `card:${value}`;
+		if (typeof value === "number" && Number.isFinite(value)) return `card:${String(value)}`;
+		return null;
+	}
+	if (typeof value === "string") return `string:${value}`;
+	if (typeof value === "boolean") return value ? "boolean:true" : "boolean:false";
+	if (typeof value === "number" && Number.isFinite(value))
+		return `number:${Object.is(value, -0) ? "-0" : String(value)}`;
+	return null;
 }
 
 function fmRemove(idx: FmKeyIndex, path: string): void {

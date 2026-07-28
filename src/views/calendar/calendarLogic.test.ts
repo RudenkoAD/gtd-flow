@@ -211,7 +211,11 @@ describe("placeEvents", () => {
 		// приоритет/алфавит нарочно против времени — время должно победить
 		const morning = makeTask({ due: "2026-07-20", dueTime: "09:30", description: "я-задача" });
 		const noon = makeTask({ due: "2026-07-20", dueTime: "14:00", description: "а-задача" });
-		const untimed = makeTask({ due: "2026-07-20", priority: "highest", description: "б-задача" });
+		const untimed = makeTask({
+			due: "2026-07-20",
+			priority: "highest",
+			description: "б-задача",
+		});
 		const map = placeEvents([untimed, noon, morning], PLACEMENT);
 		expect(map.get("2026-07-20")!.map((e) => e.task)).toEqual([morning, noon, untimed]);
 	});
@@ -318,7 +322,9 @@ describe("deferredUntil", () => {
 		expect(
 			deferredUntil(makeTask({ start: "2026-08-01", container: "recurring" }), TODAY),
 		).toBeNull();
-		expect(deferredUntil(makeTask({ start: "2026-08-01", container: "card" }), TODAY)).toBeNull();
+		expect(
+			deferredUntil(makeTask({ start: "2026-08-01", container: "card" }), TODAY),
+		).toBeNull();
 	});
 });
 
@@ -405,8 +411,12 @@ describe("quickAddLine — место 📍 (поле «Место» quick-add, �
 
 	it("пустое/пробельное/null место — строка без 📍", () => {
 		expect(quickAddLine("дело", "2026-07-20", null, null, "")).toBe("- [ ] дело 📅 2026-07-20");
-		expect(quickAddLine("дело", "2026-07-20", null, null, "   ")).toBe("- [ ] дело 📅 2026-07-20");
-		expect(quickAddLine("дело", "2026-07-20", null, null, null)).toBe("- [ ] дело 📅 2026-07-20");
+		expect(quickAddLine("дело", "2026-07-20", null, null, "   ")).toBe(
+			"- [ ] дело 📅 2026-07-20",
+		);
+		expect(quickAddLine("дело", "2026-07-20", null, null, null)).toBe(
+			"- [ ] дело 📅 2026-07-20",
+		);
 	});
 
 	it("недопустимое место (эмодзи поля) не роняет захват — строка без 📍", () => {
@@ -508,7 +518,9 @@ describe("expandEventOccurrences (§события)", () => {
 		const a = event({ description: "Б-встреча", recurrence: "every day at 09:00" });
 		const b = event({ description: "А-звонок", recurrence: "every day at 08:00" });
 		const c = event({ description: "весь день", recurrence: "every day" });
-		const list = expandEventOccurrences([a, b, c], "2026-07-15", "2026-07-15").get("2026-07-15")!;
+		const list = expandEventOccurrences([a, b, c], "2026-07-15", "2026-07-15").get(
+			"2026-07-15",
+		)!;
 		expect(list.map((o) => o.title)).toEqual(["А-звонок", "Б-встреча", "весь день"]);
 	});
 
@@ -557,15 +569,21 @@ describe("expandEventOccurrences (§события)", () => {
 
 	it("📍 место прокидывается в вхождение серии и одноразового", () => {
 		const series = event({ recurrence: "every day", location: "Спортзал" });
-		const so = expandEventOccurrences([series], "2026-07-15", "2026-07-15").get("2026-07-15")![0]!;
+		const so = expandEventOccurrences([series], "2026-07-15", "2026-07-15").get(
+			"2026-07-15",
+		)![0]!;
 		expect(so.location).toBe("Спортзал");
 
 		const single = event({ due: "2026-07-21", location: "Офис, 3 этаж" });
-		const oo = expandEventOccurrences([single], "2026-07-15", "2026-07-31").get("2026-07-21")![0]!;
+		const oo = expandEventOccurrences([single], "2026-07-15", "2026-07-31").get(
+			"2026-07-21",
+		)![0]!;
 		expect(oo.location).toBe("Офис, 3 этаж");
 
 		const noLoc = event({ recurrence: "every day" });
-		const no = expandEventOccurrences([noLoc], "2026-07-15", "2026-07-15").get("2026-07-15")![0]!;
+		const no = expandEventOccurrences([noLoc], "2026-07-15", "2026-07-15").get(
+			"2026-07-15",
+		)![0]!;
 		expect(no.location).toBeNull();
 	});
 });
@@ -614,7 +632,9 @@ describe("mergeDayItems — единый порядок задач и событ
 		const t2 = makeTask({ due: DATE, dueTime: "09:00" });
 		const onlyTasks = mergeDayItems(placeEvents([t2, t1], PLACEMENT).get(DATE)!, []);
 		expect(
-			onlyTasks.map((it) => (it.kind === "task" ? placedTime(it.ev.task, it.ev.field) : null)),
+			onlyTasks.map((it) =>
+				it.kind === "task" ? placedTime(it.ev.task, it.ev.field) : null,
+			),
 		).toEqual(["08:00", "09:00"]);
 	});
 });
@@ -785,7 +805,9 @@ describe("eventTargetForNamespace — файл событий инлайн-со�
 	});
 
 	it("пространств не настроено — любое имя падает на фолбэк, ALL_NS — на commonRoot", () => {
-		expect(eventTargetForNamespace(DEFAULT_NS, [], EVENTS_FALLBACK, COMMON)).toBe("GTD/Events.md");
+		expect(eventTargetForNamespace(DEFAULT_NS, [], EVENTS_FALLBACK, COMMON)).toBe(
+			"GTD/Events.md",
+		);
 		expect(eventTargetForNamespace(ALL_NS, [], EVENTS_FALLBACK, COMMON)).toBe("GTD/События.md");
 	});
 });

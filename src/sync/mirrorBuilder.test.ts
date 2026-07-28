@@ -50,7 +50,10 @@ describe("externalOccurrenceId — детерминированный корот
 
 describe("buildMirrorFile — идемпотентность и порядок", () => {
 	it("два вызова на одном входе → БАЙТ-В-БАЙТ одинаковый файл", () => {
-		const input = [occ({ date: "2026-07-08", uid: "b" }), occ({ date: "2026-07-06", uid: "a" })];
+		const input = [
+			occ({ date: "2026-07-08", uid: "b" }),
+			occ({ date: "2026-07-06", uid: "a" }),
+		];
 		const a = buildMirrorFile(input, { name: "Работа" });
 		const b = buildMirrorFile(input, { name: "Работа" });
 		expect(a).toBe(b);
@@ -58,7 +61,13 @@ describe("buildMirrorFile — идемпотентность и порядок",
 
 	it("порядок строк стабилен независимо от порядка входа (дата, время, id)", () => {
 		const late = occ({ date: "2026-07-08", startTime: "09:00", uid: "late" });
-		const earlyAllDay = occ({ date: "2026-07-06", allDay: true, startTime: null, endTime: null, uid: "ad" });
+		const earlyAllDay = occ({
+			date: "2026-07-06",
+			allDay: true,
+			startTime: null,
+			endTime: null,
+			uid: "ad",
+		});
 		const earlyTimed = occ({ date: "2026-07-06", startTime: "08:00", uid: "t" });
 		const forward = buildMirrorFile([late, earlyAllDay, earlyTimed], { name: "X" });
 		const reversed = buildMirrorFile([earlyTimed, earlyAllDay, late], { name: "X" });
@@ -86,15 +95,15 @@ describe("buildMirrorFile — формат и frontmatter", () => {
 	});
 
 	it("заголовок-предупреждение в теле", () => {
-		expect(buildMirrorFile([], { name: "Cal" })).toContain(
-			"Зеркало внешнего календаря",
-		);
+		expect(buildMirrorFile([], { name: "Cal" })).toContain("Зеркало внешнего календаря");
 	});
 
 	it("строка со временем round-trip'ит через парсер (container events)", () => {
 		const text = buildMirrorFile([occ({ location: "Зал А" })], { name: "X" });
 		const line = taskLines(text)[0]!;
-		expect(line).toMatch(/^- \[ \] Событие 📅 2026-07-06 10:00-10:30 📍 Зал А 🆔 [0-9a-z]{10}$/);
+		expect(line).toMatch(
+			/^- \[ \] Событие 📅 2026-07-06 10:00-10:30 📍 Зал А 🆔 [0-9a-z]{10}$/,
+		);
 		const t = parseTaskLine(line, {
 			filePath: "X/External/X.md",
 			lineStart: 0,
@@ -112,7 +121,9 @@ describe("buildMirrorFile — формат и frontmatter", () => {
 	});
 
 	it("all-day строка — без времени", () => {
-		const text = buildMirrorFile([occ({ allDay: true, startTime: null, endTime: null })], { name: "X" });
+		const text = buildMirrorFile([occ({ allDay: true, startTime: null, endTime: null })], {
+			name: "X",
+		});
 		const line = taskLines(text)[0]!;
 		expect(line).toMatch(/^- \[ \] Событие 📅 2026-07-06 🆔 [0-9a-z]{10}$/);
 	});

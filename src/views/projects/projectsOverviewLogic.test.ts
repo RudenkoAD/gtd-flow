@@ -140,7 +140,7 @@ describe("newProjectPath", () => {
 		);
 	});
 
-	it("явный dir === \"\" — проект в корне хранилища", () => {
+	it('явный dir === "" — проект в корне хранилища', () => {
 		expect(newProjectPath(["Work/Beta.md"], "Гамма", () => false, "")).toBe("Гамма.md");
 	});
 

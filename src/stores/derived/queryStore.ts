@@ -16,7 +16,10 @@ export type EvaluateFn = (spec: QuerySpec, ctx: QueryContext) => Task[];
 
 export interface QueryDeps {
 	/** Биты настроек для inbox-формулы §1 (остальные запросы их не читают). */
-	settingsBits: InboxConfig;
+	settingsBits: InboxConfig | (() => InboxConfig);
+	/** Ревизия сохранённых настроек. Нужна при in-place мутации объекта settings:
+	 * включается в memo-key даже если индекс ещё не менялся. */
+	settingsRevision$?: Readable<number>;
 	/**
 	 * Реактивный источник активного пространства (per-namespace виды). Отдельный
 	 * store, а НЕ epoch: смена активного пространства настроек эпоху индекса не
@@ -48,8 +51,13 @@ export function createQueryStore(
 	let lastKey: string | null = null;
 	let lastResult: Task[] = [];
 
-	const compute = (epoch: number, today: IsoDate, ns: NamespaceFilter | undefined): Task[] => {
-		const key = epoch + "|" + today + "|" + hash + "|" + nsKeyOf(ns);
+	const compute = (
+		epoch: number,
+		today: IsoDate,
+		ns: NamespaceFilter | undefined,
+		settingsRevision: number,
+	): Task[] => {
+		const key = epoch + "|" + today + "|" + hash + "|" + nsKeyOf(ns) + "|" + settingsRevision;
 		if (key === lastKey) return lastResult;
 		const index = taskStore.index();
 		lastResult = evalFn(spec, {
@@ -57,7 +65,8 @@ export function createQueryStore(
 			today,
 			// не отдаём метод голым — resolveDep потерял бы this
 			resolveDep: (id) => index.resolveDep(id),
-			settingsBits: deps.settingsBits,
+			settingsBits:
+				typeof deps.settingsBits === "function" ? deps.settingsBits() : deps.settingsBits,
 			namespace: ns,
 		});
 		lastKey = key;
@@ -68,6 +77,7 @@ export function createQueryStore(
 		let epochNow = 0;
 		let todayNow: IsoDate = "";
 		let nsNow: NamespaceFilter | undefined = undefined;
+		let settingsRevisionNow = 0;
 		// подписки ниже стреляют синхронно текущими значениями — это не «изменение»
 		let primed = false;
 		let timer: ReturnType<typeof setTimeout> | null = null;
@@ -76,7 +86,7 @@ export function createQueryStore(
 			if (timer !== null) clearTimeout(timer);
 			timer = setTimeout(() => {
 				timer = null;
-				set(compute(epochNow, todayNow, nsNow));
+				set(compute(epochNow, todayNow, nsNow, settingsRevisionNow));
 			}, debounceMs);
 		};
 
@@ -93,8 +103,13 @@ export function createQueryStore(
 				nsNow = f;
 				if (primed) schedule();
 			}) ?? null;
+		const unsubSettings =
+			deps.settingsRevision$?.subscribe((revision) => {
+				settingsRevisionNow = revision;
+				if (primed) schedule();
+			}) ?? null;
 		primed = true;
-		set(compute(epochNow, todayNow, nsNow));
+		set(compute(epochNow, todayNow, nsNow, settingsRevisionNow));
 
 		return () => {
 			if (timer !== null) clearTimeout(timer);
@@ -102,6 +117,7 @@ export function createQueryStore(
 			unsubEpoch();
 			unsubToday();
 			if (unsubNs !== null) unsubNs();
+			if (unsubSettings !== null) unsubSettings();
 		};
 	});
 }
@@ -113,14 +129,15 @@ export function createQueryStore(
 
 export function inboxStore(
 	taskStore: TaskStore,
-	inboxConfig: InboxConfig,
+	inboxConfig: InboxConfig | (() => InboxConfig),
 	debounceMs = 50,
 	namespace$?: Readable<NamespaceFilter>,
+	settingsRevision$?: Readable<number>,
 ): Readable<Task[]> {
 	return createQueryStore(
 		taskStore,
 		{ kind: "inbox" },
-		{ settingsBits: inboxConfig, namespace$ },
+		{ settingsBits: inboxConfig, namespace$, settingsRevision$ },
 		debounceMs,
 	);
 }
@@ -129,11 +146,12 @@ export function ticklerStore(
 	taskStore: TaskStore,
 	debounceMs = 50,
 	namespace$?: Readable<NamespaceFilter>,
+	settingsRevision$?: Readable<number>,
 ): Readable<Task[]> {
 	return createQueryStore(
 		taskStore,
 		{ kind: "tickler" },
-		{ settingsBits: defaultInboxConfig(), namespace$ },
+		{ settingsBits: defaultInboxConfig(), namespace$, settingsRevision$ },
 		debounceMs,
 	);
 }
@@ -145,11 +163,12 @@ export function calendarRangeStore(
 	placement: readonly CalendarField[],
 	debounceMs = 50,
 	namespace$?: Readable<NamespaceFilter>,
+	settingsRevision$?: Readable<number>,
 ): Readable<Task[]> {
 	return createQueryStore(
 		taskStore,
 		{ kind: "calendar-range", fromIso, toIso, placement },
-		{ settingsBits: defaultInboxConfig(), namespace$ },
+		{ settingsBits: defaultInboxConfig(), namespace$, settingsRevision$ },
 		debounceMs,
 	);
 }
@@ -173,11 +192,12 @@ export function templatesStore(
 	taskStore: TaskStore,
 	debounceMs = 50,
 	namespace$?: Readable<NamespaceFilter>,
+	settingsRevision$?: Readable<number>,
 ): Readable<Task[]> {
 	return createQueryStore(
 		taskStore,
 		{ kind: "all-templates" },
-		{ settingsBits: defaultInboxConfig(), namespace$ },
+		{ settingsBits: defaultInboxConfig(), namespace$, settingsRevision$ },
 		debounceMs,
 	);
 }

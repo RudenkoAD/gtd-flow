@@ -16,7 +16,14 @@ import {
 	uniqueBoardPath,
 } from "./kanbanLogic";
 
-const DEF: BoardDef = { id: "x", name: "X", groupBy: "tag", columns: [], skippedColumns: [], order: {} };
+const DEF: BoardDef = {
+	id: "x",
+	name: "X",
+	groupBy: "tag",
+	columns: [],
+	skippedColumns: [],
+	order: {},
+};
 const boards: DiscoveredBoard[] = [
 	{ path: "a.md", def: DEF },
 	{ path: "b.md", def: DEF },

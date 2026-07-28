@@ -14,10 +14,14 @@ export async function openTaskInFile(
 		new Notice(`GTD Flow: файл не найден: ${task.filePath}`);
 		return;
 	}
-	const leaf = app.workspace.getLeaf(false);
-	await leaf.openFile(file);
-	// best effort: строка — подсказка на момент парса, а не идентичность
-	if (leaf.view instanceof MarkdownView) {
-		leaf.view.editor.setCursor({ line: task.lineStart, ch: 0 });
+	try {
+		const leaf = app.workspace.getLeaf(false);
+		await leaf.openFile(file);
+		// best effort: строка — подсказка на момент парса, а не идентичность
+		if (leaf.view instanceof MarkdownView) {
+			leaf.view.editor.setCursor({ line: task.lineStart, ch: 0 });
+		}
+	} catch (error) {
+		new Notice(`GTD Flow: не удалось открыть файл: ${String(error)}`);
 	}
 }

@@ -17,6 +17,7 @@ import {
 	parseNamespaces,
 	reorderCalendarPlacement,
 } from "./settingsFormat";
+import { reportAsync } from "../views/common/runAction";
 
 const CALENDAR_FIELD_LABEL: Record<CalendarField, string> = {
 	due: "Срок (📅 due)",
@@ -58,8 +59,10 @@ export class GtdSettingsTab extends PluginSettingTab {
 		this.sectionMisc(containerEl);
 	}
 
-	private async save(): Promise<void> {
-		await this.plugin.saveSettings();
+	private save(): Promise<void> {
+		// Callers all go through reportChange/reportAction/commitOnBlur, which own
+		// the UI boundary and must observe persistence failures to stop follow-ups.
+		return this.plugin.saveSettings();
 	}
 
 	// ── Входящие ────────────────────────────────────────────────────────────
@@ -77,10 +80,12 @@ export class GtdSettingsTab extends PluginSettingTab {
 			)
 			.addToggle((toggle) => {
 				toggle.setValue(this.plugin.settings.inboxIncludePlain);
-				toggle.onChange(async (value) => {
-					this.plugin.settings.inboxIncludePlain = value;
-					await this.save();
-				});
+				toggle.onChange((value) =>
+					this.reportChange(async () => {
+						this.plugin.settings.inboxIncludePlain = value;
+						await this.save();
+					}),
+				);
 			});
 	}
 
@@ -101,10 +106,13 @@ export class GtdSettingsTab extends PluginSettingTab {
 			.addText((text) => {
 				text.setPlaceholder("GTD");
 				text.setValue(this.plugin.settings.commonRoot);
-				text.onChange(async (value) => {
-					this.plugin.settings.commonRoot = value.trim();
-					await this.save();
-				});
+				text.onChange((value) =>
+					this.reportChange(async () => {
+						this.plugin.settings.commonRoot = value.trim();
+						this.plugin.sync.configurationChanged();
+						await this.save();
+					}),
+				);
 			});
 
 		const setting = new Setting(el)
@@ -124,30 +132,35 @@ export class GtdSettingsTab extends PluginSettingTab {
 			text.inputEl.rows = 4;
 			text.setPlaceholder("Работа: Areas/Work\nЛичное: Areas/Personal");
 			text.setValue(formatNamespaces(this.plugin.settings.namespaces));
-			text.onChange(async (raw) => {
-				const { namespaces, invalid } = parseNamespaces(raw);
-				errorEl.setText(
-					invalid.length > 0
-						? `Не распознано (формат «Имя: Папка», имя уникально): ${invalid.join("; ")}`
-						: "",
-				);
-				// мутация НА МЕСТЕ (splice), не подмена ссылки: смонтированные виды
-				// держат ссылку на этот массив в props — подмена оставила бы им
-				// застывший снапшот списка (ревью)
-				this.plugin.settings.namespaces.splice(
-					0,
-					this.plugin.settings.namespaces.length,
-					...namespaces,
-				);
-				// активное пространство могло указывать на удалённое/переименованное — нормализуем
-				// через setActiveNamespace: откатит к «Общему» и пере-рендерит виды своим store
-				// (смена настроек эпоху индекса не бампает). Он же персистит настройки.
-				this.plugin.setActiveNamespace(this.plugin.settings.activeNamespace);
-				// имя могло не смениться (setActiveNamespace тогда молчит) — форс-толчок,
-				// чтобы открытые виды перечитали обновлённый список пространств
-				this.plugin.pokeNamespaceViews();
-				await this.save();
-			});
+			text.onChange((raw) =>
+				this.reportChange(async () => {
+					const { namespaces, invalid } = parseNamespaces(raw);
+					errorEl.setText(
+						invalid.length > 0
+							? `Не распознано (формат «Имя: Папка», имя уникально): ${invalid.join("; ")}`
+							: "",
+					);
+					// мутация НА МЕСТЕ (splice), не подмена ссылки: смонтированные виды
+					// держат ссылку на этот массив в props — подмена оставила бы им
+					// застывший снапшот списка (ревью)
+					this.plugin.settings.namespaces.splice(
+						0,
+						this.plugin.settings.namespaces.length,
+						...namespaces,
+					);
+					// Namespace roots form external-calendar mirror paths too.  Fence any
+					// old fetch and coalesce typing into one migrate + refresh pass.
+					this.plugin.sync.configurationChanged();
+					// активное пространство могло указывать на удалённое/переименованное — нормализуем
+					// через setActiveNamespace: откатит к «Общему» и пере-рендерит виды своим store
+					// (смена настроек эпоху индекса не бампает). Он же персистит настройки.
+					this.plugin.setActiveNamespace(this.plugin.settings.activeNamespace);
+					// имя могло не смениться (setActiveNamespace тогда молчит) — форс-толчок,
+					// чтобы открытые виды перечитали обновлённый список пространств
+					this.plugin.pokeNamespaceViews();
+					await this.save();
+				}),
+			);
 		});
 	}
 
@@ -163,10 +176,13 @@ export class GtdSettingsTab extends PluginSettingTab {
 				dd.addOption("tag", "По тегу");
 				dd.addOption("folder", "По папке");
 				dd.setValue(this.plugin.settings.projectStrategy);
-				dd.onChange(async (value) => {
-					this.plugin.settings.projectStrategy = value === "folder" ? "folder" : "tag";
-					await this.save();
-				});
+				dd.onChange((value) =>
+					this.reportChange(async () => {
+						this.plugin.settings.projectStrategy =
+							value === "folder" ? "folder" : "tag";
+						await this.save();
+					}),
+				);
 			});
 
 		new Setting(el)
@@ -175,10 +191,12 @@ export class GtdSettingsTab extends PluginSettingTab {
 			.addText((text) => {
 				text.setPlaceholder("#project/");
 				text.setValue(this.plugin.settings.projectTagPrefix);
-				text.onChange(async (value) => {
-					this.plugin.settings.projectTagPrefix = value;
-					await this.save();
-				});
+				text.onChange((value) =>
+					this.reportChange(async () => {
+						this.plugin.settings.projectTagPrefix = value;
+						await this.save();
+					}),
+				);
 			});
 	}
 
@@ -198,40 +216,46 @@ export class GtdSettingsTab extends PluginSettingTab {
 			.addDropdown((dd) => {
 				for (const f of CALENDAR_FIELDS) dd.addOption(f, CALENDAR_FIELD_LABEL[f]);
 				dd.setValue(primary);
-				dd.onChange(async (value) => {
-					const field = CALENDAR_FIELDS.find((f) => f === value) ?? "due";
-					this.plugin.settings.calendarPlacement = reorderCalendarPlacement(
-						this.plugin.settings.calendarPlacement,
-						field,
-					);
-					await this.save();
-					this.display(); // обновить «Текущий порядок» в описании
-				});
+				dd.onChange((value) =>
+					this.reportChange(async () => {
+						const field = CALENDAR_FIELDS.find((f) => f === value) ?? "due";
+						this.plugin.settings.calendarPlacement = reorderCalendarPlacement(
+							this.plugin.settings.calendarPlacement,
+							field,
+						);
+						await this.save();
+						this.display(); // обновить «Текущий порядок» в описании
+					}),
+				);
 			});
 
-		new Setting(el)
-			.setName("Первый день недели")
-			.addDropdown((dd) => {
-				for (const d of WEEKDAYS) dd.addOption(String(d.value), d.label);
-				dd.setValue(String(this.plugin.settings.firstDayOfWeek));
-				dd.onChange(async (value) => {
+		new Setting(el).setName("Первый день недели").addDropdown((dd) => {
+			for (const d of WEEKDAYS) dd.addOption(String(d.value), d.label);
+			dd.setValue(String(this.plugin.settings.firstDayOfWeek));
+			dd.onChange((value) =>
+				this.reportChange(async () => {
 					const n = parseIntInRange(value, 0, 6);
 					if (n === null) return;
 					this.plugin.settings.firstDayOfWeek = n;
 					await this.save();
-				});
-			});
+				}),
+			);
+		});
 
 		new Setting(el)
 			.setName("Файл повторяющихся событий")
-			.setDesc("Куда сохраняются серии календаря (frontmatter gtd-events: true). Создаётся при первом сохранении серии.")
+			.setDesc(
+				"Куда сохраняются серии календаря (frontmatter gtd-events: true). Создаётся при первом сохранении серии.",
+			)
 			.addText((text) => {
 				text.setPlaceholder("GTD/Events.md");
 				text.setValue(this.plugin.settings.eventsFile);
-				text.onChange(async (value) => {
-					this.plugin.settings.eventsFile = value.trim();
-					await this.save();
-				});
+				text.onChange((value) =>
+					this.reportChange(async () => {
+						this.plugin.settings.eventsFile = value.trim();
+						await this.save();
+					}),
+				);
 			});
 
 		new Setting(el)
@@ -245,10 +269,12 @@ export class GtdSettingsTab extends PluginSettingTab {
 			.addText((text) => {
 				text.setPlaceholder("GTD/DayStatus.md");
 				text.setValue(this.plugin.settings.dayStatusFile);
-				text.onChange(async (value) => {
-					this.plugin.settings.dayStatusFile = value.trim();
-					await this.save();
-				});
+				text.onChange((value) =>
+					this.reportChange(async () => {
+						this.plugin.settings.dayStatusFile = value.trim();
+						await this.save();
+					}),
+				);
 			});
 	}
 
@@ -257,12 +283,14 @@ export class GtdSettingsTab extends PluginSettingTab {
 	private sectionExternal(el: HTMLElement): void {
 		new Setting(el).setName("Внешние календари").setHeading();
 
-		new Setting(el).setName("Подписки на iCal-ленты (ICS)").setDesc(
-			"Секретный адрес Google Calendar, published-ссылка Outlook или любой .ics-URL " +
-				"материализуются в файлы-зеркала «<корень пространства>/External/<имя>.md» и " +
-				"появляются в календаре/агенде/виджетах как обычные события. Зеркала — только для " +
-				"чтения (перезаписываются синхронизацией); окно развёртки: 14 дней назад и 92 вперёд.",
-		);
+		new Setting(el)
+			.setName("Подписки на iCal-ленты (ICS)")
+			.setDesc(
+				"Секретный адрес Google Calendar, published-ссылка Outlook или любой .ics-URL " +
+					"материализуются в файлы-зеркала «<корень пространства>/External/<имя>.md» и " +
+					"появляются в календаре/агенде/виджетах как обычные события. Зеркала — только для " +
+					"чтения (перезаписываются синхронизацией); окно развёртки: 14 дней назад и 92 вперёд.",
+			);
 
 		this.intSetting(
 			new Setting(el)
@@ -290,27 +318,31 @@ export class GtdSettingsTab extends PluginSettingTab {
 				b
 					.setButtonText("Синхронизировать сейчас")
 					.setDisabled(subs.length === 0)
-					.onClick(async () => {
-						await this.plugin.sync.syncAll();
-						this.display();
-					}),
+					.onClick(() =>
+						this.reportAction("не удалось синхронизировать календари", async () => {
+							await this.plugin.sync.syncAll();
+							this.display();
+						}),
+					),
 			)
 			.addButton((b) =>
 				b
 					.setButtonText("Добавить подписку")
 					.setCta()
-					.onClick(async () => {
-						subs.push({
-							id: genSubId(),
-							name: "Новый календарь",
-							url: "",
-							namespace: DEFAULT_NS,
-							lastSyncAt: null,
-							lastError: null,
-						});
-						await this.save();
-						this.display();
-					}),
+					.onClick(() =>
+						this.reportChange(async () => {
+							subs.push({
+								id: genSubId(),
+								name: "Новый календарь",
+								url: "",
+								namespace: DEFAULT_NS,
+								lastSyncAt: null,
+								lastError: null,
+							});
+							await this.save();
+							this.display();
+						}),
+					),
 			);
 	}
 
@@ -334,7 +366,12 @@ export class GtdSettingsTab extends PluginSettingTab {
 				const renamed = await commitSubName(sub, t.getValue(), {
 					// commitSubName читает старое имя из sub.name ДО мутации — зеркало
 					// удаляется по старому пути (id+старое имя), детерминированно и один раз.
-					deleteMirror: (oldName) => this.plugin.sync.deleteMirror({ ...sub, name: oldName }),
+					deleteMirror: (oldName) => {
+						// Fence before the awaited trash operation: a fetch which resolves in
+						// that gap must not recreate the old-name mirror.
+						this.plugin.sync.configurationChanged();
+						return this.plugin.sync.deleteMirror({ ...sub, name: oldName });
+					},
 					save: () => this.save(),
 				});
 				if (renamed) this.display();
@@ -350,42 +387,69 @@ export class GtdSettingsTab extends PluginSettingTab {
 				sub.namespace === DEFAULT_NS ||
 				this.plugin.settings.namespaces.some((n) => n.name === sub.namespace);
 			dd.setValue(known ? sub.namespace : DEFAULT_NS);
-			dd.onChange(async (v) => {
-				sub.namespace = v;
-				await this.save();
-			});
+			dd.onChange((v) =>
+				this.reportChange(async () => {
+					if (v === sub.namespace) return;
+					sub.namespace = v;
+					this.plugin.sync.configurationChanged();
+					await this.save();
+				}),
+			);
 		});
 
 		row.addExtraButton((b) =>
 			b
 				.setIcon("refresh-cw")
 				.setTooltip("Синхронизировать сейчас")
-				.onClick(async () => {
-					await this.plugin.sync.syncById(sub.id);
-					this.display();
-				}),
+				.onClick(() =>
+					this.reportAction("не удалось синхронизировать календарь", async () => {
+						await this.plugin.sync.syncById(sub.id);
+						this.display();
+					}),
+				),
 		);
 		row.addExtraButton((b) =>
 			b
 				.setIcon("trash")
 				.setTooltip("Удалить подписку")
-				.onClick(async () => {
-					// сперва убрать файл-зеркало (в корзину), пока подписка ещё в списке —
-					// путь считается от её id+имени; иначе зеркало осиротело бы в хранилище
-					await this.plugin.sync.deleteMirror(sub);
-					const subs = this.plugin.settings.externalCalendars;
-					const i = subs.indexOf(sub);
-					if (i >= 0) subs.splice(i, 1);
-					await this.save();
-					this.display();
-				}),
+				.onClick(() =>
+					this.reportAction("не удалось удалить подписку", async () => {
+						// сперва убрать файл-зеркало (в корзину), пока подписка ещё в списке —
+						// путь считается от её id+имени; tombstone ставится ДО await, поэтому
+						// зависший fetch не сможет воскресить зеркало после удаления.
+						await this.plugin.sync.removeSubscription(sub);
+						const subs = this.plugin.settings.externalCalendars;
+						const i = subs.indexOf(sub);
+						if (i >= 0) {
+							subs.splice(i, 1);
+							// A prior interrupted migration can have left another path with the
+							// same stable id.  Reconcile after the id disappears from settings.
+							this.plugin.sync.configurationChanged();
+						}
+						try {
+							await this.save();
+						} catch (error) {
+							// saveData failed after the mirror was removed.  Keep the in-memory
+							// list aligned with the persisted configuration, so a later save
+							// cannot silently turn this failed deletion into a real one.
+							if (i >= 0) {
+								subs.splice(i, 0, sub);
+								this.plugin.sync.rollbackSubscriptionRemoval(sub.id);
+							}
+							throw error;
+						}
+						this.display();
+					}),
+				),
 		);
 
-		const urlSetting = new Setting(el).setName("Адрес ленты (.ics)").setDesc(
-			"Поддерживаются http(s):// и webcal:// (кнопки «Подписаться» Apple/Google — " +
-				"webcal автоматически заменяется на https). Внимание: секретный ICS-адрес — это " +
-				"доступ к вашему календарю на ЧТЕНИЕ. Храните его как пароль; он лежит локально в data.json.",
-		);
+		const urlSetting = new Setting(el)
+			.setName("Адрес ленты (.ics)")
+			.setDesc(
+				"Поддерживаются http(s):// и webcal:// (кнопки «Подписаться» Apple/Google — " +
+					"webcal автоматически заменяется на https). Внимание: секретный ICS-адрес — это " +
+					"доступ к вашему календарю на ЧТЕНИЕ. Храните его как пароль; он лежит локально в data.json.",
+			);
 		urlSetting.addText((t) => {
 			t.setPlaceholder("https://…/basic.ics");
 			t.setValue(sub.url);
@@ -397,6 +461,7 @@ export class GtdSettingsTab extends PluginSettingTab {
 				t.setValue(next); // показать нормализованное значение (blur — фокус свободен)
 				if (next === sub.url) return; // без изменений — не будим saveData впустую
 				sub.url = next;
+				this.plugin.sync.configurationChanged();
 				await this.save();
 			});
 		});
@@ -420,12 +485,18 @@ export class GtdSettingsTab extends PluginSettingTab {
 			text.inputEl.rows = 4;
 			text.setPlaceholder("Завтра|1\n+3 дня|3\nЧерез неделю|7");
 			text.setValue(formatDeferPresets(this.plugin.settings.deferPresets));
-			text.onChange(async (raw) => {
-				const { presets, invalid } = parseDeferPresets(raw);
-				errorEl.setText(invalid.length > 0 ? `Не распознано (формат «Метка|дни»): ${invalid.join("; ")}` : "");
-				this.plugin.settings.deferPresets = presets;
-				await this.save();
-			});
+			text.onChange((raw) =>
+				this.reportChange(async () => {
+					const { presets, invalid } = parseDeferPresets(raw);
+					errorEl.setText(
+						invalid.length > 0
+							? `Не распознано (формат «Метка|дни»): ${invalid.join("; ")}`
+							: "",
+					);
+					this.plugin.settings.deferPresets = presets;
+					await this.save();
+				}),
+			);
 		});
 	}
 
@@ -444,10 +515,12 @@ export class GtdSettingsTab extends PluginSettingTab {
 			.addText((text) => {
 				text.setPlaceholder("GTD/Inbox.md");
 				text.setValue(this.plugin.settings.recurring.spawnTarget);
-				text.onChange(async (value) => {
-					this.plugin.settings.recurring.spawnTarget = value.trim();
-					await this.save();
-				});
+				text.onChange((value) =>
+					this.reportChange(async () => {
+						this.plugin.settings.recurring.spawnTarget = value.trim();
+						await this.save();
+					}),
+				);
 			});
 
 		new Setting(el)
@@ -463,10 +536,13 @@ export class GtdSettingsTab extends PluginSettingTab {
 				dd.addOption("all", "Все пропущенные");
 				dd.addOption("none", "Не догонять");
 				dd.setValue(this.plugin.settings.recurring.catchUp);
-				dd.onChange(async (value) => {
-					this.plugin.settings.recurring.catchUp = value === "all" || value === "none" ? value : "latest";
-					await this.save();
-				});
+				dd.onChange((value) =>
+					this.reportChange(async () => {
+						this.plugin.settings.recurring.catchUp =
+							value === "all" || value === "none" ? value : "latest";
+						await this.save();
+					}),
+				);
 			});
 
 		this.intSetting(
@@ -493,10 +569,12 @@ export class GtdSettingsTab extends PluginSettingTab {
 			.addText((text) => {
 				text.setPlaceholder("GTD/Cards");
 				text.setValue(this.plugin.settings.cardsFolder);
-				text.onChange(async (value) => {
-					this.plugin.settings.cardsFolder = value.trim();
-					await this.save();
-				});
+				text.onChange((value) =>
+					this.reportChange(async () => {
+						this.plugin.settings.cardsFolder = value.trim();
+						await this.save();
+					}),
+				);
 			});
 
 		new Setting(el)
@@ -504,10 +582,12 @@ export class GtdSettingsTab extends PluginSettingTab {
 			.setDesc("При создании карточки добавлять в строку задачи ссылку на неё.")
 			.addToggle((toggle) => {
 				toggle.setValue(this.plugin.settings.cardLinkInLine);
-				toggle.onChange(async (value) => {
-					this.plugin.settings.cardLinkInLine = value;
-					await this.save();
-				});
+				toggle.onChange((value) =>
+					this.reportChange(async () => {
+						this.plugin.settings.cardLinkInLine = value;
+						await this.save();
+					}),
+				);
 			});
 	}
 
@@ -522,22 +602,28 @@ export class GtdSettingsTab extends PluginSettingTab {
 			.addText((text) => {
 				text.setPlaceholder("GTD/Board.md");
 				text.setValue(this.plugin.settings.defaultBoardPath);
-				text.onChange(async (value) => {
-					this.plugin.settings.defaultBoardPath = value.trim();
-					await this.save();
-				});
+				text.onChange((value) =>
+					this.reportChange(async () => {
+						this.plugin.settings.defaultBoardPath = value.trim();
+						await this.save();
+					}),
+				);
 			});
 
 		new Setting(el)
 			.setName("Файл архива")
-			.setDesc("Куда переносятся выполненные/отменённые карточки при «Архивировать» (frontmatter gtd-archive: true).")
+			.setDesc(
+				"Куда переносятся выполненные/отменённые карточки при «Архивировать» (frontmatter gtd-archive: true).",
+			)
 			.addText((text) => {
 				text.setPlaceholder("GTD/Archive.md");
 				text.setValue(this.plugin.settings.archiveFile);
-				text.onChange(async (value) => {
-					this.plugin.settings.archiveFile = value.trim();
-					await this.save();
-				});
+				text.onChange((value) =>
+					this.reportChange(async () => {
+						this.plugin.settings.archiveFile = value.trim();
+						await this.save();
+					}),
+				);
 			});
 	}
 
@@ -554,16 +640,20 @@ export class GtdSettingsTab extends PluginSettingTab {
 			)
 			.addToggle((toggle) => {
 				toggle.setValue(this.plugin.settings.autoInjectId);
-				toggle.onChange(async (value) => {
-					this.plugin.settings.autoInjectId = value;
-					await this.save();
-				});
+				toggle.onChange((value) =>
+					this.reportChange(async () => {
+						this.plugin.settings.autoInjectId = value;
+						await this.save();
+					}),
+				);
 			});
 
 		this.intSetting(
 			new Setting(el)
 				.setName("Порог виртуализации")
-				.setDesc("Списки длиннее порога рендерятся виртуально (быстрее на больших хранилищах)."),
+				.setDesc(
+					"Списки длиннее порога рендерятся виртуально (быстрее на больших хранилищах).",
+				),
 			{
 				min: 0,
 				max: 100000,
@@ -584,16 +674,20 @@ export class GtdSettingsTab extends PluginSettingTab {
 				dd.addOption("origin", "В исходное место");
 				dd.addOption("inbox", "Во входящие");
 				dd.setValue(this.plugin.settings.promoteTo);
-				dd.onChange(async (value) => {
-					this.plugin.settings.promoteTo = value === "inbox" ? "inbox" : "origin";
-					await this.save();
-				});
+				dd.onChange((value) =>
+					this.reportChange(async () => {
+						this.plugin.settings.promoteTo = value === "inbox" ? "inbox" : "origin";
+						await this.save();
+					}),
+				);
 			});
 
 		this.intSetting(
 			new Setting(el)
 				.setName("Задержка переиндексации файла, мс")
-				.setDesc("Для продвинутых. Дебаунс реакции на правки файлов. Вступает в силу после перезапуска плагина."),
+				.setDesc(
+					"Для продвинутых. Дебаунс реакции на правки файлов. Вступает в силу после перезапуска плагина.",
+				),
 			{
 				min: 0,
 				max: 10000,
@@ -629,16 +723,27 @@ export class GtdSettingsTab extends PluginSettingTab {
 		setting.addText((text) => {
 			text.inputEl.type = "number";
 			text.setValue(String(opts.get()));
-			text.onChange(async (raw) => {
-				const v = parseIntInRange(raw, opts.min, opts.max);
-				if (v === null) return;
-				opts.set(v);
-				await this.save();
-			});
+			text.onChange((raw) =>
+				this.reportChange(async () => {
+					const v = parseIntInRange(raw, opts.min, opts.max);
+					if (v === null) return;
+					opts.set(v);
+					await this.save();
+				}),
+			);
 			text.inputEl.addEventListener("blur", () => {
 				text.setValue(String(opts.get()));
 			});
 		});
+	}
+
+	/** Obsidian ignores callback promises; report every rejection at the boundary. */
+	private reportChange(action: () => Promise<void>): void {
+		reportAsync("изменение настройки не применено", action);
+	}
+
+	private reportAction(label: string, action: () => Promise<void>): void {
+		reportAsync(label, action);
 	}
 }
 
@@ -655,7 +760,9 @@ function genSubId(): string {
  * которые пишут валидное значение сразу, но откатывают мусор на blur — intSetting).
  */
 function commitOnBlur(inputEl: HTMLInputElement, commit: () => void | Promise<void>): void {
-	inputEl.addEventListener("blur", () => void commit());
+	inputEl.addEventListener("blur", () =>
+		reportAsync("изменение настройки не применено", async () => commit()),
+	);
 	inputEl.addEventListener("keydown", (e) => {
 		if (e.key === "Enter") {
 			e.preventDefault();

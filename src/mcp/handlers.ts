@@ -82,7 +82,8 @@ function parseTimeSpec(spec: string): { time: string; timeEnd: string | null } {
 	const timeEnd = dash === -1 ? null : t.slice(dash + 1);
 	if (!TIME_RE.test(time)) throw new Error(`invalid time '${time}' — expected HH:mm`);
 	if (timeEnd !== null) {
-		if (!TIME_RE.test(timeEnd)) throw new Error(`invalid end time '${timeEnd}' — expected HH:mm`);
+		if (!TIME_RE.test(timeEnd))
+			throw new Error(`invalid end time '${timeEnd}' — expected HH:mm`);
 		if (timeEnd <= time) throw new Error(`end time '${timeEnd}' must be after start '${time}'`);
 	}
 	return { time, timeEnd };
@@ -242,7 +243,9 @@ export function listTasks(session: GtdSession, args: ListTasksArgs): Record<stri
 	let rows: Record<string, unknown>[];
 	switch (view) {
 		case "inbox":
-			rows = evaluate({ kind: "inbox" }, queryContext(session, filter)).map((t) => taskJson(t, defs));
+			rows = evaluate({ kind: "inbox" }, queryContext(session, filter)).map((t) =>
+				taskJson(t, defs),
+			);
 			break;
 		case "tickler":
 			rows = evaluate({ kind: "tickler" }, queryContext(session, filter)).map((t) =>
@@ -266,7 +269,8 @@ export function listTasks(session: GtdSession, args: ListTasksArgs): Record<stri
 						(t) =>
 							inNs(t) &&
 							keepDone(t) &&
-							(t.container === "board" || t.tags.some((tag) => tag.startsWith("#kanban/"))),
+							(t.container === "board" ||
+								t.tags.some((tag) => tag.startsWith("#kanban/"))),
 					)
 					.map((t) => taskJson(t, defs));
 			}
@@ -291,7 +295,10 @@ export function listTasks(session: GtdSession, args: ListTasksArgs): Record<stri
 			rows = session.allTasks
 				.filter(
 					(t) =>
-						inNs(t) && keepDone(t) && t.container !== "events" && t.container !== "archive",
+						inNs(t) &&
+						keepDone(t) &&
+						t.container !== "events" &&
+						t.container !== "archive",
 				)
 				.map((t) => taskJson(t, defs));
 			break;
@@ -386,7 +393,10 @@ export async function updateTask(
 		const raw = args[field];
 		if (raw === undefined) continue;
 		if (raw === null) {
-			ops.push({ op: `${field}:clear`, intent: { type: "set-date", key, field, date: null } });
+			ops.push({
+				op: `${field}:clear`,
+				intent: { type: "set-date", key, field, date: null },
+			});
 		} else {
 			const dt = parseDateTime(raw);
 			ops.push({
@@ -411,7 +421,10 @@ export async function updateTask(
 		// имена операций зеркалят даты: 'location' — задать, 'location:clear' — снять
 		const loc = args.location;
 		if (loc === null || loc.trim() === "") {
-			ops.push({ op: "location:clear", intent: { type: "set-location", key, location: null } });
+			ops.push({
+				op: "location:clear",
+				intent: { type: "set-location", key, location: null },
+			});
 		} else {
 			ops.push({ op: "location", intent: { type: "set-location", key, location: loc } });
 		}
@@ -426,7 +439,9 @@ export async function updateTask(
 	}
 
 	if (ops.length === 0) {
-		throw new Error("nothing to update — provide done/text/due/scheduled/start/priority/location");
+		throw new Error(
+			"nothing to update — provide done/text/due/scheduled/start/priority/location",
+		);
 	}
 
 	const res = await session.writeback.dispatchMany(ops.map((o) => o.intent));
@@ -489,7 +504,9 @@ export async function moveCard(
 	const col = board.def.columns.find((c) => c.id === args.column || c.name === args.column);
 	if (col === undefined) {
 		const names = board.def.columns.map((c) => `'${c.name}'`).join(", ");
-		throw new Error(`column '${args.column}' not found on board '${board.def.name}'. Columns: ${names}`);
+		throw new Error(
+			`column '${args.column}' not found on board '${board.def.name}'. Columns: ${names}`,
+		);
 	}
 	const key = resolveTaskKey(session, args.id);
 	const res = await session.boards.moveCard(
@@ -532,8 +549,7 @@ function expandEvents(events: readonly Task[], from: string, to: string): Occurr
 		if (task.recurrence !== null) {
 			const rule = parseRule(task.recurrence);
 			if (isParseError(rule)) continue;
-			const exclude =
-				task.excludedDates.length > 0 ? new Set(task.excludedDates) : undefined;
+			const exclude = task.excludedDates.length > 0 ? new Set(task.excludedDates) : undefined;
 			for (const date of expandOccurrences(rule, from, to, undefined, exclude)) {
 				out.push({
 					task,
@@ -625,7 +641,8 @@ export async function addEvent(
 		NS_CONVENTION.events,
 		session.settings.eventsFile,
 	);
-	const location = args.location !== undefined && args.location.trim() !== "" ? args.location : null;
+	const location =
+		args.location !== undefined && args.location.trim() !== "" ? args.location : null;
 
 	const hasRule = args.rule !== undefined && args.rule.trim() !== "";
 	const hasDate = args.date !== undefined && args.date.trim() !== "";
@@ -682,7 +699,15 @@ export async function addEvent(
 		if (hasTime) {
 			({ time, timeEnd } = parseTimeSpec(args.time!));
 		}
-		res = await writeSingleEvent(session, eventsFile, args.name, dt.date, time, timeEnd, location);
+		res = await writeSingleEvent(
+			session,
+			eventsFile,
+			args.name,
+			dt.date,
+			time,
+			timeEnd,
+			location,
+		);
 		kind = "single";
 	} else {
 		throw new Error("provide either 'rule' (recurring) or 'date' (one-off event)");
@@ -724,7 +749,9 @@ async function writeSingleEvent(
 		return { ok: false, reason: "events-file-create-failed" };
 	}
 	const finalLine = line;
-	const ok = await session.vault.processFile(eventsFile, (content) => appendLine(content, finalLine));
+	const ok = await session.vault.processFile(eventsFile, (content) =>
+		appendLine(content, finalLine),
+	);
 	return ok ? { ok: true } : { ok: false, reason: "write-failed" };
 }
 
@@ -742,7 +769,11 @@ export function listBoards(session: GtdSession, args: ListBoardsArgs): Record<st
 	const { boards, errors } = session.boards.discoverBoards(filter);
 	const rows = boards.map((b) => {
 		const model = session.boards.boardModel(b.path, b.def);
-		const columns = model.columns.map((c) => ({ id: c.id, name: c.name, count: c.tasks.length }));
+		const columns = model.columns.map((c) => ({
+			id: c.id,
+			name: c.name,
+			count: c.tasks.length,
+		}));
 		const total = columns.reduce((n, c) => n + c.count, 0);
 		const nsOverride = frontmatterNamespace(session.vault.readFrontmatterSync(b.path));
 		return {
@@ -767,11 +798,7 @@ export function listBoards(session: GtdSession, args: ListBoardsArgs): Record<st
 // Резолверы доски/проекта
 // ---------------------------------------------------------------------------
 
-function findBoard(
-	session: GtdSession,
-	filter: NamespaceFilter,
-	board: string,
-): DiscoveredBoard {
+function findBoard(session: GtdSession, filter: NamespaceFilter, board: string): DiscoveredBoard {
 	const { boards } = session.boards.discoverBoards(filter);
 	const matches = boards.filter((b) => b.def.id === board || b.def.name === board);
 	if (matches.length === 0) {
@@ -798,7 +825,9 @@ function findProjectPath(session: GtdSession, filter: NamespaceFilter, project: 
 		throw new Error(`project '${project}' not found. Available: ${avail}`);
 	}
 	if (matches.length > 1) {
-		throw new Error(`project '${project}' is ambiguous (${matches.length} matches) — use its path`);
+		throw new Error(
+			`project '${project}' is ambiguous (${matches.length} matches) — use its path`,
+		);
 	}
 	return matches[0]!.path;
 }

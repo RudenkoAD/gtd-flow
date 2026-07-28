@@ -49,7 +49,13 @@ interface Harness {
 }
 
 function makeHarness(
-	opts: { today?: string; genId?: () => string; nsFilter?: () => NamespaceFilter } = {},
+	opts: {
+		today?: string;
+		genId?: () => string;
+		nsFilter?: () => NamespaceFilter;
+		/** Тесты recovery раскладки: первые N patch-операций имитируют отказ диска. */
+		failPatches?: number;
+	} = {},
 ): Harness {
 	const queue: string[] = [];
 	const feed = new FakeFeed(opts.today ?? "2026-07-15");
@@ -57,6 +63,7 @@ function makeHarness(
 	const frontmatters = new Map<string, Record<string, unknown>>();
 	const containers = new Set<string>();
 	const ensured: string[] = [];
+	let failedPatches = opts.failPatches ?? 0;
 	// dispatcher графовыми транзакциями не используется — заглушка
 	const dispatcher: IntentDispatcher = { dispatch: () => Promise.resolve({ ok: true }) };
 	const svc = new ProjectService({
@@ -65,6 +72,10 @@ function makeHarness(
 		readFrontmatter: (p) => frontmatters.get(p) ?? null,
 		patchFrontmatter: async (p, fn) => {
 			queue.push("patch");
+			if (failedPatches > 0) {
+				failedPatches--;
+				throw new Error("disk-full");
+			}
 			// живой frontmatter: мутация как в processFrontMatter
 			const fm = frontmatters.get(p) ?? {};
 			fn(fm);
@@ -93,7 +104,12 @@ function makeHarness(
 }
 
 /** Файл проекта: строки → задачи (container 'project') в индекс + текст в порт. */
-function loadProject(h: Harness, path: string, lines: string[], fm?: Record<string, unknown>): void {
+function loadProject(
+	h: Harness,
+	path: string,
+	lines: string[],
+	fm?: Record<string, unknown>,
+): void {
 	const tasks: Task[] = [];
 	for (let i = 0; i < lines.length; i++) {
 		const t = parseTaskLine(lines[i]!, {
@@ -186,7 +202,12 @@ describe("ProjectService.discoverProjects", () => {
 
 		const list = h.svc.discoverProjects();
 		expect(list).toHaveLength(1);
-		expect(list[0]).toMatchObject({ path: "GTD/Пусто.md", name: "Пустой", status: "active", complete: false });
+		expect(list[0]).toMatchObject({
+			path: "GTD/Пусто.md",
+			name: "Пустой",
+			status: "active",
+			complete: false,
+		});
 	});
 
 	it("dedupe: файл и в индексе задач, и в containerPaths — один проект", () => {
@@ -264,7 +285,10 @@ describe("ProjectService.createProject", () => {
 		expect(res).toEqual({ ok: true, path: "GTD/Ремонт.md" });
 		expect(h.ensured).toEqual(["GTD/Ремонт.md"]);
 		expect(h.queue).toEqual(["ensure", "patch"]);
-		expect(h.frontmatters.get("GTD/Ремонт.md")).toEqual({ "gtd-project": true, name: "Ремонт кухни" });
+		expect(h.frontmatters.get("GTD/Ремонт.md")).toEqual({
+			"gtd-project": true,
+			name: "Ремонт кухни",
+		});
 	});
 
 	it("созданный проект сразу виден discovery через containerPaths", async () => {
@@ -283,12 +307,19 @@ describe("ProjectService.createProject", () => {
 		const res = await h.svc.createProject("P.md", "Новое");
 
 		expect(res).toEqual({ ok: true, path: "P.md" });
-		expect(h.frontmatters.get("P.md")).toEqual({ "gtd-project": true, name: "Старое", status: "on-hold" });
+		expect(h.frontmatters.get("P.md")).toEqual({
+			"gtd-project": true,
+			name: "Старое",
+			status: "on-hold",
+		});
 	});
 
 	it("пустое имя — отказ без ensureFile/записи", async () => {
 		const h = makeHarness();
-		expect(await h.svc.createProject("P.md", "   ")).toEqual({ ok: false, reason: "empty-name" });
+		expect(await h.svc.createProject("P.md", "   ")).toEqual({
+			ok: false,
+			reason: "empty-name",
+		});
 		expect(h.ensured).toEqual([]);
 		expect(h.patchCount()).toBe(0);
 	});
@@ -311,11 +342,7 @@ describe("ProjectService.model", () => {
 		loadProject(
 			h,
 			P,
-			[
-				"- [x] A 🆔 aa1 ✅ 2026-07-10",
-				"- [ ] B 🆔 bb2 ⛔ aa1",
-				"- [ ] C 🆔 cc3 ⛔ bb2,qq9",
-			],
+			["- [x] A 🆔 aa1 ✅ 2026-07-10", "- [ ] B 🆔 bb2 ⛔ aa1", "- [ ] C 🆔 cc3 ⛔ bb2,qq9"],
 			{
 				layout: {
 					aa1: { x: 0, y: 0 },
@@ -403,7 +430,9 @@ describe("ProjectService.connect", () => {
 		const res = await h.svc.connect(P, "bb2", "cc3");
 
 		expect(res).toEqual({ ok: true });
-		expect(h.port.files.get(P)).toBe("- [ ] A 🆔 aa1\n- [ ] B 🆔 bb2 ⛔ aa1\n- [ ] C 🆔 cc3 ⛔ bb2\n");
+		expect(h.port.files.get(P)).toBe(
+			"- [ ] A 🆔 aa1\n- [ ] B 🆔 bb2 ⛔ aa1\n- [ ] C 🆔 cc3 ⛔ bb2\n",
+		);
 		expect(h.port.writes).toHaveLength(1);
 	});
 
@@ -465,8 +494,14 @@ describe("ProjectService.connect", () => {
 		]);
 		loadProject(h, P, ["- [ ] A 🆔 aa1"]);
 
-		expect(await h.svc.connect(P, "ext1", "aa1")).toEqual({ ok: false, reason: "source-not-found" });
-		expect(await h.svc.connect(P, "aa1", "ext1")).toEqual({ ok: false, reason: "target-not-found" });
+		expect(await h.svc.connect(P, "ext1", "aa1")).toEqual({
+			ok: false,
+			reason: "source-not-found",
+		});
+		expect(await h.svc.connect(P, "aa1", "ext1")).toEqual({
+			ok: false,
+			reason: "target-not-found",
+		});
 		expect(h.port.calls).toBe(0);
 	});
 
@@ -535,7 +570,10 @@ describe("ProjectService.disconnect", () => {
 		const h = makeHarness();
 		loadProject(h, P, ["- [ ] A 🆔 aa1"]);
 
-		expect(await h.svc.disconnect(P, "aa1", "нет")).toEqual({ ok: false, reason: "target-not-found" });
+		expect(await h.svc.disconnect(P, "aa1", "нет")).toEqual({
+			ok: false,
+			reason: "target-not-found",
+		});
 		expect(h.port.calls).toBe(0);
 	});
 });
@@ -652,7 +690,10 @@ describe("ProjectService.deleteNode", () => {
 	it("узел без 🆔 адресуется своим key (content-key)", async () => {
 		const h = makeHarness();
 		loadProject(h, P, ["- [ ] безайди", "- [ ] сосед 🆔 aa1"]);
-		const victim = h.feed.getIndex().fileTasks(P).find((t) => t.taskId === null)!;
+		const victim = h.feed
+			.getIndex()
+			.fileTasks(P)
+			.find((t) => t.taskId === null)!;
 
 		const res = await h.svc.deleteNode(P, victim.key);
 
@@ -682,12 +723,9 @@ describe("ProjectService.deleteNode", () => {
 
 	it("дубль-носители 🆔 (след sync-схождения): удаляется только строка — рёбра ⛔ и layout выжившего целы", async () => {
 		const h = makeHarness();
-		loadProject(
-			h,
-			P,
-			["- [ ] A 🆔 n1", "- [ ] A-копия 🆔 n1", "- [ ] C 🆔 c1 ⛔ n1"],
-			{ layout: { n1: { x: 3, y: 4 }, c1: { x: 5, y: 6 } } },
-		);
+		loadProject(h, P, ["- [ ] A 🆔 n1", "- [ ] A-копия 🆔 n1", "- [ ] C 🆔 c1 ⛔ n1"], {
+			layout: { n1: { x: 3, y: 4 }, c1: { x: 5, y: 6 } },
+		});
 
 		const res = await h.svc.deleteNode(P, "n1");
 
@@ -696,7 +734,10 @@ describe("ProjectService.deleteNode", () => {
 		expect(h.port.files.get(P)).toBe("- [ ] A-копия 🆔 n1\n- [ ] C 🆔 c1 ⛔ n1\n");
 		// layout выжившего не удалён — patchFrontmatter вовсе не звался
 		expect(h.patchCount()).toBe(0);
-		expect(h.frontmatters.get(P)!["layout"]).toEqual({ n1: { x: 3, y: 4 }, c1: { x: 5, y: 6 } });
+		expect(h.frontmatters.get(P)!["layout"]).toEqual({
+			n1: { x: 3, y: 4 },
+			c1: { x: 5, y: 6 },
+		});
 	});
 
 	it("дублей нет — вычистка ⛔ и layout идёт как раньше (негативный контроль)", async () => {
@@ -805,6 +846,24 @@ describe("ProjectService.moveNodes", () => {
 		await vi.advanceTimersByTimeAsync(MOVE_DEBOUNCE_MS);
 		expect(h.patchCount()).toBe(1); // сброшенный батч не повторяется
 	});
+
+	it("после отказа patchFrontmatter сохраняет позиции и повторяет их при следующем жесте", async () => {
+		const h = makeHarness({ failPatches: 1 });
+		h.frontmatters.set(P, {});
+
+		const failed = h.svc.moveNodes(P, [{ id: "a", x: 1, y: 1 }]);
+		const failure = expect(failed).rejects.toThrow("disk-full");
+		await vi.advanceTimersByTimeAsync(MOVE_DEBOUNCE_MS);
+		await failure;
+
+		const retried = h.svc.moveNodes(P, [{ id: "b", x: 2, y: 2 }]);
+		await vi.advanceTimersByTimeAsync(MOVE_DEBOUNCE_MS);
+		await retried;
+		expect(h.frontmatters.get(P)!["layout"]).toEqual({
+			a: { x: 1, y: 1 },
+			b: { x: 2, y: 2 },
+		});
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -818,6 +877,10 @@ describe("ProjectService.setProjectStatus", () => {
 
 		await h.svc.setProjectStatus(P, "done");
 
-		expect(h.frontmatters.get(P)).toEqual({ "gtd-project": true, name: "Ремонт", status: "done" });
+		expect(h.frontmatters.get(P)).toEqual({
+			"gtd-project": true,
+			name: "Ремонт",
+			status: "done",
+		});
 	});
 });

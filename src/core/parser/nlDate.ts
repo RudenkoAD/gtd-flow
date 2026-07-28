@@ -329,7 +329,8 @@ function matchDate(toks: Tok[], i: number, today: IsoDate): DateMatch | null {
 				const t2 = toks[i + 2];
 				if (t2 !== undefined && !t2.literal && n > 0) {
 					if (DAY_UNITS.has(t2.match)) return { end: i + 3, date: addDays(today, n) };
-					if (WEEK_UNITS.has(t2.match)) return { end: i + 3, date: addDays(today, 7 * n) };
+					if (WEEK_UNITS.has(t2.match))
+						return { end: i + 3, date: addDays(today, 7 * n) };
 				}
 			} else if (WEEK_UNITS.has(t1.match)) {
 				return { end: i + 2, date: addDays(today, 7) };

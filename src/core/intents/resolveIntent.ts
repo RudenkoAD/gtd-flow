@@ -51,9 +51,16 @@ export function resolveLineTransform(intent: Intent, currentLine: string): strin
 	switch (intent.type) {
 		case "set-date": {
 			// time/timeEnd: undefined — сохранить время поля, null — снять, строка — установить
-			let line = setField(currentLine, intent.field, intent.date, intent.time, intent.timeEnd);
+			let line = setField(
+				currentLine,
+				intent.field,
+				intent.date,
+				intent.time,
+				intent.timeEnd,
+			);
 			// «🛫 и 📅 взаимоисключающие»: планирование снимает отложенность разом
-			if (intent.clearStart === true && intent.field === "due") line = setField(line, "start", null);
+			if (intent.clearStart === true && intent.field === "due")
+				line = setField(line, "start", null);
 			return line;
 		}
 

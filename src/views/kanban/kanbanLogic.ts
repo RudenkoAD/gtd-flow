@@ -105,7 +105,10 @@ export function columnCaptureTransform(
  * Пустой результат (эмодзи/спецсимволы целиком) → "Доска".
  */
 export function boardFileName(name: string): string {
-	const cleaned = name.replace(/[\\/:*?"<>|#^[\]]/g, " ").replace(/\s+/g, " ").trim();
+	const cleaned = name
+		.replace(/[\\/:*?"<>|#^[\]]/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
 	return cleaned === "" ? "Доска" : cleaned;
 }
 

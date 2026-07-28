@@ -102,7 +102,9 @@ export function renderWikiLinks(text: string, taskId: string | null): string {
 		const base = wikiLinkBasename(target);
 		const chunk = text.slice(from, m.index);
 		const hidden =
-			taskId !== null && taskId !== "" && (target.startsWith(taskId) || base.startsWith(taskId));
+			taskId !== null &&
+			taskId !== "" &&
+			(target.startsWith(taskId) || base.startsWith(taskId));
 		if (hidden) {
 			// схлопнуть двойной пробел на шве: «до [[ссылка]] после» → «до после»
 			out +=

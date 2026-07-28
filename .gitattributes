@@ -1,3 +1,5 @@
 * text=auto eol=lf
 *.png binary
 *.jpg binary
+src/sync/SyncService.ts text diff
+src/sync/mirrorBuilder.ts text diff

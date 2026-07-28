@@ -8,6 +8,7 @@
 		type NamespaceDef,
 		type NamespaceFilter,
 	} from "../../core/namespace/namespace";
+	import type { Task } from "../../core/model/Task";
 	import { isParseError } from "../../core/recurrence/grammar";
 	import type { CardPort } from "../../services/CardService";
 	import type { RecurrencePort, SpawnReport } from "../../services/RecurrenceService";
@@ -20,6 +21,7 @@
 	import NamespaceSwitcher from "../common/NamespaceSwitcher.svelte";
 	import { namespaceLabel } from "../common/namespaceSwitcher";
 	import { openTaskInFile } from "../common/openTask";
+	import { reportAsync } from "../common/runAction";
 	import { recurringFilePathsInNamespace } from "../common/taskActions";
 	import { RuleEditModal } from "./RuleEditModal";
 	import { TemplateCreateModal } from "./TemplateCreateModal";
@@ -37,18 +39,20 @@
 		taskStore,
 		dispatcher,
 		settings,
+		settingsRevision,
 		app,
 		recurrence = null,
 		cards = null,
 		vault,
 		activeNamespace,
-		namespaces,
+		namespaces: _namespaces,
 		setActiveNamespace,
 	}: {
 		taskStore: TaskStore;
 		/** Удаление строки-шаблона идёт штатным delete-line, а не RecurrencePort. */
 		dispatcher: IntentDispatcher;
 		settings: GtdFlowSettings;
+		settingsRevision: Readable<number>;
 		app: App;
 		/** null — движок повторов не подключён: карточки read-only + подсказка. */
 		recurrence?: RecurrencePort | null;
@@ -64,27 +68,40 @@
 		setActiveNamespace: (name: string) => void;
 	} = $props();
 
+	const liveNamespaces = $derived.by(() => {
+		void $settingsRevision;
+		return settings.namespaces;
+	});
 	// Фильтр пространства для templatesStore: смена ЛОКАЛЬНОГО пространства вида
 	// пере-рендерит вид подпиской стора (эпоху индекса не бампает).
 	// svelte-ignore state_referenced_locally
 	const namespace$: Readable<NamespaceFilter> = derived(activeNamespace, (a) => ({
 		active: a,
-		defs: namespaces,
+		defs: liveNamespaces,
 	}));
 
 	// props фиксированы на время монтирования (вид пересоздаётся с leaf) —
 	// одноразовый снимок при инициализации намеренный
-	// svelte-ignore state_referenced_locally
-	const templates = templatesStore(taskStore, settings.debounceMs.queryRecompute, namespace$);
+	let templates = $state<Task[]>([]);
+	$effect(() => {
+		void $settingsRevision;
+		const store = templatesStore(
+			taskStore,
+			settings.debounceMs.queryRecompute,
+			namespace$,
+			settingsRevision,
+		);
+		return store.subscribe((value) => (templates = value));
+	});
 	// svelte-ignore state_referenced_locally
 	const today = taskStore.today;
 	// svelte-ignore state_referenced_locally
 	const epoch = taskStore.epoch;
 	/** Метка активного пространства для шапки/пустого состояния — только когда настроено. */
-	const nsLabel = $derived(namespaces.length === 0 ? null : namespaceLabel($activeNamespace));
+	const nsLabel = $derived(liveNamespaces.length === 0 ? null : namespaceLabel($activeNamespace));
 
 	const groups = $derived(
-		groupByFileAndHeading($templates.map((t) => buildTemplateVM(t, $today))),
+		groupByFileAndHeading(templates.map((t) => buildTemplateVM(t, $today))),
 	);
 
 	// история читает индекс напрямую (копии — не шаблоны, в $templates их нет);
@@ -106,7 +123,11 @@
 		try {
 			const rep = await port.runPass();
 			lastReport = rep;
-			const parts = [`создано ${rep.spawned}`, `курсоров ${rep.advanced}`, `дедуп ${rep.deduped}`];
+			const parts = [
+				`создано ${rep.spawned}`,
+				`курсоров ${rep.advanced}`,
+				`дедуп ${rep.deduped}`,
+			];
 			if (rep.conflicts.length > 0) parts.push(`конфликтов ${rep.conflicts.length}`);
 			if (rep.errors.length > 0) parts.push(`ошибок ${rep.errors.length}`);
 			new Notice(`GTD Flow: проход повторов — ${parts.join(", ")}`);
@@ -130,12 +151,16 @@
 					const active = get(activeNamespace);
 					const res = await createTemplate({
 						vault,
-						recurringFiles: recurringFilePathsInNamespace(taskStore.index().all(), active, namespaces),
+						recurringFiles: recurringFilePathsInNamespace(
+							taskStore.index().all(),
+							active,
+							liveNamespaces,
+						),
 						spawnTarget: settings.recurring.spawnTarget,
 						recurringFallback:
 							active === DEFAULT_NS
 								? undefined
-								: nsTargetPath(active, namespaces, NS_CONVENTION.recurring, ""),
+								: nsTargetPath(active, liveNamespaces, NS_CONVENTION.recurring, ""),
 						name,
 						ruleText,
 					});
@@ -179,7 +204,9 @@
 				try {
 					const res = await port.setRule(vm.key, text);
 					if (!res.ok) {
-						new Notice(`GTD Flow: правило не сохранено: ${res.parseError ?? "unknown"}`);
+						new Notice(
+							`GTD Flow: правило не сохранено: ${res.parseError ?? "unknown"}`,
+						);
 					}
 				} catch (e) {
 					new Notice(`GTD Flow: правило не сохранено: ${String(e)}`);
@@ -236,10 +263,11 @@
 					.setIcon("panel-right")
 					.setTitle("Открыть карточку")
 					.onClick(() =>
-						void (async () => {
+						reportAsync("не удалось открыть карточку", async () => {
 							const res = await cardPort.openOrCreate(vm.key);
-							if (!res.ok) new Notice(`GTD Flow: ${res.reason ?? "карточка недоступна"}`);
-						})(),
+							if (!res.ok)
+								new Notice(`GTD Flow: ${res.reason ?? "карточка недоступна"}`);
+						}),
 					),
 			);
 		}
@@ -257,7 +285,7 @@
 				.setSection("danger")
 				.setIcon("trash-2")
 				.setTitle("Удалить шаблон…")
-				.onClick(() => void deleteTemplate(vm)),
+				.onClick(() => reportAsync("не удалось удалить шаблон", () => deleteTemplate(vm))),
 		);
 		menu.showAtMouseEvent(e);
 	}
@@ -269,13 +297,14 @@
 
 <div class="gtd-recurring">
 	<div class="gtd-rec-header">
-		<button class="mod-cta" onclick={createTemplateNow} title="Создать шаблон регулярной задачи">
+		<button
+			class="mod-cta"
+			onclick={createTemplateNow}
+			title="Создать шаблон регулярной задачи"
+		>
 			＋ Шаблон
 		</button>
-		<button
-			disabled={recurrence === null || running}
-			onclick={() => void checkNow()}
-		>
+		<button disabled={recurrence === null || running} onclick={() => void checkNow()}>
 			Проверить сейчас
 		</button>
 		{#if lastReport !== null}
@@ -284,7 +313,11 @@
 			</span>
 		{/if}
 		<span class="gtd-rec-spacer"></span>
-		<NamespaceSwitcher active={activeNamespace} {namespaces} onSelect={setActiveNamespace} />
+		<NamespaceSwitcher
+			active={activeNamespace}
+			namespaces={liveNamespaces}
+			onSelect={setActiveNamespace}
+		/>
 	</div>
 
 	{#if recurrence === null}
@@ -299,20 +332,22 @@
 				<div class="gtd-rec-problems-title">
 					Конфликты дедупа ({lastReport.conflicts.length}) — разберите вручную:
 				</div>
-				{#each lastReport.conflicts as c}
+				{#each lastReport.conflicts as c, index (index)}
 					<div class="gtd-rec-problem">⚠ {c}</div>
 				{/each}
 			{/if}
 			{#if lastReport.errors.length > 0}
-				<div class="gtd-rec-problems-title">Ошибки прохода ({lastReport.errors.length}):</div>
-				{#each lastReport.errors as err}
+				<div class="gtd-rec-problems-title">
+					Ошибки прохода ({lastReport.errors.length}):
+				</div>
+				{#each lastReport.errors as err, index (index)}
 					<div class="gtd-rec-problem">✕ {err.templateId ?? "без 🆔"}: {err.message}</div>
 				{/each}
 			{/if}
 		</div>
 	{/if}
 
-	{#each groups as group}
+	{#each groups as group, index (index)}
 		<section class="gtd-rec-group">
 			<div class="gtd-rec-group-title">
 				<span class="gtd-rec-group-file">{group.filePath}</span>
@@ -324,7 +359,7 @@
 				<div class="gtd-rec-card" class:is-paused={vm.paused}>
 					<div class="gtd-rec-main">
 						<div class="gtd-rec-desc">
-							{#each segmentDescription(vm.description) as seg}{#if seg.tag}<span
+							{#each segmentDescription(vm.description) as seg (seg.text)}{#if seg.tag}<span
 										class="tag">{seg.text}</span
 									>{:else}{seg.text}{/if}{/each}
 						</div>
@@ -336,7 +371,10 @@
 									<span class="gtd-rec-badge is-paused-badge">⏸ пауза</span>
 								{/if}
 								{#if isParseError(vm.ruleParsed)}
-									<span class="gtd-rec-badge is-error" title={vm.ruleParsed.error}>
+									<span
+										class="gtd-rec-badge is-error"
+										title={vm.ruleParsed.error}
+									>
 										⚠ {vm.ruleParsed.error}
 									</span>
 								{/if}
@@ -374,7 +412,9 @@
 								<div class="gtd-rec-history-item">
 									<span class="gtd-rec-history-status">[{item.statusChar}]</span>
 									<span class="gtd-rec-history-desc">{item.description}</span>
-									<span class="gtd-rec-history-date">➕ {item.created ?? "—"}</span>
+									<span class="gtd-rec-history-date"
+										>➕ {item.created ?? "—"}</span
+									>
 									<button
 										class="gtd-rec-btn"
 										onclick={() => void openTaskInFile(app, item)}

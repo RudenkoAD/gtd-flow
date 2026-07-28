@@ -8,13 +8,8 @@
  * паритет между окнами обеспечивают меню/команды, слой 3 ТЗ §8).
  */
 import type { Plugin } from "obsidian";
-import {
-	DragStateMachine,
-	LONG_PRESS_MS,
-	edgeScrollDelta,
-	hitTest,
-	type HitBox,
-} from "./dndCore";
+import { reportAsync } from "../common/runAction";
+import { DragStateMachine, LONG_PRESS_MS, edgeScrollDelta, hitTest, type HitBox } from "./dndCore";
 import type { DndPort, DragPayload, DropContext, GtdDropTarget } from "./types";
 
 /** Класс подсветки цели под курсором — в дополнение к hover/unhover цели. */
@@ -256,13 +251,12 @@ export class DndService implements DndPort {
 		// ghost/подсветку снимаем ДО drop: даже упавший/зависший drop не оставит призрака
 		this.finishDrag(ctx);
 		if (target === null) return;
-		try {
-			void Promise.resolve(target.drop(payload, dropCtx)).catch((err) => {
-				console.error("GTD Flow DnD: drop отклонён", err);
-			});
-		} catch (err) {
-			console.error("GTD Flow DnD: drop упал", err);
-		}
+		// Большинство drop-обработчиков уже используют runAction и разрешаются после
+		// собственного Notice. Эта общая граница ловит только реально непройденные
+		// ошибки (включая синхронный throw), не добавляя второй Notice к обработанным.
+		reportAsync("не удалось перенести карточку", () =>
+			Promise.resolve(target.drop(payload, dropCtx)),
+		);
 	}
 
 	private onCancel(ctx: WinCtx): void {
@@ -314,7 +308,12 @@ export class DndService implements DndPort {
 	}
 
 	/** Верхняя принимающая цель под точкой — только среди целей окна drag'а. */
-	private hitTarget(ctx: WinCtx, payload: DragPayload, x: number, y: number): GtdDropTarget | null {
+	private hitTarget(
+		ctx: WinCtx,
+		payload: DragPayload,
+		x: number,
+		y: number,
+	): GtdDropTarget | null {
 		const boxes: HitBox<GtdDropTarget>[] = [];
 		for (const t of this.targets) {
 			if (!t.el.isConnected || winOf(t.el) !== ctx.win) continue;
@@ -326,7 +325,10 @@ export class DndService implements DndPort {
 			}
 			if (!ok) continue;
 			const r = t.el.getBoundingClientRect();
-			boxes.push({ id: t, rect: { left: r.left, top: r.top, right: r.right, bottom: r.bottom } });
+			boxes.push({
+				id: t,
+				rect: { left: r.left, top: r.top, right: r.right, bottom: r.bottom },
+			});
 		}
 		return hitTest(boxes, x, y);
 	}

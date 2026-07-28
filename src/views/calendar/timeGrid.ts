@@ -116,8 +116,13 @@ export interface DayGridLayout {
  */
 export function layoutDay(events: readonly TimedEventInput[]): DayGridLayout {
 	const allDay: string[] = [];
-	const timedIn: { key: string; startMin: number; endMin: number; hasEnd: boolean; order: number }[] =
-		[];
+	const timedIn: {
+		key: string;
+		startMin: number;
+		endMin: number;
+		hasEnd: boolean;
+		order: number;
+	}[] = [];
 	events.forEach((ev, i) => {
 		const min = ev.time === null ? null : timeToMinutes(ev.time);
 		if (min === null) {

@@ -12,10 +12,17 @@
 		renderWikiLinks,
 	} from "../common/cardFormat";
 	import { buildTaskMenu, type TaskMenuPorts } from "../common/taskMenu";
+	import { reportAsync } from "../common/runAction";
 	import { obsidianTooltip } from "../common/tooltip";
 	import type { DndPort } from "../dnd/types";
 	import { VIEW_TYPES } from "../registry";
-	import { agendaTimeLabel, deferredUntil, placedTime, placedTimeEnd, type PlacedEvent } from "./calendarLogic";
+	import {
+		agendaTimeLabel,
+		deferredUntil,
+		placedTime,
+		placedTimeEnd,
+		type PlacedEvent,
+	} from "./calendarLogic";
 
 	let {
 		ev,
@@ -48,7 +55,9 @@
 	// (ссылка на свою карточку скрывается по taskId), затем сегментация #тегов
 	// без структурных тегов колонок доски (#kanban/…). titleText — плоская версия
 	// для подсказки (title-атрибут).
-	const segments = $derived(displaySegments(renderWikiLinks(ev.task.description, ev.task.taskId)));
+	const segments = $derived(
+		displaySegments(renderWikiLinks(ev.task.description, ev.task.taskId)),
+	);
 	const titleText = $derived(displayText(ev.task));
 	// ТЗ §8: на телефоне кросс-видовой drag выключен — меню/пикеры вместо него
 	const draggable = $derived(dnd !== null && !Platform.isPhone);
@@ -64,7 +73,9 @@
 	const baseTitle = $derived(deferred !== null ? `Отложена до ${deferred}` : titleText);
 	/** Место задачи (📍): непустой текст или null. */
 	const locationText = $derived(
-		ev.task.location !== null && ev.task.location.trim() !== "" ? ev.task.location.trim() : null,
+		ev.task.location !== null && ev.task.location.trim() !== ""
+			? ev.task.location.trim()
+			: null,
 	);
 	/** При наличии места — единая Obsidian-подсказка ПОД чипом (как у событий):
 	 *  базовый текст + строка «📍 <место>». Без места — null: работает native title. */
@@ -83,9 +94,11 @@
 	let lastClickAt = 0;
 	const DBLCLICK_MS = 400;
 
-	async function run(intent: Intent): Promise<void> {
-		const res = await dispatcher.dispatch(intent);
-		if (!res.ok) new Notice(`GTD Flow: ${res.reason}`);
+	function run(intent: Intent): void {
+		reportAsync("не удалось изменить задачу", async () => {
+			const res = await dispatcher.dispatch(intent);
+			if (!res.ok) new Notice(`GTD Flow: ${res.reason}`);
+		});
 	}
 
 	function toggleStatus(): void {
@@ -100,7 +113,8 @@
 		if (editing) return; // во время редактирования drag-источник отключён
 		if (!draggable || dnd === null || e.button !== 0) return;
 		// клик по точке-статусу — не начало drag
-		if (e.target instanceof Element && e.target.closest("input, button, a, select, textarea")) return;
+		if (e.target instanceof Element && e.target.closest("input, button, a, select, textarea"))
+			return;
 		if (dragAnchor !== null) {
 			// блок сетки: призрак — весь блок, время при drop — по его верху
 			dnd.startDrag(
@@ -122,8 +136,14 @@
 	}
 
 	function openMenu(e: MouseEvent): void {
-		buildTaskMenu({ task: ev.task, app, dispatcher, settings, today, ports: menuPorts })
-			.showAtMouseEvent(e);
+		buildTaskMenu({
+			task: ev.task,
+			app,
+			dispatcher,
+			settings,
+			today,
+			ports: menuPorts,
+		}).showAtMouseEvent(e);
 	}
 
 	/** ПКМ — меню задачи. Во время редактирования не мешаем нативному меню input. */
@@ -224,8 +244,9 @@
 			<span class="gtd-cal-chip-time">{timeLabel}</span>
 		{/if}
 		<span class="gtd-cal-chip-text"
-			>{#each segments as seg}{#if seg.tag}<span class="gtd-cal-chip-tag">{seg.text}</span
-				>{:else}{seg.text}{/if}{/each}</span
+			>{#each segments as seg (seg.text)}{#if seg.tag}<span class="gtd-cal-chip-tag"
+						>{seg.text}</span
+					>{:else}{seg.text}{/if}{/each}</span
 		>
 	{/if}
 </div>

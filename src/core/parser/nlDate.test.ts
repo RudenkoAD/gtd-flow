@@ -245,7 +245,7 @@ describe("parseNlDate — «12 утра/дня/ночи» (FIX-13)", () => {
 });
 
 describe("parseNlDate — escape кавычками", () => {
-	it("«\"завтра\"» — кавычки сняты, дата НЕ распознана", () => {
+	it('«"завтра"» — кавычки сняты, дата НЕ распознана', () => {
 		expect(parseNlDate('"завтра" позвонить', WED)).toEqual({
 			title: "завтра позвонить",
 			date: null,
@@ -269,7 +269,7 @@ describe("parseNlDate — escape кавычками", () => {
 		});
 	});
 
-	it("многотокенный escape «\"через неделю\"»", () => {
+	it('многотокенный escape «"через неделю"»', () => {
 		expect(parseNlDate('напомнить "через неделю"', WED)).toEqual({
 			title: "напомнить через неделю",
 			date: null,

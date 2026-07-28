@@ -4,11 +4,13 @@
  * Переиспользует IndexerService (чистое ядро индекса) как есть: подаёт ему
  * синтетический initialScan из FileSnapshot'ов, no-op порт событий и фиксированные
  * часы. Тем самым дизамбигуация одинаковых строк (occurrenceIndex), парсинг задач
- * и раскладка по byId/byFile/byDate/byTag идентичны плагину. Полный скан на каждый
- * запрос инструмента (без кэша по mtime) — по ТЗ для vault'ов до ~10к файлов
- * достаточно и всегда согласован с диском после внешних правок.
+ * и раскладка по byId/byFile/byDate/byTag идентичны плагину. Эта функция намеренно
+ * не знает, как файлы были получены или закэшированы: это ответственность сессии.
  */
-import { fileContextFromFrontmatter } from "../services/snapshotHelpers";
+import {
+	fileContextFromContainerFrontmatter,
+	projectContainerFrontmatter,
+} from "../core/frontmatter/containerFrontmatter";
 import { IndexerService } from "../services/IndexerService";
 import type { ClockPort, FileSnapshot, IndexFeed, VaultEvents } from "../services/types";
 import { splitFrontmatter } from "./frontmatter";
@@ -39,8 +41,13 @@ export async function buildIndex(files: readonly VaultFile[], today: string): Pr
 	const projectPaths: string[] = [];
 	const externalPaths = new Set<string>();
 	for (const file of files) {
+		// MCP remains the authoritative full-YAML reader. Only its parsed mapping
+		// crosses into the bounded, shared index-semantic projection.
 		const { data } = splitFrontmatter(file.content);
-		const context = fileContextFromFrontmatter(file.path, data);
+		const context = fileContextFromContainerFrontmatter(
+			file.path,
+			projectContainerFrontmatter(data),
+		);
 		if (context.container === "board") boardPaths.push(file.path);
 		if (context.container === "project") projectPaths.push(file.path);
 		if (context.external === true) externalPaths.add(file.path);
@@ -56,7 +63,6 @@ export async function buildIndex(files: readonly VaultFile[], today: string): Pr
 	const indexer = new IndexerService({
 		events: NOOP_EVENTS,
 		clock,
-		// eslint-disable-next-line @typescript-eslint/require-await
 		initialScan: async function* () {
 			for (const snap of snapshots) yield snap;
 		},

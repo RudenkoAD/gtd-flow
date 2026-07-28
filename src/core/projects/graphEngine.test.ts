@@ -250,6 +250,27 @@ describe("buildGraph: depth and remainingDownstream", () => {
 		expect(node(g, "m").depth).toBe(1);
 		expect(node(g, "ext").remainingDownstream).toBe(1);
 	});
+
+	it("10k-node chain computes unique downstream counts within the interactive budget", () => {
+		const count = 10_000;
+		const members: Task[] = [];
+		const byId = new Map<string, Task[]>();
+		for (let index = 0; index < count; index++) {
+			const id = `n${index}`;
+			const task = member(id, index === 0 ? {} : { dependsOn: [`n${index - 1}`] });
+			members.push(task);
+			byId.set(id, [task]);
+		}
+		const startedAt = performance.now();
+		const graph = buildGraph(members, (id) => byId.get(id) ?? [], TODAY);
+		const elapsedMs = performance.now() - startedAt;
+
+		expect(node(graph, "n0").remainingDownstream).toBe(count - 1);
+		expect(node(graph, `n${count - 1}`).remainingDownstream).toBe(0);
+		// Regression guard for the former V × (V + E) DFS implementation. The
+		// limit deliberately leaves margin for slower CI runners.
+		expect(elapsedMs).toBeLessThan(1_500);
+	});
 });
 
 describe("wouldCreateCycle", () => {

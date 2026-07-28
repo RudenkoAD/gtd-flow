@@ -19,6 +19,7 @@
 	import { confirm } from "../common/ConfirmModal";
 	import NamespaceSwitcher from "../common/NamespaceSwitcher.svelte";
 	import { namespaceLabel } from "../common/namespaceSwitcher";
+	import { reportAsync } from "../common/runAction";
 	import { captureTargetInNamespace, ensureCaptureFileNs } from "../common/taskActions";
 	import type { TaskMenuPorts } from "../common/taskMenu";
 	import type { DndPort, OccurrenceDrag } from "../dnd/types";
@@ -63,20 +64,25 @@
 	import { EventSeriesModal } from "./EventSeriesModal";
 	import { dropTimeEnd, minutesOfDay, preservedTimeEnd } from "./timeGrid";
 	import { createPaintController, type PaintPreview } from "./dayStatusPaint";
-	import { EMPTY_DAY_STATUS_MODEL, statusForDate, type DayStatusModel } from "../../core/daystatus/dayStatus";
+	import {
+		EMPTY_DAY_STATUS_MODEL,
+		statusForDate,
+		type DayStatusModel,
+	} from "../../core/daystatus/dayStatus";
 	import type { DayStatusPort } from "../../services/DayStatusService";
 
 	let {
 		taskStore,
 		dispatcher,
 		settings,
+		settingsRevision,
 		app,
 		dnd,
 		vault,
 		menuPorts = null,
 		dayStatus = null,
 		activeNamespace,
-		namespaces,
+		namespaces: _namespaces,
 		setActiveNamespace,
 		persisted,
 		persist,
@@ -86,6 +92,7 @@
 		taskStore: TaskStore;
 		dispatcher: IntentDispatcher;
 		settings: GtdFlowSettings;
+		settingsRevision: Readable<number>;
 		app: App;
 		/** null — drag выключен (телефон / сервис недоступен). */
 		dnd: DndPort | null;
@@ -128,16 +135,20 @@
 		return () => window.clearInterval(id);
 	});
 
+	const liveNamespaces = $derived.by(() => {
+		void $settingsRevision;
+		return settings.namespaces;
+	});
 	// Фильтр пространства: реактивный derive из активного namespace + список корней.
 	// Задачи/события календаря режутся по нему; смена активного пере-рендерит вид
 	// подпиской (эпоху индекса не бампает, см. память проекта).
 	// svelte-ignore state_referenced_locally
 	const namespace$: Readable<NamespaceFilter> = derived(activeNamespace, (a) => ({
 		active: a,
-		defs: namespaces,
+		defs: liveNamespaces,
 	}));
 	/** Метка активного пространства для шапки — только когда пространства настроены. */
-	const nsLabel = $derived(namespaces.length === 0 ? null : namespaceLabel($activeNamespace));
+	const nsLabel = $derived(liveNamespaces.length === 0 ? null : namespaceLabel($activeNamespace));
 
 	let mode = $state<CalendarMode>("month");
 	// svelte-ignore state_referenced_locally
@@ -161,8 +172,12 @@
 		}),
 	);
 
-	const grid = $derived(monthGrid(anchor, settings.firstDayOfWeek));
+	const grid = $derived.by(() => {
+		void $settingsRevision;
+		return monthGrid(anchor, settings.firstDayOfWeek);
+	});
 	const range = $derived.by(() => {
+		void $settingsRevision;
 		if (mode === "month") return grid.daysInView;
 		if (mode === "week") return weekRange(anchor, settings.firstDayOfWeek);
 		if (mode === "3days") return { from: anchor, to: addDaysIso(anchor, DAYS3_PAGE_DAYS - 1) };
@@ -174,6 +189,7 @@
 	// живой store на диапазон — подписка внутри $effect с отпиской при пересоздании.
 	let rangeTasks = $state<Task[]>([]);
 	$effect(() => {
+		void $settingsRevision;
 		// namespace$ — стабильная ссылка (не реактивная зависимость $effect): стор
 		// пересоздаётся лишь на смену диапазона, смену пространства он ловит своей
 		// внутренней подпиской (ось nsKey мемо-ключа).
@@ -184,6 +200,7 @@
 			settings.calendarPlacement,
 			settings.debounceMs.queryRecompute,
 			namespace$,
+			settingsRevision,
 		);
 		return store.subscribe((v) => {
 			rangeTasks = v;
@@ -193,6 +210,7 @@
 	// Просроченные: события АКТИВНОГО пространства с датой < today; пересоздание на смене дня.
 	let overdueRaw = $state<Task[]>([]);
 	$effect(() => {
+		void $settingsRevision;
 		const store = calendarRangeStore(
 			taskStore,
 			"0001-01-01",
@@ -200,6 +218,7 @@
 			settings.calendarPlacement,
 			settings.debounceMs.queryRecompute,
 			namespace$,
+			settingsRevision,
 		);
 		return store.subscribe((v) => {
 			overdueRaw = v;
@@ -248,17 +267,21 @@
 	const dsInPreview = (date: IsoDate): boolean =>
 		dsPreview !== null && date >= dsPreview.from && date <= dsPreview.to;
 	const paint = createPaintController({
-		app,
+		app: () => app,
 		port: () => dayStatus,
 		setPreview: (p) => (dsPreview = p),
 	});
 
-	const byDay = $derived(placeEvents(rangeTasks, settings.calendarPlacement));
+	const byDay = $derived.by(() => {
+		void $settingsRevision;
+		return placeEvents(rangeTasks, settings.calendarPlacement);
+	});
 	const overdue = $derived(openTasks(overdueRaw));
 	// placeEvents сохраняет порядок вставки, вход отсортирован по дате — entries по возрастанию
-	const overdueEntries = $derived(
-		Array.from(placeEvents(overdue, settings.calendarPlacement).entries()),
-	);
+	const overdueEntries = $derived.by(() => {
+		void $settingsRevision;
+		return Array.from(placeEvents(overdue, settings.calendarPlacement).entries());
+	});
 
 	const title = $derived(
 		mode === "month"
@@ -394,15 +417,25 @@
 		const local = get(activeNamespace);
 		const allMode = local === ALL_NS;
 		const active = allMode ? settings.activeNamespace : local;
-		const fallback = nsCommonTarget(active, namespaces, NS_CONVENTION.inbox, settings.commonRoot);
-		const target = captureTargetInNamespace(taskStore.index().all(), active, namespaces, fallback);
+		const fallback = nsCommonTarget(
+			active,
+			liveNamespaces,
+			NS_CONVENTION.inbox,
+			settings.commonRoot,
+		);
+		const target = captureTargetInNamespace(
+			taskStore.index().all(),
+			active,
+			liveNamespaces,
+			fallback,
+		);
 		if (target === "") {
 			new Notice("GTD Flow: не задан файл входящих (пустая «Корневая папка Общего»)");
 			return;
 		}
 		// файл входящих создаётся и помечается gtd-inbox: true (+ gtd-namespace для
 		// файла-исключения вне корня пространства) СТРОГО до записи строки
-		if (!(await ensureCaptureFileNs(vault, target, active, namespaces))) {
+		if (!(await ensureCaptureFileNs(vault, target, active, liveNamespaces))) {
 			new Notice(`GTD Flow: не удалось подготовить файл входящих ${target}`);
 			return;
 		}
@@ -428,7 +461,7 @@
 		if (text.trim() === "") return;
 		const eventsFile = eventTargetForNamespace(
 			get(activeNamespace),
-			namespaces,
+			liveNamespaces,
 			settings.eventsFile,
 			settings.commonRoot,
 		);
@@ -483,7 +516,12 @@
 		// конкретного пространства нет — создаём в ГЛОБАЛЬНОМ дефолте. Берём в момент ПКМ.
 		const local = get(activeNamespace);
 		const active = local === ALL_NS ? settings.activeNamespace : local;
-		const eventsFile = nsTargetPath(active, namespaces, NS_CONVENTION.events, settings.eventsFile);
+		const eventsFile = nsTargetPath(
+			active,
+			liveNamespaces,
+			NS_CONVENTION.events,
+			settings.eventsFile,
+		);
 		new EventSeriesModal(
 			app,
 			{ name: "", rule: "", time: time ?? "", location: "" },
@@ -491,13 +529,14 @@
 			(name, ruleText, location) => {
 				// weekly n>1 с byDay без from → дописать 'from <дата ПКМ>': закрепляет
 				// чётность недель новой серии (иначе фаза опиралась бы на эпоха-фолбэк)
-				void createEventSeries({
-					vault,
-					eventsFile,
-					name,
-					ruleText: withSeriesAnchor(ruleText, date),
-					location,
-				}).then((res) => {
+				reportAsync("не удалось создать событие", async () => {
+					const res = await createEventSeries({
+						vault,
+						eventsFile,
+						name,
+						ruleText: withSeriesAnchor(ruleText, date),
+						location,
+					});
 					if (res.ok) new Notice("GTD Flow: событие создано");
 					else new Notice(`GTD Flow: ${res.reason}`);
 				});
@@ -525,11 +564,18 @@
 		{/if}
 		<div class="gtd-cal-modes">
 			{#each MODE_ORDER as m (m.id)}
-				<button class:is-active={mode === m.id} onclick={() => setMode(m.id)}>{m.label}</button>
+				<button class:is-active={mode === m.id} onclick={() => setMode(m.id)}
+					>{m.label}</button
+				>
 			{/each}
 		</div>
 		<!-- allowAll — вкладка «Все» (агрегат всех пространств), только у календаря -->
-		<NamespaceSwitcher active={activeNamespace} {namespaces} onSelect={setActiveNamespace} allowAll={true} />
+		<NamespaceSwitcher
+			active={activeNamespace}
+			namespaces={liveNamespaces}
+			onSelect={setActiveNamespace}
+			allowAll={true}
+		/>
 	</div>
 
 	{#if mode === "agenda"}
@@ -572,7 +618,8 @@
 					statusColor={dsFor(date)?.color ?? null}
 					statusName={dsFor(date)?.name ?? null}
 					onDropTask={dropTask}
-					onQuickAdd={(date, text, location) => quickAdd(date, text, null, null, location)}
+					onQuickAdd={(date, text, location) =>
+						quickAdd(date, text, null, null, location)}
 					onQuickAddEvent={(date, text, location) =>
 						quickAddEvent(date, text, null, null, location)}
 					onCreateEvent={createEvent}
@@ -638,7 +685,8 @@
 						statusName={dsFor(date)?.name ?? null}
 						painting={dsInPreview(date)}
 						onDropTask={dropTask}
-						onQuickAdd={(date, text, location) => quickAdd(date, text, null, null, location)}
+						onQuickAdd={(date, text, location) =>
+							quickAdd(date, text, null, null, location)}
 						onQuickAddEvent={(date, text, location) =>
 							quickAddEvent(date, text, null, null, location)}
 						onCreateEvent={createEvent}

@@ -1,28 +1,36 @@
 name: CI
 
-# Гейты на каждый пуш в основную ветку и на PR: чистота core, тесты, typecheck+сборка.
 on:
   push:
     branches: ["master", "main"]
   pull_request:
 
-jobs:
-  check:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+permissions:
+  contents: read
 
-      - uses: actions/setup-node@v4
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["20.19.0", "22.x"]
+    steps:
+      # actions/checkout v4.3.1
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      # actions/setup-node v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: "20.x"
-          cache: "npm"
+          node-version: ${{ matrix.node }}
+          cache: npm
 
       - run: npm ci
-
-      # npm test = check:core (чистота ядра) + vitest
-      - name: Tests
-        run: npm test
-
-      # typecheck + production-сборка (esbuild)
-      - name: Build
-        run: npm run build
+      - name: Install browser test runtime
+        run: npx playwright install --with-deps chromium
+      - run: npm run verify

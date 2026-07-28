@@ -13,13 +13,7 @@ export type ResolveDep = (id: string) => Task[];
 /** Графовое состояние узла; порядок вывода = цепочка ТЗ §1
  *  (TICKLER выше BLOCKED: 🛫 в будущем побеждает готовность). */
 export type NodeState =
-	| "done"
-	| "cancelled"
-	| "deferred"
-	| "waiting"
-	| "blocked"
-	| "doing"
-	| "ready";
+	"done" | "cancelled" | "deferred" | "waiting" | "blocked" | "doing" | "ready";
 
 export interface NodeInfo {
 	/** Идентификатор узла в графе: 🆔 задачи; для члена без 🆔 — его key. */
@@ -168,6 +162,7 @@ export function buildGraph(
 	}
 	const depth = new Map<string, number>();
 	const queue: string[] = [];
+	const topo: string[] = [];
 	for (const id of ids) {
 		if ((indeg.get(id) ?? 0) === 0) {
 			queue.push(id);
@@ -177,6 +172,7 @@ export function buildGraph(
 	for (let qi = 0; qi < queue.length; qi++) {
 		const cur = queue[qi];
 		if (cur === undefined) break;
+		topo.push(cur);
 		const d = depth.get(cur) ?? 0;
 		for (const next of out.get(cur) ?? []) {
 			depth.set(next, Math.max(depth.get(next) ?? 0, d + 1));
@@ -193,24 +189,7 @@ export function buildGraph(
 		const r = n.state !== "done" && n.state !== "cancelled";
 		remainingId.set(n.id, (remainingId.get(n.id) ?? false) || r);
 	}
-	const downstreamCount = new Map<string, number>();
-	for (const id of ids) {
-		const seen = new Set<string>();
-		const stack = [...(out.get(id) ?? [])];
-		while (stack.length > 0) {
-			const cur = stack.pop();
-			if (cur === undefined || seen.has(cur)) continue;
-			seen.add(cur);
-			for (const nx of out.get(cur) ?? []) {
-				if (!seen.has(nx)) stack.push(nx);
-			}
-		}
-		let count = 0;
-		for (const s of seen) {
-			if (s !== id && remainingId.get(s) === true) count++;
-		}
-		downstreamCount.set(id, count);
-	}
+	const downstreamCount = downstreamCounts(ids, out, topo, remainingId);
 	for (const n of nodes) {
 		n.depth = depth.get(n.id) ?? 0;
 		n.remainingDownstream = downstreamCount.get(n.id) ?? 0;
@@ -227,12 +206,113 @@ export function buildGraph(
 		if (remainingId.get(e.from) !== true) continue;
 		for (const n of nodesById.get(e.to) ?? []) {
 			if (n.state === "done") {
-				issues.push({ kind: "done-downstream-of-undone", taskKey: n.task.key, depId: e.from });
+				issues.push({
+					kind: "done-downstream-of-undone",
+					taskKey: n.task.key,
+					depId: e.from,
+				});
 			}
 		}
 	}
 
 	return { nodes, edges, issues };
+}
+
+/**
+ * Число уникальных невыполненных потомков каждого узла.
+ *
+ * Прежний вариант запускал DFS от КАЖДОГО узла: для цепочки из 10k задач это
+ * ~50M обходов Set/ребер. Для DAG собираем транзитивные множества снизу вверх
+ * в плотных битсетах: O(E × R/word + V × R/word), где R — число remaining
+ * nodes. Это сохраняет корректный дедуп в ромбах (обычный суммарный DP дал бы
+ * дважды общий downstream), но существенно быстрее и компактнее на больших
+ * проектах. Циклы остаются допустимым повреждённым вводом — для них используем
+ * прежний точный DFS fallback, не меняя его fail-safe семантику.
+ */
+function downstreamCounts(
+	ids: ReadonlySet<string>,
+	out: ReadonlyMap<string, readonly string[]>,
+	topo: readonly string[],
+	remainingId: ReadonlyMap<string, boolean>,
+): Map<string, number> {
+	if (topo.length !== ids.size) return downstreamCountsWithDfs(ids, out, remainingId);
+
+	const counts = new Map<string, number>();
+	const remaining = [...ids].filter((id) => remainingId.get(id) === true);
+	if (remaining.length === 0) {
+		for (const id of ids) counts.set(id, 0);
+		return counts;
+	}
+	const bitIndex = new Map<string, number>();
+	for (let i = 0; i < remaining.length; i++) bitIndex.set(remaining[i]!, i);
+	const wordCount = Math.ceil(remaining.length / 32);
+	const reach = new Map<string, Uint32Array>();
+
+	for (let index = topo.length - 1; index >= 0; index--) {
+		const id = topo[index]!;
+		let bits: Uint32Array | undefined;
+		for (const next of out.get(id) ?? []) {
+			const childBits = reach.get(next);
+			const ownBit = bitIndex.get(next);
+			if (childBits === undefined && ownBit === undefined) continue;
+			bits ??= new Uint32Array(wordCount);
+			if (childBits !== undefined) {
+				for (let word = 0; word < wordCount; word++) {
+					bits[word] = bits[word]! | childBits[word]!;
+				}
+			}
+			if (ownBit !== undefined) {
+				const word = ownBit >>> 5;
+				bits[word] = bits[word]! | (1 << (ownBit & 31));
+			}
+		}
+		if (bits === undefined) {
+			counts.set(id, 0);
+			continue;
+		}
+		reach.set(id, bits);
+		counts.set(id, countSetBits(bits));
+	}
+	return counts;
+}
+
+function downstreamCountsWithDfs(
+	ids: ReadonlySet<string>,
+	out: ReadonlyMap<string, readonly string[]>,
+	remainingId: ReadonlyMap<string, boolean>,
+): Map<string, number> {
+	const downstreamCount = new Map<string, number>();
+	for (const id of ids) {
+		const seen = new Set<string>();
+		const stack = [...(out.get(id) ?? [])];
+		while (stack.length > 0) {
+			const cur = stack.pop();
+			if (cur === undefined || seen.has(cur)) continue;
+			seen.add(cur);
+			for (const nx of out.get(cur) ?? []) {
+				if (!seen.has(nx)) stack.push(nx);
+			}
+		}
+		let count = 0;
+		for (const child of seen) {
+			if (child !== id && remainingId.get(child) === true) count++;
+		}
+		downstreamCount.set(id, count);
+	}
+	return downstreamCount;
+}
+
+function countSetBits(bits: Uint32Array): number {
+	let count = 0;
+	for (const word of bits) {
+		// SWAR popcount: fixed work per 32-bit word (not per set bit), preserving
+		// the advertised bitset complexity for a long all-undone chain.
+		let value = word;
+		value -= (value >>> 1) & 0x55555555;
+		value = (value & 0x33333333) + ((value >>> 2) & 0x33333333);
+		count += (((value + (value >>> 4)) & 0x0f0f0f0f) * 0x01010101) >>> 24;
+	}
+	return count;
 }
 
 /**

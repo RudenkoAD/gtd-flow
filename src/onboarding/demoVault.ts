@@ -106,7 +106,11 @@ export const DEMO_RECURRING: DemoFileSpec = {
 	path: "GTD/Регулярные.md",
 	container: "recurring",
 	frontmatter: { "gtd-recurring": true },
-	bodyLines: ["# Регулярные", "", "- [ ] Еженедельный обзор 🔁 every week on friday 🆔 demo-review"],
+	bodyLines: [
+		"# Регулярные",
+		"",
+		"- [ ] Еженедельный обзор 🔁 every week on friday 🆔 demo-review",
+	],
 };
 
 /** События: одна еженедельная серия с временем. */

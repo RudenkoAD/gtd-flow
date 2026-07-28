@@ -50,8 +50,19 @@ function expectSameTasks(actual: Iterable<Task>, expected: readonly Task[]): voi
 describe("TaskIndex: replaceFile", () => {
 	it("updates primary and all secondary indices", () => {
 		const index = new TaskIndex();
-		const t1 = makeTask({ key: "k1", taskId: "a", due: "2026-08-01", tags: ["#p"], filePath: "f.md" });
-		const t2 = makeTask({ key: "k2", scheduled: "2026-08-02", start: "2026-08-01", filePath: "f.md" });
+		const t1 = makeTask({
+			key: "k1",
+			taskId: "a",
+			due: "2026-08-01",
+			tags: ["#p"],
+			filePath: "f.md",
+		});
+		const t2 = makeTask({
+			key: "k2",
+			scheduled: "2026-08-02",
+			start: "2026-08-01",
+			filePath: "f.md",
+		});
 		index.replaceFile("f.md", [t1, t2]);
 
 		expect(index.get("k1")).toBe(t1);
@@ -77,7 +88,13 @@ describe("TaskIndex: replaceFile", () => {
 
 	it("removeFile clears every trace of the file", () => {
 		const index = new TaskIndex();
-		const t = makeTask({ key: "k", taskId: "a", due: "2026-01-01", tags: ["#t"], filePath: "f.md" });
+		const t = makeTask({
+			key: "k",
+			taskId: "a",
+			due: "2026-01-01",
+			tags: ["#t"],
+			filePath: "f.md",
+		});
 		index.replaceFile("f.md", [t]);
 		index.removeFile("f.md");
 		expect(index.get("k")).toBeUndefined();
@@ -299,7 +316,9 @@ describe("TaskIndex: property", () => {
 				for (const date of DATES) {
 					expectSameTasks(
 						index.dateTasks(date),
-						live.filter((t) => t.due === date || t.scheduled === date || t.start === date),
+						live.filter(
+							(t) => t.due === date || t.scheduled === date || t.start === date,
+						),
 					);
 				}
 				for (const tag of TAGS) {

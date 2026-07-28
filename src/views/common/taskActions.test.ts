@@ -116,14 +116,29 @@ describe("findTaskAtLine: задача под курсором", () => {
 	const PATH = "GTD/Inbox.md";
 
 	it("по 🆔 — даже если описание в индексе разошлось со строкой", () => {
-		const t = makeTask({ filePath: PATH, taskId: "abc123", description: "старый текст", lineStart: 3 });
+		const t = makeTask({
+			filePath: PATH,
+			taskId: "abc123",
+			description: "старый текст",
+			lineStart: 3,
+		});
 		const found = findTaskAtLine([t], "- [ ] новый текст 🆔 abc123", PATH, 10);
 		expect(found).toBe(t);
 	});
 
 	it("без 🆔 — по описанию среди задач без id", () => {
-		const withId = makeTask({ filePath: PATH, taskId: "x1", description: "Купить хлеб", lineStart: 0 });
-		const noId = makeTask({ filePath: PATH, taskId: null, description: "Купить хлеб", lineStart: 5 });
+		const withId = makeTask({
+			filePath: PATH,
+			taskId: "x1",
+			description: "Купить хлеб",
+			lineStart: 0,
+		});
+		const noId = makeTask({
+			filePath: PATH,
+			taskId: null,
+			description: "Купить хлеб",
+			lineStart: 5,
+		});
 		const found = findTaskAtLine([withId, noId], "- [ ] Купить хлеб", PATH, 5);
 		expect(found).toBe(noId); // строка без 🆔 не захватывает носителя id
 	});
@@ -256,7 +271,10 @@ describe("captureTargetsInNamespace / captureTargetInNamespace: цели per-nam
 			makeTask({ filePath: "GTD/Capture.md", container: "inbox" }),
 			makeTask({ filePath: "any/x.md", container: "inbox" }),
 		];
-		expect(captureTargetsInNamespace(tasks, DEFAULT_NS, [])).toEqual(["GTD/Capture.md", "any/x.md"]);
+		expect(captureTargetsInNamespace(tasks, DEFAULT_NS, [])).toEqual([
+			"GTD/Capture.md",
+			"any/x.md",
+		]);
 	});
 });
 
@@ -271,8 +289,12 @@ describe("recurringFilePathsInNamespace: шаблоны per-namespace", () => {
 			makeTask({ filePath: "Личное/Регулярные.md", container: "recurring" }),
 			makeTask({ filePath: "Work/other.md", container: "plain" }), // не recurring
 		];
-		expect(recurringFilePathsInNamespace(tasks, "Работа", defs)).toEqual(["Work/Регулярные.md"]);
-		expect(recurringFilePathsInNamespace(tasks, "Жизнь", defs)).toEqual(["Личное/Регулярные.md"]);
+		expect(recurringFilePathsInNamespace(tasks, "Работа", defs)).toEqual([
+			"Work/Регулярные.md",
+		]);
+		expect(recurringFilePathsInNamespace(tasks, "Жизнь", defs)).toEqual([
+			"Личное/Регулярные.md",
+		]);
 	});
 });
 
@@ -511,7 +533,10 @@ describe("moveTaskToTemplates", () => {
 			spawnTarget: "GTD/Inbox.md",
 			vault: f.vault,
 			dispatcher: {
-				dispatch: async (): Promise<IntentResult> => ({ ok: false, reason: "task-not-found" }),
+				dispatch: async (): Promise<IntentResult> => ({
+					ok: false,
+					reason: "task-not-found",
+				}),
 			},
 		});
 		expect(res).toEqual({ ok: false, reason: "task-not-found" });

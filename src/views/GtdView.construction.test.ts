@@ -28,8 +28,12 @@ describe("конструирование видов: getViewType до присв
 	});
 
 	it("KanbanView / TicklerView / RecurringView конструируются", () => {
-		expect(new KanbanView(leaf, plugin, VIEW_META.kanban).getViewType()).toBe(VIEW_META.kanban.type);
-		expect(new TicklerView(leaf, plugin, VIEW_META.tickler).getViewType()).toBe(VIEW_META.tickler.type);
+		expect(new KanbanView(leaf, plugin, VIEW_META.kanban).getViewType()).toBe(
+			VIEW_META.kanban.type,
+		);
+		expect(new TicklerView(leaf, plugin, VIEW_META.tickler).getViewType()).toBe(
+			VIEW_META.tickler.type,
+		);
 		expect(new RecurringView(leaf, plugin, VIEW_META.recurring).getViewType()).toBe(
 			VIEW_META.recurring.type,
 		);

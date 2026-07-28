@@ -21,6 +21,7 @@ import { localTodayIso } from "../../services/snapshotHelpers";
 import { confirm } from "./ConfirmModal";
 import { openTaskInFile } from "./openTask";
 import { pickBoardColumn, pickDate, pickProject } from "./pickers";
+import { reportAsync } from "./runAction";
 import { TextPromptModal } from "./TextPromptModal";
 import {
 	NS_CONVENTION,
@@ -109,12 +110,20 @@ export function taskMenuPortsFromPlugin(plugin: GtdFlowPlugin): TaskMenuPorts {
 			recurringFiles: (task) =>
 				recurringFilePathsInNamespace(
 					plugin.taskStore.index().all(),
-					resolveNamespace(task.filePath, task.nsOverride ?? null, plugin.settings.namespaces),
+					resolveNamespace(
+						task.filePath,
+						task.nsOverride ?? null,
+						plugin.settings.namespaces,
+					),
 					plugin.settings.namespaces,
 				),
 			spawnTarget: (task) =>
 				nsTargetPath(
-					resolveNamespace(task.filePath, task.nsOverride ?? null, plugin.settings.namespaces),
+					resolveNamespace(
+						task.filePath,
+						task.nsOverride ?? null,
+						plugin.settings.namespaces,
+					),
 					plugin.settings.namespaces,
 					NS_CONVENTION.inbox,
 					plugin.settings.recurring.spawnTarget,
@@ -178,7 +187,11 @@ function configureLeaf(mi: MenuItem, ctx: TaskMenuCtx, item: MenuItemModel): voi
 	mi.setSection(item.section).setTitle(item.title);
 	if (item.icon !== undefined) mi.setIcon(item.icon);
 	if (item.checked !== undefined) mi.setChecked(item.checked);
-	mi.onClick(() => void runMenuAction(ctx, item.action));
+	mi.onClick(() =>
+		reportAsync("не удалось выполнить действие с задачей", () =>
+			runMenuAction(ctx, item.action),
+		),
+	);
 }
 
 function addLeaf(menu: Menu, ctx: TaskMenuCtx, item: MenuItemModel): void {
@@ -314,7 +327,11 @@ async function archiveTask(ctx: TaskMenuCtx): Promise<void> {
  */
 function taskNamespaceFilter(ctx: TaskMenuCtx): NamespaceFilter {
 	return {
-		active: resolveNamespace(ctx.task.filePath, ctx.task.nsOverride ?? null, ctx.settings.namespaces),
+		active: resolveNamespace(
+			ctx.task.filePath,
+			ctx.task.nsOverride ?? null,
+			ctx.settings.namespaces,
+		),
 		defs: ctx.settings.namespaces,
 	};
 }
@@ -398,11 +415,13 @@ async function runMenuAction(ctx: TaskMenuCtx, action: MenuAction): Promise<void
 				ctx.app,
 				"Место задачи",
 				(value) =>
-					void dispatchNoticing(ctx.dispatcher, {
-						type: "set-location",
-						key: ctx.task.key,
-						location: value === "" ? null : value,
-					}),
+					reportAsync("не удалось изменить место задачи", () =>
+						dispatchNoticing(ctx.dispatcher, {
+							type: "set-location",
+							key: ctx.task.key,
+							location: value === "" ? null : value,
+						}),
+					),
 				ctx.task.location ?? "",
 				"Адрес или место (пусто — убрать)",
 			).open();

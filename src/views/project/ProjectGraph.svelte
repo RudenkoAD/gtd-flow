@@ -12,6 +12,7 @@
 	import type { IntentDispatcher } from "../../services/WritebackService";
 	import type { TaskStore } from "../../stores/taskStore";
 	import { openTaskInFile } from "../common/openTask";
+	import { runAction, runVoidAction } from "../common/runAction";
 	import { displayText } from "../common/cardFormat";
 	import type { TaskMenuPorts } from "../common/taskMenu";
 	import { elkAutoLayout } from "./elkLayout";
@@ -72,13 +73,16 @@
 		void $epoch; // модель живёт в индексе — пересборка на каждую его смену
 		return port.model(path);
 	});
-	const ghostIds = $derived(new Set((model?.nodes ?? []).filter((n) => n.ghost).map((n) => n.id)));
+	const ghostIds = $derived(
+		new Set((model?.nodes ?? []).filter((n) => n.ghost).map((n) => n.id)),
+	);
 	const issues = $derived(model?.issues ?? []);
 
 	// тема Obsidian — класс на body документа вида
-	const colorMode = $derived(
-		container?.ownerDocument.body.classList.contains("theme-dark") ? "dark" : "light",
-	);
+	function themeModeFor(containerEl: HTMLElement | null): "dark" | "light" {
+		return containerEl?.ownerDocument.body.classList.contains("theme-dark") ? "dark" : "light";
+	}
+	const colorMode = $derived(themeModeFor(container));
 
 	let nodes = $state.raw<Node[]>([]);
 	let edges = $state.raw<Edge[]>([]);
@@ -105,7 +109,9 @@
 			// призраки — строго read-only: без бейджа и openCard (openOrCreate может
 			// дописать [[ссылку]] в строку задачи ЧУЖОГО файла, см. cardLinkInLine)
 			const progress =
-				!vm.data.ghost && cards !== null && taskId !== null ? cards.progressOf(taskId) : null;
+				!vm.data.ghost && cards !== null && taskId !== null
+					? cards.progressOf(taskId)
+					: null;
 			return {
 				id: vm.id,
 				type: "task",
@@ -127,8 +133,12 @@
 	async function openCardFor(task: Task): Promise<void> {
 		const cards = menuPorts?.cards ?? null;
 		if (cards === null) return; // порт не подключён — карточек нет
-		const res = await cards.openOrCreate(task.key);
-		if (!res.ok) new Notice(`GTD Flow: ${res.reason ?? "карточка недоступна"}`);
+		try {
+			const res = await cards.openOrCreate(task.key);
+			if (!res.ok) new Notice(`GTD Flow: ${res.reason ?? "карточка недоступна"}`);
+		} catch (error) {
+			new Notice(`GTD Flow: не удалось открыть карточку: ${String(error)}`);
+		}
 	}
 
 	function buildFlowEdges(m: ProjectModel): Edge[] {
@@ -139,16 +149,24 @@
 		}));
 	}
 
+	/** Rebuild optimistic canvas state from the last indexed durable model. */
+	function resyncFromModel(): void {
+		const m = model;
+		nodes = m === null ? [] : buildFlowNodes(m);
+		edges = m === null ? [] : buildFlowEdges(m);
+	}
+
 	// --- write-back: единая точка, отказ — уведомление ---
 
 	async function toggleStatus(task: Task): Promise<void> {
 		const isDone = task.statusChar === "x" || task.statusChar === "X";
-		const res = await dispatcher.dispatch(
-			isDone
-				? { type: "set-status", key: task.key, statusChar: " " }
-				: { type: "set-status", key: task.key, statusChar: "x", date: $today },
+		await runAction("не удалось изменить статус", () =>
+			dispatcher.dispatch(
+				isDone
+					? { type: "set-status", key: task.key, statusChar: " " }
+					: { type: "set-status", key: task.key, statusChar: "x", date: $today },
+			),
 		);
-		if (!res.ok) new Notice(`GTD Flow: ${res.reason}`);
 	}
 
 	// --- рисование рёбер: live-проверка циклов при протяжке ---
@@ -163,16 +181,19 @@
 
 	function onConnect(conn: Connection): void {
 		void (async () => {
-			const res = await port.connect(path, conn.source, conn.target);
-			if (!res.ok) {
+			const res = await runAction("ребро не сохранено", () =>
+				port.connect(path, conn.source, conn.target),
+			);
+			if (res === null || !res.ok) {
+				const cyclePath = res?.cyclePath;
 				const cycle =
-					res.cyclePath !== undefined && res.cyclePath.length > 0
-						? ` Цикл: ${res.cyclePath.join(" → ")}`
+					cyclePath !== undefined && cyclePath.length > 0
+						? ` Цикл: ${cyclePath.join(" → ")}`
 						: "";
-				new Notice(`GTD Flow: ребро отклонено — ${res.reason ?? "ошибка"}.${cycle}`);
+				if (res !== null)
+					new Notice(`GTD Flow: ребро отклонено — ${res.reason ?? "ошибка"}.${cycle}`);
 				// записи не было (epoch не сдвинется) — откатываем оптимистичное ребро вручную
-				const m = model;
-				edges = m === null ? [] : buildFlowEdges(m);
+				resyncFromModel();
 			}
 		})();
 	}
@@ -190,7 +211,16 @@
 		const moves = dragged
 			.filter((n) => !ghostIds.has(n.id))
 			.map((n) => ({ id: n.id, x: n.position.x, y: n.position.y }));
-		if (moves.length > 0) void port.moveNodes(path, moves);
+		if (moves.length > 0) {
+			void (async () => {
+				if (
+					!(await runVoidAction("позиция узла не сохранена", () =>
+						port.moveNodes(path, moves),
+					))
+				)
+					resyncFromModel();
+			})();
+		}
 	}
 
 	// --- разрыв ребра: клик/контекст → меню-подтверждение ---
@@ -203,8 +233,9 @@
 				.setIcon("unlink")
 				.onClick(() => {
 					void (async () => {
-						const res = await port.disconnect(path, edge.source, edge.target);
-						if (!res.ok) new Notice(`GTD Flow: ${res.reason ?? "не удалось разорвать"}`);
+						await runAction("не удалось разорвать зависимость", () =>
+							port.disconnect(path, edge.source, edge.target),
+						);
 					})();
 				}),
 		);
@@ -264,9 +295,11 @@
 			(est > 0 ? ` Это разблокирует задач: ${est}.` : "");
 		new ConfirmModal(app, "Удалить узел", text, "Удалить", () => {
 			void (async () => {
-				const res = await port.deleteNode(path, id);
-				if (!res.ok) new Notice(`GTD Flow: ${res.reason ?? "не удалось удалить"}`);
-				else if (res.unblocked !== undefined && res.unblocked > 0)
+				const res = await runAction("не удалось удалить узел", () =>
+					port.deleteNode(path, id),
+				);
+				if (res === null || !res.ok) return;
+				if (res.unblocked !== undefined && res.unblocked > 0)
 					new Notice(`GTD Flow: разблокировано задач: ${res.unblocked}`);
 			})();
 		}).open();
@@ -278,6 +311,8 @@
 		const m = model;
 		if (m === null || layouting) return;
 		layouting = true;
+		const previousNodes = nodes;
+		const previousGhostPos = ghostPos;
 		try {
 			const inputs = nodes.map((n) => {
 				const w = n.measured?.width;
@@ -304,23 +339,41 @@
 			});
 			const memberMoves = moves.filter((mv) => !ghostIds.has(mv.id));
 			// один батч MoveNode за нажатие — откатывается одной правкой файла (ТЗ §7)
-			if (memberMoves.length > 0) await port.moveNodes(path, memberMoves);
+			if (memberMoves.length > 0) {
+				const saved = await runVoidAction("авто-layout не сохранён", () =>
+					port.moveNodes(path, memberMoves),
+				);
+				if (!saved) {
+					nodes = previousNodes;
+					ghostPos = previousGhostPos;
+					resyncFromModel();
+					return;
+				}
+			}
 			await flow.fitView({ padding: 0.2, duration: 200 });
+		} catch (error) {
+			nodes = previousNodes;
+			ghostPos = previousGhostPos;
+			resyncFromModel();
+			new Notice(`GTD Flow: авто-layout не выполнен: ${String(error)}`);
 		} finally {
 			layouting = false;
 		}
 	}
 
 	function fitViewNow(): void {
-		void flow.fitView({ padding: 0.2, duration: 200 });
+		void runVoidAction("не удалось вписать граф", async () => {
+			await flow.fitView({ padding: 0.2, duration: 200 });
+		});
 	}
 
 	function addTask(): void {
 		new TextPromptModal(app, "Новая задача проекта", (text) => {
 			const pos = viewportCenterFlowPos();
 			void (async () => {
-				const res = await port.addNode(path, text, pos.x, pos.y);
-				if (!res.ok) new Notice(`GTD Flow: ${res.reason ?? "не удалось добавить"}`);
+				await runAction("не удалось добавить задачу", () =>
+					port.addNode(path, text, pos.x, pos.y),
+				);
 			})();
 		}).open();
 	}
@@ -407,7 +460,11 @@
 <div class="gtd-project-graph">
 	<div class="gtd-pg-toolbar">
 		<button onclick={addTask} title="Добавить задачу в проект">＋ Задача</button>
-		<button onclick={() => void autoLayoutNow()} disabled={layouting} title="Разложить граф (elk, слева направо)">
+		<button
+			onclick={() => void autoLayoutNow()}
+			disabled={layouting}
+			title="Разложить граф (elk, слева направо)"
+		>
 			Авто-layout
 		</button>
 		<button onclick={fitViewNow} title="Вписать граф в окно">Вписать</button>

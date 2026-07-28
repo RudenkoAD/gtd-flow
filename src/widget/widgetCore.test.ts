@@ -611,7 +611,9 @@ describe("buildEditedLine — ошибки и защита", () => {
 	});
 
 	it("календарно-битая дата — invalid-date", () => {
-		expect(edit("- [ ] Задача 📅 2026-07-20", { date: "2026-02-30" }).error).toBe("invalid-date");
+		expect(edit("- [ ] Задача 📅 2026-07-20", { date: "2026-02-30" }).error).toBe(
+			"invalid-date",
+		);
 	});
 
 	it("время без даты — time-without-date", () => {

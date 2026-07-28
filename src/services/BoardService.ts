@@ -16,7 +16,7 @@ import type { BoardDef } from "../core/board/boardFile";
 import { isBoardError, parseBoardFrontmatter, parseMatchSpec } from "../core/board/boardFile";
 import { belongsToBoard, resolveColumn } from "../core/board/membership";
 import { applyOrder, patchOrder } from "../core/board/ordering";
-import type { MoveColumn } from "../core/intents/Intent";
+import type { MoveColumn, SetDate } from "../core/intents/Intent";
 import { isDeferred } from "../core/model/gtdState";
 import type { Task } from "../core/model/Task";
 import { inNamespace, type NamespaceFilter } from "../core/namespace/namespace";
@@ -37,6 +37,13 @@ export interface BoardServiceDeps {
 	containerPaths: () => string[];
 	/** 🆔 с учётом памяти вписанных в окне дебаунса (WritebackService.knownTaskId). */
 	knownTaskId?: (key: string) => string | null;
+	/**
+	 * Криптостойкий случайный суффикс для id новой доски. Основной runtime
+	 * передаёт secureBoardIdSuffix (randomUUID либо getRandomValues); инъекция
+	 * сохраняет сервис детерминируемым в тестах. Сервис сам добавляет читаемый
+	 * slug имени перед этим суффиксом.
+	 */
+	genBoardIdSuffix?: () => string;
 	/**
 	 * Активное пространство + defs для фильтрации ПУБЛИЧНОГО discovery (пикеры и
 	 * список досок вида показывают только активное пространство, дизайн). Прозрачен
@@ -90,8 +97,52 @@ export interface BoardModel {
 	columns: BoardColumnModel[];
 }
 
+/** UUID даёт 122 случайных бита; повтор — крайне маловероятен, но всё равно
+ * проверяется перед записью и в transactional callback ниже. */
+const MAX_BOARD_ID_ALLOCATION_ATTEMPTS = 32;
+const BOARD_ID_SUFFIX_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+type CryptoRandomSource = {
+	randomUUID?: () => string;
+	getRandomValues?: (array: Uint8Array) => Uint8Array;
+};
+
+/**
+ * Secure UUID-form suffix for ids of newly created boards. Older mobile WebViews
+ * can expose Web Crypto's getRandomValues without randomUUID, so retain the same
+ * 122-bit UUID-v4 form with that CSPRNG fallback. Never fall back to Math.random:
+ * a collision would merge the two boards' #kanban memberships.
+ */
+export function secureBoardIdSuffix(
+	cryptoSource: CryptoRandomSource | undefined = globalThis.crypto,
+): string {
+	if (typeof cryptoSource?.randomUUID === "function") return cryptoSource.randomUUID();
+	if (typeof cryptoSource?.getRandomValues !== "function") {
+		throw new Error("secure-board-id-generator-unavailable");
+	}
+	const bytes = cryptoSource.getRandomValues(new Uint8Array(16));
+	// UUID v4/version + RFC 4122 variant; other 122 bits came from the CSPRNG.
+	bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+	bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+	let hex = "";
+	for (const byte of bytes) hex += byte.toString(16).padStart(2, "0");
+	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 export class BoardService {
-	constructor(private readonly deps: BoardServiceDeps) {}
+	/** Локальная критическая секция для createBoard. metadataCache обновляется
+	 * асинхронно после processFrontMatter, поэтому одного scan-before-write
+	 * недостаточно: два быстрых создания могли получить один #kanban/<id>. */
+	private boardCreationTail: Promise<void> = Promise.resolve();
+	private readonly reservedBoardIds = new Set<string>();
+	/** Созданные в этой сессии доски дополняют metadata discovery до прихода
+	 * metadataCache changed; запись удаляется, если путь больше не gtd-board. */
+	private readonly locallyCreatedBoardIds = new Map<string, string>();
+	private readonly genBoardIdSuffix: () => string;
+
+	constructor(private readonly deps: BoardServiceDeps) {
+		this.genBoardIdSuffix = deps.genBoardIdSuffix ?? secureBoardIdSuffix;
+	}
 
 	// --- discovery ---
 
@@ -205,6 +256,7 @@ export class BoardService {
 
 		// Фаза 1 — строка задачи (пропускается для drop в ту же колонку).
 		const fromColId = resolveColumn(task, def);
+		let rollbackMove: MoveColumn | null = null;
 		if (fromColId !== toColId) {
 			// Перенос = только теги (fromTag → toTag) + order; статус не трогается.
 			const intent: MoveColumn = {
@@ -213,12 +265,22 @@ export class BoardService {
 				fromTag: null,
 				toTag: "#" + toSpec.tag,
 			};
-			const fromCol = fromColId !== null ? def.columns.find((c) => c.id === fromColId) : undefined;
+			const fromCol =
+				fromColId !== null ? def.columns.find((c) => c.id === fromColId) : undefined;
 			const fromSpec = fromCol !== undefined ? parseMatchSpec(fromCol.match) : null;
 			if (fromSpec !== null) intent.fromTag = "#" + fromSpec.tag;
 			intent.index = insertIndex;
 			const res = await this.deps.dispatcher.dispatch(intent);
 			if (!res.ok) return res; // фаза 1 не прошла — порядок не трогаем
+			// Если запись order (фаза 2) не пройдёт, возвращаем теги ровно в
+			// исходное состояние. Иначе карточка визуально и на диске расходятся:
+			// строка уже в новой колонке, а ручной порядок не сохранён.
+			rollbackMove = {
+				type: "move-column",
+				key: taskKey,
+				fromTag: "#" + toSpec.tag,
+				toTag: fromSpec === null ? null : "#" + fromSpec.tag,
+			};
 		}
 
 		// Фаза 2 — ручной порядок. 🆔: задача → свежий feed → память вписанных
@@ -235,14 +297,98 @@ export class BoardService {
 			movedId,
 			insertIndex,
 		);
-		await this.deps.patchFrontmatter(boardPath, (fm) => {
-			fm["order"] = patchOrder(normalizeOrder(fm["order"]), toColId, orderedIds);
-		});
+		try {
+			await this.deps.patchFrontmatter(boardPath, (fm) => {
+				fm["order"] = patchOrder(normalizeOrder(fm["order"]), toColId, orderedIds);
+			});
+		} catch (error) {
+			if (rollbackMove !== null) {
+				try {
+					const rollback = await this.deps.dispatcher.dispatch(rollbackMove);
+					if (!rollback.ok)
+						return {
+							ok: false,
+							reason: `order-write-failed; column-rollback-failed:${rollback.reason ?? "unknown"}`,
+						};
+				} catch (rollbackError) {
+					return {
+						ok: false,
+						reason: `order-write-failed; column-rollback-threw:${String(rollbackError)}`,
+					};
+				}
+			}
+			return { ok: false, reason: `order-write-failed:${String(error)}` };
+		}
 		return { ok: true };
 	}
 
+	/**
+	 * One logical Tickler → Kanban operation. A deferred task must clear 🛫 to
+	 * become visible on a board, but clearing it before moving used to leave the
+	 * task in neither view when the second write failed. We record the exact
+	 * start field, compensate the board move inside `moveCard`, then restore the
+	 * start field when the move does not commit.
+	 */
+	async moveCardFromTickler(
+		boardPath: string,
+		def: BoardDef,
+		taskKey: string,
+		toColId: string,
+		insertIndex: number,
+	): Promise<IntentResult> {
+		const task = this.deps.feed.getIndex().get(taskKey);
+		if (task === undefined) return { ok: false, reason: "task-not-found" };
+		if (task.start === null)
+			return this.moveCard(boardPath, def, taskKey, toColId, insertIndex);
+
+		const restoreStart: SetDate = {
+			type: "set-date",
+			key: taskKey,
+			field: "start",
+			date: task.start,
+			time: task.startTime,
+			timeEnd: task.startTimeEnd,
+		};
+		const clearStart: SetDate = { type: "set-date", key: taskKey, field: "start", date: null };
+		let cleared = false;
+		try {
+			const clear = await this.deps.dispatcher.dispatch(clearStart);
+			if (!clear.ok) return clear;
+			cleared = true;
+			const moved = await this.moveCard(boardPath, def, taskKey, toColId, insertIndex);
+			if (moved.ok) return moved;
+			const restored = await this.deps.dispatcher.dispatch(restoreStart);
+			if (!restored.ok)
+				return {
+					ok: false,
+					reason: `${moved.reason ?? "board-move-failed"}; start-rollback-failed:${restored.reason ?? "unknown"}`,
+				};
+			return moved;
+		} catch (error) {
+			if (!cleared) return { ok: false, reason: `tickler-move-failed:${String(error)}` };
+			try {
+				const restored = await this.deps.dispatcher.dispatch(restoreStart);
+				if (!restored.ok)
+					return {
+						ok: false,
+						reason: `tickler-move-threw:${String(error)}; start-rollback-failed:${restored.reason ?? "unknown"}`,
+					};
+				return { ok: false, reason: `tickler-move-threw:${String(error)}` };
+			} catch (restoreError) {
+				return {
+					ok: false,
+					reason: `tickler-move-threw:${String(error)}; start-rollback-threw:${String(restoreError)}`,
+				};
+			}
+		}
+	}
+
 	/** Перестановка внутри колонки готовым списком 🆔 (ренормализация при каждом drag). */
-	async reorderCard(boardPath: string, colId: string, orderedIds: readonly string[]): Promise<void> {
+	async reorderCard(
+		boardPath: string,
+		colId: string,
+		orderedIds: readonly string[],
+	): Promise<void> {
 		await this.deps.patchFrontmatter(boardPath, (fm) => {
 			fm["order"] = patchOrder(normalizeOrder(fm["order"]), colId, orderedIds);
 		});
@@ -362,9 +508,10 @@ export class BoardService {
 
 	/**
 	 * Скаффолд новой доски (NUX): ensureFile + frontmatter gtd-board с тремя
-	 * дефолтными тег-колонками. id — slug имени (fallback 'board' для эмодзи/CJK),
-	 * уникализированный против id существующих досок: членство карточек ключуется
-	 * тегом #kanban/<id>/… , и совпавший id слил бы карточки двух досок воедино.
+	 * дефолтными тег-колонками. id — slug имени (fallback 'board' для эмодзи/CJK)
+	 * + криптостойкий случайный UUID-суффикс. Членство карточек ключуется тегом
+	 * #kanban/<id>/…; случайность защищает от двух независимых plugin-процессов,
+	 * чьи metadata-кэши ещё не увидели доску друг друга.
 	 *
 	 * Идемпотентно: файл, УЖЕ помеченный gtd-board, не перезаписывается — иначе
 	 * повторный вызов затёр бы пользовательские колонки/порядок. Возврат — путь.
@@ -372,33 +519,107 @@ export class BoardService {
 	async createBoard(path: string, name: string): Promise<BoardCreateResult> {
 		const trimmed = name.trim();
 		if (trimmed === "") return { ok: false, reason: "empty-name" };
-		// id, занятые существующими досками, — ДО правки файла; суффиксы -2, -3…
-		// перечисление ГЛОБАЛЬНОЕ (enumerateBoards без фильтра): #kanban/<id> тег
-		// общий для хранилища, id обязан быть уникален по ВСЕМ пространствам.
-		const takenIds = new Set(this.enumerateBoards().boards.map((b) => b.def.id));
 		const base = slugifyColumnName(trimmed) || "board";
-		let id = base;
-		for (let n = 2; takenIds.has(id); n++) id = `${base}-${n}`;
 		await this.deps.ensureFile(path);
-		await this.deps.patchFrontmatter(path, (fm) => {
-			if (fm["gtd-board"] === true) return; // уже доска — не портим существующую
-			fm["gtd-board"] = true;
-			fm["id"] = id;
-			fm["name"] = trimmed;
-			fm["columns"] = [
-				{ id: "todo", name: "Очередь", match: `#kanban/${id}/todo` },
-				{ id: "doing", name: "В работе", match: `#kanban/${id}/doing` },
-				{ id: "done", name: "Готово", match: `#kanban/${id}/done` },
-			];
+		return this.serializeBoardCreation(async () => {
+			// После каждого конфликта перечитываем global discovery прямо перед
+			// commit. Лимит — аварийный предохранитель против постоянно меняющегося
+			// внешним sync-клиентом frontmatter, а не штатный путь.
+			for (let attempt = 0; attempt < MAX_BOARD_ID_ALLOCATION_ATTEMPTS; attempt++) {
+				if (this.deps.readFrontmatter(path)?.["gtd-board"] === true)
+					return { ok: true, path };
+				const id = this.nextBoardId(base);
+				if (id === null) return { ok: false, reason: "id-generation-failed" };
+				// Обычно случайный UUID новый с первой попытки. Эта проверка сохраняет
+				// корректность при тестовом/сломавшемся генераторе и при крайне редком
+				// случайном совпадении, не делая лишнюю запись.
+				if (this.occupiedBoardIds(path).has(id)) continue;
+				this.reservedBoardIds.add(id);
+				const outcome: { value: "created" | "existing" | "conflict" } = {
+					value: "conflict",
+				};
+				try {
+					await this.deps.patchFrontmatter(path, (fm) => {
+						if (fm["gtd-board"] === true) {
+							outcome.value = "existing"; // конкурент уже создал этот путь
+							return;
+						}
+						// Последняя проверка непосредственно в transactional callback.
+						// Исключаем только собственную reservation; все чужие — конфликт.
+						if (this.occupiedBoardIds(path, id).has(id)) return;
+						fm["gtd-board"] = true;
+						fm["id"] = id;
+						fm["name"] = trimmed;
+						fm["columns"] = [
+							{ id: "todo", name: "Очередь", match: `#kanban/${id}/todo` },
+							{ id: "doing", name: "В работе", match: `#kanban/${id}/doing` },
+							{ id: "done", name: "Готово", match: `#kanban/${id}/done` },
+						];
+						outcome.value = "created";
+					});
+				} finally {
+					this.reservedBoardIds.delete(id);
+				}
+				if (outcome.value === "created") {
+					this.locallyCreatedBoardIds.set(path, id);
+					return { ok: true, path };
+				}
+				if (outcome.value === "existing") return { ok: true, path };
+			}
+			return { ok: false, reason: "id-allocation-conflict" };
 		});
-		return { ok: true, path };
+	}
+
+	private async serializeBoardCreation<T>(operation: () => Promise<T>): Promise<T> {
+		let release!: () => void;
+		const previous = this.boardCreationTail;
+		this.boardCreationTail = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		await previous;
+		try {
+			return await operation();
+		} finally {
+			release();
+		}
+	}
+
+	/** Compose a readable, tag-safe id. Invalid injected output fails closed rather
+	 * than placing whitespace/punctuation into #kanban membership tags. */
+	private nextBoardId(base: string): string | null {
+		let suffix: string;
+		try {
+			suffix = this.genBoardIdSuffix();
+		} catch {
+			return null;
+		}
+		return BOARD_ID_SUFFIX_RE.test(suffix) ? `${base}-${suffix}` : null;
+	}
+
+	/** Current global ids plus reservations; an entry created locally remains
+	 * visible even before metadataCache reports the new frontmatter. */
+	private occupiedBoardIds(excludePath: string, excludeReservation?: string): Set<string> {
+		const ids = new Set<string>();
+		for (const board of this.enumerateBoards().boards) {
+			if (board.path !== excludePath) ids.add(board.def.id);
+		}
+		for (const [path, id] of this.locallyCreatedBoardIds) {
+			if (this.deps.readFrontmatter(path)?.["gtd-board"] !== true) {
+				this.locallyCreatedBoardIds.delete(path);
+				continue;
+			}
+			if (path !== excludePath) ids.add(id);
+		}
+		for (const id of this.reservedBoardIds) if (id !== excludeReservation) ids.add(id);
+		return ids;
 	}
 
 	/** Переименование доски — только display-имя (frontmatter name); id и колонки не трогаем. */
 	async renameBoard(path: string, name: string): Promise<{ ok: boolean; reason?: string }> {
 		const trimmed = name.trim();
 		if (trimmed === "") return { ok: false, reason: "empty-name" };
-		if (this.deps.readFrontmatter(path) === null) return { ok: false, reason: "board-not-found" };
+		if (this.deps.readFrontmatter(path) === null)
+			return { ok: false, reason: "board-not-found" };
 		await this.deps.patchFrontmatter(path, (live) => {
 			live["name"] = trimmed;
 		});
@@ -443,10 +664,39 @@ function isPlainRecord(v: unknown): v is Record<string, unknown> {
 
 /** Простая таблица транслитерации кириллицы для slug-ов колонок. */
 const CYRILLIC_TRANSLIT: Record<string, string> = {
-	а: "a", б: "b", в: "v", г: "g", д: "d", е: "e", ё: "e", ж: "zh",
-	з: "z", и: "i", й: "y", к: "k", л: "l", м: "m", н: "n", о: "o",
-	п: "p", р: "r", с: "s", т: "t", у: "u", ф: "f", х: "h", ц: "ts",
-	ч: "ch", ш: "sh", щ: "sch", ъ: "", ы: "y", ь: "", э: "e", ю: "yu", я: "ya",
+	а: "a",
+	б: "b",
+	в: "v",
+	г: "g",
+	д: "d",
+	е: "e",
+	ё: "e",
+	ж: "zh",
+	з: "z",
+	и: "i",
+	й: "y",
+	к: "k",
+	л: "l",
+	м: "m",
+	н: "n",
+	о: "o",
+	п: "p",
+	р: "r",
+	с: "s",
+	т: "t",
+	у: "u",
+	ф: "f",
+	х: "h",
+	ц: "ts",
+	ч: "ch",
+	ш: "sh",
+	щ: "sch",
+	ъ: "",
+	ы: "y",
+	ь: "",
+	э: "e",
+	ю: "yu",
+	я: "ya",
 };
 
 /**

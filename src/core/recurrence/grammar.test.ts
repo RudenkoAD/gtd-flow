@@ -75,7 +75,12 @@ describe("parseRule — grammar breadth", () => {
 	});
 	it("accepts 3-letter month names and ordinal day suffixes", () => {
 		expect(ok("every year on apr 1st")).toEqual({ freq: "yearly", n: 1, month: 4, day: 1 });
-		expect(ok("every year on february 29")).toEqual({ freq: "yearly", n: 1, month: 2, day: 29 });
+		expect(ok("every year on february 29")).toEqual({
+			freq: "yearly",
+			n: 1,
+			month: 2,
+			day: 29,
+		});
 	});
 	it("accepts until on every frequency", () => {
 		expect(ok("every day until 2026-12-31")).toEqual({
@@ -194,11 +199,17 @@ describe("parseRule — from clause (lower bound, §6)", () => {
 			until: "2026-09-10",
 		};
 		// from перед at и until
-		expect(ok("every wednesday from 2026-07-15 at 18:00-19:30 until 2026-09-10")).toEqual(expected);
+		expect(ok("every wednesday from 2026-07-15 at 18:00-19:30 until 2026-09-10")).toEqual(
+			expected,
+		);
 		// from между at и until
-		expect(ok("every wednesday at 18:00-19:30 from 2026-07-15 until 2026-09-10")).toEqual(expected);
+		expect(ok("every wednesday at 18:00-19:30 from 2026-07-15 until 2026-09-10")).toEqual(
+			expected,
+		);
 		// from после until
-		expect(ok("every wednesday at 18:00-19:30 until 2026-09-10 from 2026-07-15")).toEqual(expected);
+		expect(ok("every wednesday at 18:00-19:30 until 2026-09-10 from 2026-07-15")).toEqual(
+			expected,
+		);
 	});
 
 	it("round-trips from together with event time and until", () => {
@@ -233,8 +244,18 @@ describe("parseRule — every! (from-completion, §every!)", () => {
 	it("parses 'every!' on the simple frequencies", () => {
 		expect(ok("every! day")).toEqual({ freq: "daily", n: 1, fromCompletion: true });
 		expect(ok("every! 3 days")).toEqual({ freq: "daily", n: 3, fromCompletion: true });
-		expect(ok("every! week")).toEqual({ freq: "weekly", n: 1, byDay: [], fromCompletion: true });
-		expect(ok("every! 2 weeks")).toEqual({ freq: "weekly", n: 2, byDay: [], fromCompletion: true });
+		expect(ok("every! week")).toEqual({
+			freq: "weekly",
+			n: 1,
+			byDay: [],
+			fromCompletion: true,
+		});
+		expect(ok("every! 2 weeks")).toEqual({
+			freq: "weekly",
+			n: 2,
+			byDay: [],
+			fromCompletion: true,
+		});
 		expect(ok("every! weekday")).toEqual({ freq: "weekdays", fromCompletion: true });
 	});
 	it("monthly/yearly with 'every!' take NO day/month clause (day comes from completion)", () => {
@@ -298,11 +319,19 @@ describe("parseRule — «when done» (Tasks-алиас every!, §every!)", () =
 			byDay: [],
 			fromCompletion: true,
 		});
-		expect(ok("every month when done")).toEqual({ freq: "monthly", n: 1, fromCompletion: true });
+		expect(ok("every month when done")).toEqual({
+			freq: "monthly",
+			n: 1,
+			fromCompletion: true,
+		});
 	});
 	it("регистронезависим (как остальные ключевые слова грамматики)", () => {
 		expect(ok("EVERY 3 DAYS WHEN DONE")).toEqual({ freq: "daily", n: 3, fromCompletion: true });
-		expect(ok("every Month When Done")).toEqual({ freq: "monthly", n: 1, fromCompletion: true });
+		expect(ok("every Month When Done")).toEqual({
+			freq: "monthly",
+			n: 1,
+			fromCompletion: true,
+		});
 	});
 	it("те же guard'ы, что у every!: byDay-единицы и 'on'-клаузы несовместимы", () => {
 		bad("every week on tuesday when done"); // фиксированный день недели противоречит «от выполнения»
@@ -324,7 +353,11 @@ describe("parseRule — «when done» (Tasks-алиас every!, §every!)", () =
 		expect(ok("every 3 days from 2026-07-15 until 2026-12-31 when done")).toEqual(expected);
 	});
 	it("every! и 'when done' вместе — не ошибка (один и тот же флаг)", () => {
-		expect(ok("every! 3 days when done")).toEqual({ freq: "daily", n: 3, fromCompletion: true });
+		expect(ok("every! 3 days when done")).toEqual({
+			freq: "daily",
+			n: 3,
+			fromCompletion: true,
+		});
 		expect(ok("every! 3 days when done")).toEqual(ok("every! 3 days"));
 	});
 	it("'when' без 'done' и одинокий 'done' — ошибка", () => {

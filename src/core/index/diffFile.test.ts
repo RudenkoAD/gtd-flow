@@ -80,7 +80,11 @@ describe("diffFile", () => {
 		const stays = makeTask({ key: "s" });
 		const goes = makeTask({ key: "g" });
 		const editedBefore = makeTask({ key: "e", rawLine: "- [ ] x" });
-		const editedAfter = makeTask({ key: "e", rawLine: "- [ ] x 📅 2026-08-01", due: "2026-08-01" });
+		const editedAfter = makeTask({
+			key: "e",
+			rawLine: "- [ ] x 📅 2026-08-01",
+			due: "2026-08-01",
+		});
 		const fresh = makeTask({ key: "f" });
 
 		const diff = diffFile([stays, goes, editedBefore], [stays, editedAfter, fresh]);

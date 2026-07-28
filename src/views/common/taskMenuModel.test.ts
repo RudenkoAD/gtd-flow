@@ -400,7 +400,16 @@ describe("buildMenuModel: инварианты", () => {
 			}),
 		);
 		expect(ids(nodes)).toContain("archive");
-		const order = ["status", "priority", "schedule", "defer", "location", "move", "card", "nav"];
+		const order = [
+			"status",
+			"priority",
+			"schedule",
+			"defer",
+			"location",
+			"move",
+			"card",
+			"nav",
+		];
 		const seen = nodes.map((n) => order.indexOf(n.section));
 		for (let i = 1; i < seen.length; i++) expect(seen[i]! >= seen[i - 1]!).toBe(true);
 	});

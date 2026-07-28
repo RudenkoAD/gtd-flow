@@ -19,11 +19,7 @@ import {
 	insertCardLink,
 } from "./cardLogic";
 import type { IndexFeed } from "./types";
-import {
-	locateTaskLine,
-	type IntentDispatcher,
-	type WritePort,
-} from "./WritebackService";
+import { locateTaskLine, type IntentDispatcher, type WritePort } from "./WritebackService";
 
 // ---------------------------------------------------------------------------
 // Общий контракт (вид TaskCard кодируется против него дословно)

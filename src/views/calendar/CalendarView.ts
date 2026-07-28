@@ -6,6 +6,7 @@ import { normalizeActiveNamespace } from "../../core/namespace/namespace";
 import type { QuickAddKind } from "../../settings/Settings";
 import type { IntentDispatcher } from "../../services/WritebackService";
 import { taskMenuPortsFromPlugin } from "../common/taskMenu";
+import { reportAsync } from "../common/runAction";
 import type { DndPort } from "../dnd/types";
 import { GtdView } from "../GtdView";
 import { VIEW_META } from "../registry";
@@ -32,8 +33,8 @@ export class CalendarView extends GtdView {
 		return normalizeActiveNamespace(name, this.plugin.settings.namespaces, true);
 	}
 
-	protected override component(): Component<any> {
-		return Calendar as unknown as Component<any>;
+	protected override component(): Component<Record<string, unknown>> {
+		return Calendar as unknown as Component<Record<string, unknown>>;
 	}
 
 	protected override props(): Record<string, unknown> {
@@ -46,6 +47,7 @@ export class CalendarView extends GtdView {
 			taskStore: plugin.taskStore,
 			dispatcher: plugin.dispatcher,
 			settings: plugin.settings,
+			settingsRevision: plugin.settingsRevision.store,
 			app: plugin.app,
 			dnd: plugin.dnd ?? null,
 			menuPorts: taskMenuPortsFromPlugin(plugin),
@@ -69,7 +71,7 @@ export class CalendarView extends GtdView {
 			quickAddKind: plugin.settings.lastQuickAddKind,
 			persistQuickAddKind: (kind: QuickAddKind) => {
 				plugin.settings.lastQuickAddKind = kind;
-				void plugin.saveSettings();
+				reportAsync("сохранение режима быстрого ввода", () => plugin.saveSettings());
 			},
 		};
 	}

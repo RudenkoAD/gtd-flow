@@ -100,7 +100,11 @@ function makeHarness(over: HarnessOptions = {}) {
 		feed,
 		write: port,
 		dispatcher,
-		settings: () => ({ spawnTarget: INBOX, catchUp: state.catchUp, catchUpCap: state.catchUpCap }),
+		settings: () => ({
+			spawnTarget: INBOX,
+			catchUp: state.catchUp,
+			catchUpCap: state.catchUpCap,
+		}),
 		todayIso: () => state.today,
 		indexReady: () => state.indexReady,
 		ensureFile: async (path) => {
@@ -142,6 +146,31 @@ describe("RecurrenceService: гейт индекса", () => {
 });
 
 describe("RecurrenceService: полный цикл спавна", () => {
+	it("дублирующиеся 🆔 шаблонов fail-closed: ни копий, ни курсоров", async () => {
+		const { port, svc, sync, state } = makeHarness();
+		state.today = "2026-08-03";
+		port.files.set(
+			REC,
+			[TPL_LINE, TPL_LINE.replace("Ревью приоритетов", "Другая копия шаблона")].join("\n") +
+				"\n",
+		);
+		sync();
+
+		const report = await svc.runPass();
+
+		expect(report.spawned).toBe(0);
+		expect(report.advanced).toBe(0);
+		expect(report.errors).toHaveLength(2);
+		expect(report.errors.every((e) => e.templateId === "rev-prio")).toBe(true);
+		expect(report.errors[0]!.message).toContain("duplicate recurring template id rev-prio");
+		expect(port.files.has(INBOX)).toBe(false);
+		expect(port.writes).toHaveLength(0);
+		expect(await svc.spawnNow("id:rev-prio")).toEqual({
+			ok: false,
+			reason: "duplicate-template-id",
+		});
+	});
+
 	it("шаблон → копия в target, потом сдвиг 🔜 (копия строго раньше курсора)", async () => {
 		const { port, svc, sync, state } = makeHarness();
 		state.today = "2026-08-03";
@@ -240,7 +269,9 @@ describe("RecurrenceService: полный цикл спавна", () => {
 		const report = await svc.runPass();
 
 		expect(report.spawned).toBe(1);
-		expect(port.files.get(INBOX)).toBe("- [ ] Standup ➕ 2026-07-15 🧬 stand 🆔 stand-20260715\n");
+		expect(port.files.get(INBOX)).toBe(
+			"- [ ] Standup ➕ 2026-07-15 🧬 stand 🆔 stand-20260715\n",
+		);
 		expect(port.files.get(REC)).toBe("- [ ] Standup 🔁 every day 🆔 stand 🔜 2026-07-16\n");
 	});
 
@@ -658,7 +689,9 @@ describe("RecurrenceService: правила «от выполнения» (§eve
 		const res = await svc.setRule("id:flowers", "every! 3 days");
 
 		expect(res).toEqual({ ok: true });
-		expect(port.files.get(REC)).toBe("- [ ] Полить цветы 🆔 flowers 🔁 every! 3 days 🔜 2026-07-15\n");
+		expect(port.files.get(REC)).toBe(
+			"- [ ] Полить цветы 🆔 flowers 🔁 every! 3 days 🔜 2026-07-15\n",
+		);
 	});
 });
 
@@ -704,7 +737,10 @@ describe("RecurrenceService: спавн во входящие пространс
 		});
 		const sync = () => {
 			for (const [path, content] of port.files) {
-				feed.replaceFile(path, parseFile(path, content, recSet.has(path) ? "recurring" : "plain"));
+				feed.replaceFile(
+					path,
+					parseFile(path, content, recSet.has(path) ? "recurring" : "plain"),
+				);
 			}
 		};
 		return { port, feed, svc, sync };

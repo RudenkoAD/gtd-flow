@@ -64,7 +64,9 @@ describe("segmentDescription", () => {
 
 describe("stripColumnTags", () => {
 	it("вырезает тег колонки в середине, шов схлопывается до одного пробела", () => {
-		expect(stripColumnTags("Купить молоко #kanban/dev/todo и хлеб")).toBe("Купить молоко и хлеб");
+		expect(stripColumnTags("Купить молоко #kanban/dev/todo и хлеб")).toBe(
+			"Купить молоко и хлеб",
+		);
 	});
 
 	it("тег колонки в конце — без хвостового пробела", () => {
@@ -164,9 +166,7 @@ describe("renderWikiLinks", () => {
 	});
 
 	it("[[c2flv3 Разобрать фотографии с отпуска]] скрывается при taskId=c2flv3", () => {
-		expect(
-			renderWikiLinks("[[c2flv3 Разобрать фотографии с отпуска]]", "c2flv3"),
-		).toBe("");
+		expect(renderWikiLinks("[[c2flv3 Разобрать фотографии с отпуска]]", "c2flv3")).toBe("");
 	});
 
 	it("скрытая ссылка на карточку в середине текста не оставляет двойной пробел", () => {

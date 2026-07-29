@@ -268,11 +268,14 @@ export class GtdSettingsTab extends PluginSettingTab {
 
 		const history = new Setting(el).setName("История обучения").setDesc("Загрузка…");
 		void this.plugin.ai.feedbackSummary().then(
-			(summary) =>
+			(summary) => {
 				history.setDesc(
 					`Синхронизированных событий: ${summary.events}; повреждённых событий: ${summary.invalidRecords}. Outbox: ожидают обработки — ${summary.pendingOutbox}, конфликтов — ${summary.conflictedOutbox}, повреждённых — ${summary.invalidOutboxRecords}. Экспорт содержит записи outbox для ручной диагностики.`,
-				),
-			() => history.setDesc("Историю сейчас прочитать не удалось."),
+				);
+			},
+			() => {
+				history.setDesc("Историю сейчас прочитать не удалось.");
+			},
 		);
 		history
 			.addButton((button) =>

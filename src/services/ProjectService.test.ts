@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Task } from "../core/model/Task";
-import { type NamespaceFilter } from "../core/namespace/namespace";
 import { parseTaskLine } from "../core/parser/parseTaskLine";
 import { FakeFeed, makeTask } from "../stores/testSupport";
 import { MOVE_DEBOUNCE_MS, ProjectService } from "./ProjectService";
@@ -52,7 +51,8 @@ function makeHarness(
 	opts: {
 		today?: string;
 		genId?: () => string;
-		nsFilter?: () => NamespaceFilter;
+		/** Regression input: retired path filters must have no runtime effect. */
+		nsFilter?: () => unknown;
 		/** Тесты recovery раскладки: первые N patch-операций имитируют отказ диска. */
 		failPatches?: number;
 	} = {},
@@ -86,7 +86,6 @@ function makeHarness(
 			ensured.push(p);
 		},
 		containerPaths: () => [...containers],
-		...(opts.nsFilter !== undefined ? { namespaceFilter: opts.nsFilter } : {}),
 		dispatcher,
 		todayIso: () => feed.today(),
 		genId: opts.genId,
@@ -235,14 +234,24 @@ describe("ProjectService.discoverProjects: фильтр по пространс�
 		h.frontmatters.set("Личное/Проекты/Отпуск.md", { "gtd-project": true, name: "Отпуск" });
 	}
 
-	it("активное именованное пространство показывает только свои проекты", () => {
+	it("обнаруживает проекты глобально, независимо от старого активного пространства", () => {
 		let active = "Работа";
 		const h = makeHarness({ nsFilter: () => ({ active, defs: DEFS }) });
 		seedTwoProjects(h);
 
-		expect(h.svc.discoverProjects().map((s) => s.path)).toEqual(["Work/Проекты/Релиз.md"]);
+		expect(
+			h.svc
+				.discoverProjects()
+				.map((s) => s.path)
+				.sort(),
+		).toEqual(["Work/Проекты/Релиз.md", "Личное/Проекты/Отпуск.md"].sort());
 		active = "Жизнь";
-		expect(h.svc.discoverProjects().map((s) => s.path)).toEqual(["Личное/Проекты/Отпуск.md"]);
+		expect(
+			h.svc
+				.discoverProjects()
+				.map((s) => s.path)
+				.sort(),
+		).toEqual(["Work/Проекты/Релиз.md", "Личное/Проекты/Отпуск.md"].sort());
 	});
 
 	it("пустой defs ⇒ фильтр прозрачен (оба проекта)", () => {
@@ -251,16 +260,18 @@ describe("ProjectService.discoverProjects: фильтр по пространс�
 		expect(h.svc.discoverProjects()).toHaveLength(2);
 	});
 
-	it("явный filter (пофайловый вид) ПЕРЕБИВАЕТ инжектированный namespaceFilter", () => {
-		// инжектированный — «Работа», но вид передаёт локальный «Жизнь»
+	it("discoverProjects не принимает path-based filter", () => {
 		const h = makeHarness({ nsFilter: () => ({ active: "Работа", defs: DEFS }) });
 		seedTwoProjects(h);
-		expect(h.svc.discoverProjects({ active: "Жизнь", defs: DEFS }).map((s) => s.path)).toEqual([
-			"Личное/Проекты/Отпуск.md",
-		]);
+		expect(
+			h.svc
+				.discoverProjects()
+				.map((s) => s.path)
+				.sort(),
+		).toEqual(["Work/Проекты/Релиз.md", "Личное/Проекты/Отпуск.md"].sort());
 	});
 
-	it("gtd-namespace override уводит проект в другое пространство", () => {
+	it("legacy gtd-namespace не влияет на обнаружение проекта", () => {
 		const h = makeHarness({ nsFilter: () => ({ active: "Жизнь", defs: DEFS }) });
 		h.containers.add("Work/Проекты/Личный.md");
 		h.frontmatters.set("Work/Проекты/Личный.md", {

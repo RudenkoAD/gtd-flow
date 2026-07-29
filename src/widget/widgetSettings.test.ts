@@ -1,35 +1,27 @@
 import { describe, expect, it } from "vitest";
-import { ALL_NS, DEFAULT_NS } from "../core/namespace/namespace";
-import { DEFAULT_SETTINGS } from "../settings/Settings";
-import { loadWidgetSettings, resolveWidgetActive } from "./widgetSettings";
+import { loadWidgetSettings } from "./widgetSettings";
 
-describe("widget namespace aliases", () => {
-	it("gives an exact user namespace precedence over the shared all/default aliases", () => {
-		const settings = {
-			...DEFAULT_SETTINGS,
-			namespaces: [
-				{ name: "All", root: "all-folder" },
-				{ name: "Default", root: "default-folder" },
-			],
-		};
-		expect(resolveWidgetActive("All", settings, [])).toBe("All");
-		expect(resolveWidgetActive("Default", settings, [])).toBe("Default");
-		expect(resolveWidgetActive("all", settings, [])).toBe(ALL_NS);
-		expect(resolveWidgetActive("default", settings, [])).toBe(DEFAULT_NS);
+describe("widget unified settings", () => {
+	it("reads a valid inboxFile and ignores unrelated legacy keys", () => {
+		const { settings } = loadWidgetSettings(
+			JSON.stringify({ inboxFile: "Capture.md", namespaces: [{ name: "Old", root: "Old" }] }),
+		);
+		expect(settings.inboxFile).toBe("Capture.md");
 	});
 
-	it("does not let malformed persisted shapes crash the standalone widget", () => {
+	it("migrates legacy duration presentation without consuming AI secrets", () => {
 		const { settings } = loadWidgetSettings(
 			JSON.stringify({
-				namespaces: "not-an-array",
-				calendarPlacement: ["due", "due", "unknown"],
-				inboxIncludePlain: "yes",
-				commonRoot: 42,
+				durationLongStyle: "days-hours",
+				ai: { enabled: true, apiKey: "must-not-be-consumed" },
 			}),
 		);
-		expect(settings.namespaces).toEqual([]);
-		expect(settings.calendarPlacement).toEqual(DEFAULT_SETTINGS.calendarPlacement);
-		expect(settings.inboxIncludePlain).toBe(DEFAULT_SETTINGS.inboxIncludePlain);
-		expect(settings.commonRoot).toBe(DEFAULT_SETTINGS.commonRoot);
+		expect(settings.durationLongStyle).toBe("whole-days");
+		expect(settings.ai).toEqual({
+			enabled: false,
+			privacyPolicy: "account-policy",
+			credentialStorage: "memory-only",
+			storageVersion: 0,
+		});
 	});
 });

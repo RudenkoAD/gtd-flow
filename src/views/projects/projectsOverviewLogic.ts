@@ -107,9 +107,7 @@ export function sanitizeProjectName(name: string): string | null {
  * среди известных проектов: createProject иначе дописал бы gtd-project в чужую
  * обычную заметку с совпавшим именем. Занято → суффикс « 2», « 3»…
  *
- * dir — явный каталог назначения (namespace-aware цель от вызывающего:
- * nsTargetPath(active, defs, NS_CONVENTION.projectsDir, projectDir(...))). Без
- * него (старые вызовы/тесты) — прежнее поведение: каталог рядом с существующими
+ * dir — явный каталог назначения. Без него файл создаётся рядом с существующими
  * проектами (projectDir).
  */
 export function newProjectPath(

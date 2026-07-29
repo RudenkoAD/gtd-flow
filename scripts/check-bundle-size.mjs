@@ -3,10 +3,11 @@ import { statSync } from "node:fs";
 import process from "node:process";
 
 const budgets = new Map([
-	// Settings schema validation intentionally adds runtime code to the Obsidian
-	// bundle. Keep roughly 17% headroom over the validated 1.115 MB baseline while
+	// The desktop AI MVP intentionally adds its provider, processing, chat, scope,
+	// migration, journal validation, and feedback runtime to the Obsidian bundle.
+	// Keep roughly 2.7% headroom over the validated 1.363 MB release build while
 	// still catching accidental large dependency imports.
-	["main.js", 1_300_000],
+	["main.js", 1_400_000],
 	["mcp-server.js", 2_000_000],
 	["widget-core.js", 150_000],
 ]);

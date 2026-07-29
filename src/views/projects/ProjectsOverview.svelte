@@ -5,16 +5,6 @@
 	import type { ProjectPort } from "../../services/ProjectService";
 	import type { GtdFlowSettings } from "../../settings/Settings";
 	import type { TaskStore } from "../../stores/taskStore";
-	// Общий переключатель пространств из views/common (создаётся параллельной зоной;
-	// гейт-фаза срастит реальный компонент). Контракт props — см. использование ниже.
-	import NamespaceSwitcher from "../common/NamespaceSwitcher.svelte";
-	import { namespaceLabel } from "../common/namespaceSwitcher";
-	import {
-		NS_CONVENTION,
-		nsTargetPath,
-		type NamespaceDef,
-		type NamespaceFilter,
-	} from "../../core/namespace/namespace";
 	import { NamePromptModal } from "./NamePromptModal";
 	import {
 		buildProjectRows,
@@ -27,11 +17,8 @@
 		taskStore,
 		projects = null,
 		app,
-		settings,
-		settingsRevision,
-		activeNamespace$,
-		namespaces: _namespaces,
-		setActiveNamespace,
+		settings: _settings,
+		settingsRevision: _settingsRevision,
 		openProject,
 	}: {
 		taskStore: TaskStore;
@@ -40,12 +27,6 @@
 		app: App;
 		settings: GtdFlowSettings;
 		settingsRevision: Readable<number>;
-		/** Реактивное ЛОКАЛЬНОЕ активное пространство вида (per-tab, см. GtdView). */
-		activeNamespace$: Readable<string>;
-		/** Определения пространств (settings.namespaces); пусто ⇒ switcher скрыт. */
-		namespaces: readonly NamespaceDef[];
-		/** Смена ЛОКАЛЬНОГО пространства этого вида (persist в viewState). */
-		setActiveNamespace: (name: string) => void;
 		/** Открыть граф проекта по пути (навигация живёт в ProjectsOverviewView). */
 		openProject: (path: string) => void;
 	} = $props();
@@ -53,18 +34,6 @@
 	// props фиксированы на время монтирования (вид пересоздаётся с leaf)
 	// svelte-ignore state_referenced_locally
 	const epoch = taskStore.epoch;
-	// Локальное пространство вида — как epoch: снимок стора; подписка ($activeNs)
-	// пере-запускает discovery на переключение (смена эпоху НЕ бампает).
-	// svelte-ignore state_referenced_locally
-	const activeNs = activeNamespace$;
-	// switcher виден только при настроенных пространствах; метка активного для
-	// пустых состояний (DEFAULT_NS → «Общее»).
-	const liveNamespaces = $derived.by(() => {
-		void $settingsRevision;
-		return settings.namespaces;
-	});
-	const hasNamespaces = $derived(liveNamespaces.length >= 1);
-	const activeLabel = $derived(namespaceLabel($activeNs));
 
 	const STATUS_LABELS: Record<ProjectStatus, string> = {
 		active: "активен",
@@ -74,13 +43,11 @@
 	};
 	const STATUS_ORDER: ProjectStatus[] = ["active", "on-hold", "done", "archived"];
 
-	// фильтр discovery — ЛОКАЛЬНОЕ пространство вида (не активное глобальное)
-	const nsFilter = $derived<NamespaceFilter>({ active: $activeNs, defs: liveNamespaces });
 	// проекты живут в индексе — пересканируем на каждую его смену
 	const rows = $derived.by<ProjectRow[]>(() => {
 		void $epoch;
 		if (projects === null) return [];
-		return buildProjectRows(projects.discoverProjects(nsFilter), (path) =>
+		return buildProjectRows(projects.discoverProjects(), (path) =>
 			taskStore.index().fileTasks(path),
 		);
 	});
@@ -109,14 +76,7 @@
 		if (port === null) return;
 		new NamePromptModal(app, "Новый проект", "Создать", (name) => {
 			const existing = rows.map((r) => r.path);
-			// Каталог нового проекта — активного пространства: <root>/Проекты для
-			// именованного, иначе (Общее / без пространств) — рядом с существующими.
-			const dir = nsTargetPath(
-				$activeNs,
-				liveNamespaces,
-				NS_CONVENTION.projectsDir,
-				projectDir(existing),
-			);
+			const dir = projectDir(existing);
 			const path = newProjectPath(
 				existing,
 				name,
@@ -146,14 +106,6 @@
 <div class="gtd-po">
 	<div class="gtd-po-header">
 		<span class="gtd-po-title">Проекты</span>
-		{#if hasNamespaces}
-			<!-- Глобальный переключатель пространства; виден только при настроенных пространствах -->
-			<NamespaceSwitcher
-				active={activeNamespace$}
-				namespaces={liveNamespaces}
-				setActive={setActiveNamespace}
-			/>
-		{/if}
 		{#if projects !== null}
 			<button class="mod-cta gtd-po-new" onclick={createProject} title="Создать новый проект">
 				＋ Проект
@@ -165,11 +117,7 @@
 		<div class="gtd-po-empty">Вид проектов не подключён (сервис недоступен)</div>
 	{:else if rows.length === 0}
 		<div class="gtd-po-empty">
-			<p>
-				{hasNamespaces
-					? `В пространстве «${activeLabel}» проектов нет.`
-					: "Пока нет ни одного проекта."}
-			</p>
+			<p>Пока нет ни одного проекта.</p>
 			<button class="mod-cta" onclick={createProject}>＋ Создать проект</button>
 		</div>
 	{:else}

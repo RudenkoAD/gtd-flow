@@ -5,7 +5,6 @@
  * структурные порты, совместимые с VaultAdapter, и IntentDispatcher.
  */
 import type { IsoDate, Task } from "../../core/model/Task";
-import { DEFAULT_NS, type NamespaceDef, resolveNamespace } from "../../core/namespace/namespace";
 import { parseNlDate } from "../../core/parser/nlDate";
 import { parseTaskLine } from "../../core/parser/parseTaskLine";
 import { setField } from "../../core/parser/serializeTaskLine";
@@ -167,96 +166,6 @@ export function recurringFilePaths(tasks: Iterable<Task>): string[] {
 	return [...paths].sort();
 }
 
-/**
- * Пути gtd-recurring файлов, чьё эффективное пространство равно `name` — цель
- * «Сделать шаблоном…»/«＋ Шаблон» per-namespace: шаблон уходит в первый файл
- * регулярных СВОЕГО пространства, иначе в конвенционный <root>/Регулярные.md
- * (fallback считает вызыватель через nsTargetPath). Пустой defs ⇒ всё в DEFAULT_NS.
- */
-export function recurringFilePathsInNamespace(
-	tasks: Iterable<Task>,
-	name: string,
-	defs: readonly NamespaceDef[],
-): string[] {
-	const paths = new Set<string>();
-	for (const t of tasks) {
-		if (t.container !== "recurring") continue;
-		if (resolveNamespace(t.filePath, t.nsOverride ?? null, defs) !== name) continue;
-		paths.add(t.filePath);
-	}
-	return [...paths].sort();
-}
-
-// ---------------------------------------------------------------------------
-// Цели записи быстрого ввода (файлы gtd-inbox: true)
-// ---------------------------------------------------------------------------
-
-/**
- * Пути всех gtd-inbox файлов (container === "inbox") из живого индекса —
- * уникальные, сортированные. Это цели ЗАПИСИ захвата (не force-include запроса,
- * см. §inbox querySpec): первый по сортировке файл ловит новые задачи быстрого
- * ввода. Симметрично recurringFilePaths для шаблонов.
- */
-export function captureTargets(tasks: Iterable<Task>): string[] {
-	const paths = new Set<string>();
-	for (const t of tasks) {
-		if (t.container === "inbox") paths.add(t.filePath);
-	}
-	return [...paths].sort();
-}
-
-/**
- * Целевой файл записи быстрого ввода: первый помеченный gtd-inbox файл, иначе
- * первый из `fallbacks` (когда ни один файл не помечен). undefined — ни помеченных
- * файлов, ни фолбэка: вызывающий показывает Notice и не пишет. Вычислять В МОМЕНТ
- * ввода (индекс мог измениться с момента монтирования вида). Per-namespace-версия
- * (captureTargetInNamespace) считает фолбэк через nsCommonTarget(<commonRoot>).
- */
-export function captureTarget(
-	tasks: Iterable<Task>,
-	fallbacks: readonly string[],
-): string | undefined {
-	return captureTargets(tasks)[0] ?? fallbacks[0];
-}
-
-/**
- * Цели захвата ВНУТРИ пространства: gtd-inbox файлы, чьё эффективное пространство
- * (resolveNamespace по пути + frontmatter-override) равно `name`. Симметрично
- * captureTargets, но per-namespace — новый быстрый ввод в активном пространстве
- * ловит первый его файл захвата, а не чужой. Пустой defs ⇒ все inbox-файлы
- * относятся к DEFAULT_NS (обратная совместимость: name === DEFAULT_NS даёт то же,
- * что captureTargets; именованное имя — пусто).
- */
-export function captureTargetsInNamespace(
-	tasks: Iterable<Task>,
-	name: string,
-	defs: readonly NamespaceDef[],
-): string[] {
-	const paths = new Set<string>();
-	for (const t of tasks) {
-		if (t.container !== "inbox") continue;
-		if (resolveNamespace(t.filePath, t.nsOverride ?? null, defs) !== name) continue;
-		paths.add(t.filePath);
-	}
-	return [...paths].sort();
-}
-
-/**
- * Целевой файл записи быстрого ввода В ПРОСТРАНСТВЕ: первый gtd-inbox файл этого
- * пространства, иначе `fallback` — конвенционный Входящие.md, который считает
- * вызыватель через nsCommonTarget(name, defs, NS_CONVENTION.inbox, commonRoot):
- * для DEFAULT_NS — `<commonRoot>/Входящие.md`, для именованного — `<root>/Входящие.md`.
- * Вычислять В МОМЕНТ ввода (индекс мог измениться с монтирования вида).
- */
-export function captureTargetInNamespace(
-	tasks: Iterable<Task>,
-	name: string,
-	defs: readonly NamespaceDef[],
-	fallback: string,
-): string {
-	return captureTargetsInNamespace(tasks, name, defs)[0] ?? fallback;
-}
-
 export interface TemplateTarget {
 	path: string;
 	/** Файла-шаблонов ещё нет — создать с frontmatter gtd-recurring. */
@@ -350,11 +259,11 @@ export async function ensureArchiveFile(
 
 /**
  * Гарантировать файл входящих с флагом `gtd-inbox: true` (образец ensureArchiveFile):
- * ensureFile + идемпотентная простановка флага. Флаг ставится ВСЕГДА — поэтому
- * фолбэк-файл захвата (<commonRoot>/Входящие.md), созданный при отсутствии помеченных
- * файлов, становится настоящим контейнером входящих: следующий быстрый ввод найдёт его
- * через captureTargets и не уйдёт снова в фолбэк. Идемпотентность сводит новый файл,
- * существующий без флага и существующий с флагом к одному состоянию.
+ * ensureFile + идемпотентная простановка флага. Созданный при первом захвате
+ * configured inbox file становится помеченным контейнером входящих. Runtime-членство
+ * всё равно сопоставляет путь с settings.inboxFile, поэтому сохранённые legacy-маркеры
+ * не создают дополнительный inbox. Идемпотентность сводит новый файл, существующий
+ * без флага и существующий с флагом к одному состоянию.
  *
  * Вызывать СТРОГО до записи строки-задачи: иначе строка успела бы прожить в файле,
  * ещё не помеченном контейнером входящих, и (пока флага нет) вести себя как обычная
@@ -368,34 +277,6 @@ export async function ensureCaptureFile(
 		await vault.ensureFile(path);
 		await vault.processFrontmatter(path, (fm) => {
 			fm["gtd-inbox"] = true;
-		});
-		return true;
-	} catch {
-		return false;
-	}
-}
-
-/**
- * ensureCaptureFile В ПРОСТРАНСТВЕ: как ensureCaptureFile (gtd-inbox), но при
- * создании захвата в ИМЕНОВАННОМ пространстве дополнительно проставляет
- * `gtd-namespace: <name>`, ЕСЛИ файл по своей ПАПКЕ в это пространство не попадает
- * (файл-исключение вне корня). Для конвенционного <root>/Входящие.md папка сама
- * решает членство — override не пишется (минимум frontmatter-шума). Для DEFAULT_NS
- * override не нужен никогда. Идемпотентно: оба флага ставятся при каждом вызове.
- */
-export async function ensureCaptureFileNs(
-	vault: FrontmatterVaultPort,
-	path: string,
-	name: string,
-	defs: readonly NamespaceDef[],
-): Promise<boolean> {
-	// override нужен, только если именованное пространство НЕ выводится из папки
-	const needsOverride = name !== DEFAULT_NS && resolveNamespace(path, null, defs) !== name;
-	try {
-		await vault.ensureFile(path);
-		await vault.processFrontmatter(path, (fm) => {
-			fm["gtd-inbox"] = true;
-			if (needsOverride) fm["gtd-namespace"] = name;
 		});
 		return true;
 	} catch {

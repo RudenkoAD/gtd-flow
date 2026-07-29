@@ -16,7 +16,15 @@
  * - Исключение из «одного поля» — setDescription: заменяет ВСЕ текстовые
  *   сегменты одной строкой, поля при этом дословны (см. её комментарий).
  */
-import type { IsoDate, Priority } from "../model/Task";
+import {
+	isDurationMinutes,
+	isIntensityLevel,
+	type DurationMinutes,
+	type IntensityLevel,
+	type IsoDate,
+	type Priority,
+} from "../model/Task";
+import { isScopeId } from "../scope/scope";
 import {
 	ALL_FIELD_EMOJI,
 	DATE_FIELD_EMOJI,
@@ -284,6 +292,48 @@ export function setValueField(
 		else assertToken(value, field);
 	}
 	return setPayloadField(rawLine, field, VALUE_FIELD_EMOJI[field], payload);
+}
+
+/** Set/clear ⏱. The Markdown payload is always canonical `<positive-5m>m`. */
+export function setDurationMinutes(rawLine: string, value: DurationMinutes | null): string {
+	if (value !== null && !isDurationMinutes(value)) {
+		throw new Error(`serializeTaskLine: invalid duration minutes: ${JSON.stringify(value)}`);
+	}
+	return setPayloadField(
+		rawLine,
+		"duration",
+		VALUE_FIELD_EMOJI.duration,
+		value === null ? null : `${value}m`,
+	);
+}
+
+type IntensityField = "cognitiveIntensity" | "emotionalIntensity" | "physicalIntensity";
+
+/** Set/clear exactly one 0..5 intensity dimension. */
+export function setIntensity(
+	rawLine: string,
+	field: IntensityField,
+	value: IntensityLevel | null,
+): string {
+	if (value !== null && !isIntensityLevel(value)) {
+		throw new Error(`serializeTaskLine: invalid intensity: ${JSON.stringify(value)}`);
+	}
+	return setPayloadField(
+		rawLine,
+		field,
+		VALUE_FIELD_EMOJI[field],
+		value === null ? null : String(value),
+	);
+}
+
+/** Set/clear 🧭. Scope IDs are validated against the catalog's stable-token contract. */
+export function setScopeId(rawLine: string, value: string | null): string {
+	if (value !== null) {
+		if (!isScopeId(value) || ALL_FIELD_EMOJI.some((emoji) => value.includes(emoji))) {
+			throw new Error(`serializeTaskLine: invalid scope id: ${JSON.stringify(value)}`);
+		}
+	}
+	return setPayloadField(rawLine, "scope", VALUE_FIELD_EMOJI.scope, value);
 }
 
 /** Полная замена списка ⛔; пустой список удаляет поле. */

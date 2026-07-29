@@ -3,14 +3,14 @@
  *
  * Настройки редактируются и самим плагином, и вручную.  Поэтому загрузчик не
  * имеет права делать небезопасный cast произвольного JSON к GtdFlowSettings:
- * одна строка вместо namespaces раньше падала уже в normalizeActiveNamespace.
+ * одна строка вместо настроек прежних пространств не должна ломать загрузку.
  * Здесь каждая известная ветка проверяется Zod-схемой отдельно, чтобы битое
  * поле не отбрасывало корректные соседние настройки. Числовые значения
  * нормализуются в те же границы, что и UI, а не передаются в setTimeout/циклы
  * как бесконтрольные значения.
  */
 import { z } from "zod";
-import { normalizeNsPath } from "../core/namespace/namespace";
+import { readLegacyNamespaceSettings } from "../core/scope/namespaceMigration";
 import { SETTINGS_FORMAT_VERSION, type GtdFlowSettings } from "./Settings";
 
 type JsonObject = Record<string, unknown>;
@@ -18,7 +18,6 @@ type JsonObject = Record<string, unknown>;
 const MAX_PATH_LENGTH = 1024;
 const MAX_TEXT_LENGTH = 4096;
 const MAX_SUBSCRIPTIONS = 200;
-const MAX_NAMESPACES = 200;
 const MAX_PRESETS = 200;
 const MAX_RETRIES = 10_000;
 
@@ -58,11 +57,6 @@ const promotionRetrySchema = z.object({
 	target: pathString(false).nullable(),
 });
 
-const namespaceSchema = z.object({
-	name: nonEmptyString(256),
-	root: nonEmptyString(MAX_PATH_LENGTH),
-});
-
 function isCalendarUrl(value: string): boolean {
 	try {
 		const url = new URL(value);
@@ -76,7 +70,6 @@ const externalCalendarSchema = z.object({
 	id: nonEmptyString(256),
 	name: trimmedString(256),
 	url: nonEmptyString(MAX_TEXT_LENGTH).refine(isCalendarUrl, "must be an http(s) or webcal URL"),
-	namespace: boundedString(256),
 	lastSyncAt: z.number().finite().int().min(0).nullable(),
 	lastError: boundedString(2048).nullable(),
 });
@@ -87,10 +80,17 @@ const debounceSchema = z.object({
 });
 
 const recurringSchema = z.object({
-	spawnTarget: pathString(),
 	catchUp: z.enum(["latest", "all", "none"]),
 	catchUpCap: clampedInt(1, 1_000),
 });
+
+const aiSchema = z.object({
+	enabled: z.boolean(),
+	privacyPolicy: z.enum(["unconfigured", "account-policy", "require-zdr"]),
+	credentialStorage: z.enum(["unconfigured", "memory-only"]),
+	storageVersion: clampedInt(0, 1_000),
+});
+const durationLongStyleSchema = z.literal("whole-days");
 
 const statusMapSchema = z
 	.record(z.string().max(64), boundedString(256))
@@ -104,7 +104,9 @@ const statusMapSchema = z
 export const PersistedSettingsSchema = z
 	.object({
 		settingsVersion: z.number().finite().int().min(0),
-		commonRoot: pathString(),
+		inboxFile: pathString(false),
+		ai: aiSchema.partial(),
+		durationLongStyle: durationLongStyleSchema,
 		inboxIncludePlain: z.boolean(),
 		projectStrategy: z.enum(["tag", "folder"]),
 		projectTagPrefix: boundedString(512),
@@ -129,8 +131,6 @@ export const PersistedSettingsSchema = z
 		archiveFile: pathString(),
 		dayStatusFile: pathString(),
 		onboarded: z.boolean(),
-		namespaces: z.array(namespaceSchema).max(MAX_NAMESPACES),
-		activeNamespace: boundedString(256),
 		lastQuickAddKind: z.enum(["task", "event"]),
 		externalCalendars: z.array(externalCalendarSchema).max(MAX_SUBSCRIPTIONS),
 		externalSyncIntervalMin: clampedInt(1, 1_440),
@@ -172,11 +172,19 @@ export function mergeSettingsWithDiagnostics(
 	copyUnknownFields(
 		settings as unknown as JsonObject,
 		data,
-		new Set(Object.keys(PersistedSettingsSchema.shape)),
+		new Set([
+			...Object.keys(PersistedSettingsSchema.shape),
+			// v1-only fields are consumed by the compatibility reader, never retained
+			// in the target runtime settings object or re-serialized data.json.
+			"commonRoot",
+			"namespaces",
+			"activeNamespace",
+		]),
 	);
 
 	settings.settingsVersion = SETTINGS_FORMAT_VERSION;
-	assignIfValid(settings, "commonRoot", pathString(), data, diagnostics);
+	assignIfValid(settings, "inboxFile", pathString(false), data, diagnostics);
+	assignIfValid(settings, "durationLongStyle", durationLongStyleSchema, data, diagnostics);
 	assignIfValid(settings, "inboxIncludePlain", z.boolean(), data, diagnostics);
 	assignIfValid(settings, "projectStrategy", z.enum(["tag", "folder"]), data, diagnostics);
 	assignIfValid(settings, "projectTagPrefix", boundedString(512), data, diagnostics);
@@ -217,7 +225,6 @@ export function mergeSettingsWithDiagnostics(
 	assignIfValid(settings, "archiveFile", pathString(), data, diagnostics);
 	assignIfValid(settings, "dayStatusFile", pathString(), data, diagnostics);
 	assignIfValid(settings, "onboarded", z.boolean(), data, diagnostics);
-	assignIfValid(settings, "activeNamespace", boundedString(256), data, diagnostics);
 	assignIfValid(settings, "lastQuickAddKind", z.enum(["task", "event"]), data, diagnostics);
 	assignIfValid(
 		settings,
@@ -228,6 +235,13 @@ export function mergeSettingsWithDiagnostics(
 	);
 	assignIfValid(settings, "externalSyncIntervalMin", clampedInt(1, 1_440), data, diagnostics);
 
+	mergeNested(
+		settings.ai as unknown as JsonObject,
+		data["ai"],
+		aiSchema.shape as Record<string, z.ZodType>,
+		"ai",
+		diagnostics,
+	);
 	mergeNested(
 		settings.debounceMs as unknown as JsonObject,
 		data["debounceMs"],
@@ -242,8 +256,6 @@ export function mergeSettingsWithDiagnostics(
 		"recurring",
 		diagnostics,
 	);
-	mergeNamespaces(settings, data["namespaces"], diagnostics);
-
 	return { settings, diagnostics };
 }
 
@@ -266,28 +278,40 @@ function migrateToCurrent(raw: JsonObject, diagnostics: string[]): JsonObject {
 	}
 	if (version < SETTINGS_FORMAT_VERSION)
 		diagnostics.push(`settings: migrated v${version} → v${SETTINGS_FORMAT_VERSION}`);
-	return { ...raw, settingsVersion: SETTINGS_FORMAT_VERSION };
-}
-
-function mergeNamespaces(settings: GtdFlowSettings, raw: unknown, diagnostics: string[]): void {
-	if (raw === undefined) return;
-	const parsed = z.array(namespaceSchema).max(MAX_NAMESPACES).safeParse(raw);
-	if (!parsed.success) {
-		diagnostics.push("namespaces: invalid; default used");
-		return;
-	}
-	const names = new Set<string>();
-	const normalized = [] as GtdFlowSettings["namespaces"];
-	for (const entry of parsed.data) {
-		const root = normalizeNsPath(entry.root);
-		if (root === "" || names.has(entry.name)) {
-			diagnostics.push("namespaces: duplicate or empty root ignored");
-			continue;
+	const migrated: JsonObject = { ...raw, settingsVersion: SETTINGS_FORMAT_VERSION };
+	if (version < 2 && migrated["inboxFile"] === undefined) {
+		const legacy = readLegacyNamespaceSettings(raw);
+		const legacySpawn = asObject(raw["recurring"])?.["spawnTarget"];
+		if (typeof legacySpawn === "string" && legacySpawn.trim() !== "") {
+			migrated["inboxFile"] = legacySpawn;
+		} else if (legacy.commonRoot !== null) {
+			const root = legacy.commonRoot.replace(/\/+$/u, "");
+			migrated["inboxFile"] = root === "" ? "Inbox.md" : `${root}/Inbox.md`;
 		}
-		names.add(entry.name);
-		normalized.push({ name: entry.name, root });
+		diagnostics.push("namespace settings retained only for migration planning");
 	}
-	settings.namespaces = normalized;
+	const ai = asObject(migrated["ai"]);
+	if (ai !== null) {
+		const decidedAi = { ...ai };
+		if (decidedAi["privacyPolicy"] === "unconfigured") {
+			decidedAi["privacyPolicy"] = "account-policy";
+			diagnostics.push("ai.privacyPolicy: migrated to account-policy");
+		}
+		if (decidedAi["credentialStorage"] === "unconfigured") {
+			decidedAi["credentialStorage"] = "memory-only";
+			diagnostics.push("ai.credentialStorage: migrated to memory-only");
+		}
+		migrated["ai"] = decidedAi;
+	}
+	if (
+		migrated["durationLongStyle"] === "unconfigured" ||
+		migrated["durationLongStyle"] === "total-hours" ||
+		migrated["durationLongStyle"] === "days-hours"
+	) {
+		migrated["durationLongStyle"] = "whole-days";
+		diagnostics.push("durationLongStyle: migrated to whole-days");
+	}
+	return migrated;
 }
 
 /** Частичное вложенное обновление: unknown future поля сохраняем, известные
@@ -305,7 +329,11 @@ function mergeNested(
 		diagnostics.push(`${field}: expected object; defaults used`);
 		return;
 	}
-	copyUnknownFields(target, record, new Set(Object.keys(shape)));
+	// spawnTarget был runtime-настройкой пространств до v2. Его допускает
+	// только compatibility reader выше, но он не должен «просочиться» в
+	// settings.recurring через механизм forward compatibility.
+	const retiredKeys = field === "recurring" ? ["spawnTarget"] : [];
+	copyUnknownFields(target, record, new Set([...Object.keys(shape), ...retiredKeys]));
 	for (const [key, child] of Object.entries(shape) as Array<[string, z.ZodType]>) {
 		if (!(key in record)) continue;
 		const parsed = child.safeParse(record[key]);
@@ -336,10 +364,10 @@ function freshDefaults(defaults: GtdFlowSettings): GtdFlowSettings {
 		calendarPlacement: [...defaults.calendarPlacement],
 		deferPresets: defaults.deferPresets.map((preset) => ({ ...preset })),
 		statusMap: { ...defaults.statusMap },
+		ai: { ...defaults.ai },
 		debounceMs: { ...defaults.debounceMs },
 		promoteRetries: defaults.promoteRetries.map((retry) => ({ ...retry })),
 		recurring: { ...defaults.recurring },
-		namespaces: defaults.namespaces.map((namespace) => ({ ...namespace })),
 		externalCalendars: defaults.externalCalendars.map((calendar) => ({ ...calendar })),
 	};
 }

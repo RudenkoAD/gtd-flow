@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Task } from "../model/Task";
+import { parseTaskLine } from "../parser/parseTaskLine";
 import { parseRule } from "./grammar";
 import {
 	makeChildId,
@@ -41,6 +42,11 @@ function makeTemplate(over: Partial<Task> = {}): Task {
 		dependsOn: [],
 		excludedDates: [],
 		location: null,
+		durationMinutes: null,
+		cognitiveIntensity: null,
+		emotionalIntensity: null,
+		physicalIntensity: null,
+		scopeId: null,
 		tags: ["#review"],
 		container: "recurring",
 		projectActive: true,
@@ -109,6 +115,31 @@ describe("planSpawns — spec §6 example (late catch-up offsets)", () => {
 		expect(s.instanceLine).toContain("➕ 2026-07-31");
 		expect(s.instanceLine).not.toContain("🔁");
 		expect(s.instanceLine).not.toContain("🔜");
+	});
+
+	it("inherits the effective duration, intensity, and scope fields", () => {
+		const template = makeTemplate({
+			recurrence: "every day",
+			nextSpawn: "2026-07-15",
+			rawLine:
+				"- [ ] Review priorities 🔁 every day 🆔 rev-prio 🔜 2026-07-15 ⏱ 30m 🧠 1 💓 1 💪 1 🧭 life ⏱ 90m 🧠 4 💓 2 💪 0 🧭 work",
+		});
+		const line = plan([tpl(template)]).spawns[0]!.instanceLine;
+		const instance = parseTaskLine(line, {
+			filePath: "GTD/Inbox.md",
+			lineStart: 0,
+			parentLine: null,
+			heading: null,
+			container: "plain",
+			projectActive: true,
+		})!;
+		expect(instance).toMatchObject({
+			durationMinutes: 90,
+			cognitiveIntensity: 4,
+			emotionalIntensity: 2,
+			physicalIntensity: 0,
+			scopeId: "work",
+		});
 	});
 });
 

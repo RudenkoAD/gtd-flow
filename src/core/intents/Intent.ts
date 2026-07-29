@@ -3,7 +3,13 @@
  * WritebackService применяет его атомарно через vault.process().
  * Строка ищется по 🆔, затем по content-key; не нашли — отмена + уведомление.
  */
-import type { IsoDate, Priority, ProjectStatus } from "../model/Task";
+import type {
+	DurationMinutes,
+	IntensityLevel,
+	IsoDate,
+	Priority,
+	ProjectStatus,
+} from "../model/Task";
 
 /** Дата-поля, доступные SetDate. 🔜 меняется только через AdvanceCursor. */
 export type SettableDateField = "due" | "scheduled" | "start" | "created" | "done" | "cancelled";
@@ -65,6 +71,21 @@ export interface SetLocation {
 	key: string;
 	/** Свободный текст места; null или пустая/пробельная строка — снять поле. */
 	location: string | null;
+}
+
+/**
+ * Atomic patch of the AI/manual task metadata. An omitted field is untouched;
+ * null explicitly clears every duplicate of that field. The all-or-nothing
+ * write is important because an AI estimate has correlated dimensions.
+ */
+export interface PatchTaskMetadata {
+	type: "patch-task-metadata";
+	key: string;
+	durationMinutes?: DurationMinutes | null;
+	cognitiveIntensity?: IntensityLevel | null;
+	emotionalIntensity?: IntensityLevel | null;
+	physicalIntensity?: IntensityLevel | null;
+	scopeId?: string | null;
 }
 
 export interface MoveColumn {
@@ -203,6 +224,7 @@ export type Intent =
 	| SetStatus
 	| SetPriority
 	| SetLocation
+	| PatchTaskMetadata
 	| MoveColumn
 	| Reorder
 	| Defer

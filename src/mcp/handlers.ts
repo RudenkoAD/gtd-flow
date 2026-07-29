@@ -12,38 +12,35 @@
  */
 import type { DiscoveredBoard } from "../services/BoardService";
 import { isCancelled, isDone } from "../core/model/gtdState";
-import type { NamespaceDef, NamespaceFilter } from "../core/namespace/namespace";
-import {
-	ALL_NS,
-	DEFAULT_NS,
-	eventVisibleInNamespace,
-	inNamespace,
-	NS_CONVENTION,
-	nsCommonTarget,
-	nsTargetPath,
-	resolveNamespace,
-} from "../core/namespace/namespace";
 import type { Intent } from "../core/intents/Intent";
-import type { Priority, Task } from "../core/model/Task";
+import {
+	isDurationMinutes,
+	isIntensityLevel,
+	type DurationMinutes,
+	type IntensityLevel,
+	type Priority,
+	type Task,
+} from "../core/model/Task";
+import { isScopeId, scopeById } from "../core/scope/scope";
 import { parseDatePayload } from "../core/parser/parseTaskLine";
-import { setField, setValueField } from "../core/parser/serializeTaskLine";
+import {
+	setDurationMinutes,
+	setField,
+	setIntensity,
+	setScopeId,
+	setValueField,
+} from "../core/parser/serializeTaskLine";
 import { evaluate, type QueryContext } from "../core/query/QueryEngine";
 import { defaultInboxConfig } from "../core/query/querySpec";
 import { isParseError, parseRule } from "../core/recurrence/grammar";
 import { expandOccurrences } from "../core/recurrence/occurrences";
-import { frontmatterNamespace } from "../services/snapshotHelpers";
 import type { EventWriteResult } from "../views/calendar/eventSeries";
 import {
 	buildSingleOccurrenceLine,
 	createEventSeries,
 	withSeriesAnchor,
 } from "../views/calendar/eventSeries";
-import {
-	captureTargetInNamespace,
-	ensureCaptureFileNs,
-	quickCaptureLine,
-} from "../views/common/taskActions";
-import { fileNsLabel, nsLabel, resolveNamespaceFilter, resolveWriteNamespace } from "./namespaces";
+import { ensureCaptureFile, quickCaptureLine } from "../views/common/taskActions";
 import type { GtdSession } from "./session";
 
 // ---------------------------------------------------------------------------
@@ -96,14 +93,16 @@ function assertIsoDate(value: string, what: string): string {
 	return value.trim();
 }
 
-function queryContext(session: GtdSession, filter: NamespaceFilter): QueryContext {
+function queryContext(session: GtdSession): QueryContext {
 	const index = session.feed.getIndex();
 	return {
 		tasks: session.allTasks,
 		today: session.today,
 		resolveDep: (id) => index.resolveDep(id),
-		settingsBits: defaultInboxConfig(session.settings.inboxIncludePlain),
-		namespace: filter,
+		settingsBits: defaultInboxConfig(
+			session.settings.inboxIncludePlain,
+			session.settings.inboxFile,
+		),
 	};
 }
 
@@ -127,7 +126,7 @@ function resolveTaskKey(session: GtdSession, id: string): string {
 }
 
 /** Компактный JSON задачи: только заполненные поля (null/пустое опускаем). */
-function taskJson(t: Task, defs: readonly NamespaceDef[]): Record<string, unknown> {
+function taskJson(t: Task): Record<string, unknown> {
 	const out: Record<string, unknown> = {
 		id: t.taskId ?? t.key,
 		description: t.description,
@@ -135,8 +134,14 @@ function taskJson(t: Task, defs: readonly NamespaceDef[]): Record<string, unknow
 		done: isDone(t) || isCancelled(t),
 		file: t.filePath,
 		line: t.lineStart + 1, // 1-based для человека/агента
-		namespace: fileNsLabel(t.filePath, t.nsOverride, defs),
 		container: t.container,
+		// Stable MCP task contract. Keep null rather than omitting: callers can
+		// distinguish an unprocessed/cleared field from an older server response.
+		duration_minutes: t.durationMinutes,
+		cognitive_intensity: t.cognitiveIntensity,
+		emotional_intensity: t.emotionalIntensity,
+		physical_intensity: t.physicalIntensity,
+		scope: t.scopeId,
 	};
 	if (t.due !== null) {
 		out.due = t.due;
@@ -175,6 +180,81 @@ function assertPriority(p: string): Priority {
 	return p as Priority;
 }
 
+interface MetadataPatch {
+	durationMinutes?: DurationMinutes | null;
+	cognitiveIntensity?: IntensityLevel | null;
+	emotionalIntensity?: IntensityLevel | null;
+	physicalIntensity?: IntensityLevel | null;
+	scopeId?: string | null;
+}
+
+/** Read filters may use archived scopes; writes must select an active one. */
+function assertKnownScope(session: GtdSession, scopeId: string): void {
+	if (!isScopeId(scopeId) || scopeById(session.scopeCatalog, scopeId) === null) {
+		throw new Error(`unknown scope '${scopeId}'`);
+	}
+}
+
+function assertActiveScope(session: GtdSession, scopeId: string): string {
+	assertKnownScope(session, scopeId);
+	if (scopeById(session.scopeCatalog, scopeId)?.archived) {
+		throw new Error(`scope '${scopeId}' is archived and cannot be assigned`);
+	}
+	return scopeId;
+}
+
+function metadataPatchFromArgs(
+	session: GtdSession,
+	args: Pick<
+		UpdateTaskArgs,
+		| "duration_minutes"
+		| "cognitive_intensity"
+		| "emotional_intensity"
+		| "physical_intensity"
+		| "scope"
+	>,
+): MetadataPatch {
+	const patch: MetadataPatch = {};
+	if (args.duration_minutes !== undefined) {
+		if (args.duration_minutes !== null && !isDurationMinutes(args.duration_minutes)) {
+			throw new Error(
+				"duration_minutes must use five-minute increments below 24h and whole-day increments from 24h",
+			);
+		}
+		patch.durationMinutes = args.duration_minutes;
+	}
+	for (const [input, output] of [
+		["cognitive_intensity", "cognitiveIntensity"],
+		["emotional_intensity", "emotionalIntensity"],
+		["physical_intensity", "physicalIntensity"],
+	] as const) {
+		const value = args[input];
+		if (value === undefined) continue;
+		if (value !== null && !isIntensityLevel(value)) {
+			throw new Error(`${input} must be an integer from 0 to 5`);
+		}
+		patch[output] = value;
+	}
+	if (args.scope !== undefined) {
+		patch.scopeId = args.scope === null ? null : assertActiveScope(session, args.scope);
+	}
+	return patch;
+}
+
+function applyMetadataToNewLine(session: GtdSession, line: string, args: AddTaskArgs): string {
+	const patch = metadataPatchFromArgs(session, args);
+	let next = line;
+	if (patch.durationMinutes !== undefined) next = setDurationMinutes(next, patch.durationMinutes);
+	if (patch.cognitiveIntensity !== undefined)
+		next = setIntensity(next, "cognitiveIntensity", patch.cognitiveIntensity);
+	if (patch.emotionalIntensity !== undefined)
+		next = setIntensity(next, "emotionalIntensity", patch.emotionalIntensity);
+	if (patch.physicalIntensity !== undefined)
+		next = setIntensity(next, "physicalIntensity", patch.physicalIntensity);
+	if (patch.scopeId !== undefined) next = setScopeId(next, patch.scopeId);
+	return next;
+}
+
 /** append строки блоком в конец файла (форма — как WritebackService.moveLine/eventSeries). */
 function appendLine(content: string, line: string): string {
 	return content.trimEnd() !== ""
@@ -187,36 +267,20 @@ function appendLine(content: string, line: string): string {
 // ---------------------------------------------------------------------------
 
 export function gtdOverview(session: GtdSession): Record<string, unknown> {
-	const { settings } = session;
-	const defs = settings.namespaces;
-	// «Общее» + пользовательские пространства в один ряд (root у «Общего» нет)
-	const spaceSpecs: { active: string; root: string | null }[] = [
-		{ active: DEFAULT_NS, root: null }, // «Общее» — метку даёт nsLabel
-		...defs.map((d) => ({ active: d.name, root: d.root })),
-	];
-	const spaces = spaceSpecs.map((spec) => {
-		const filter: NamespaceFilter = { active: spec.active, defs };
-		const ctx = queryContext(session, filter);
-		const events = session.allTasks.filter(
-			(t) =>
-				t.container === "events" &&
-				resolveNamespace(t.filePath, t.nsOverride ?? null, defs) === spec.active,
-		).length;
-		return {
-			name: nsLabel(spec.active),
-			root: spec.root,
-			inbox: evaluate({ kind: "inbox" }, ctx).length,
-			tickler: evaluate({ kind: "tickler" }, ctx).length,
-			boards: session.boards.discoverBoards(filter).boards.length,
-			projects: session.projects.discoverProjects(filter).length,
-			events,
-		};
-	});
 	return {
 		today: session.today,
-		activeNamespace: nsLabel(settings.activeNamespace),
-		commonRoot: settings.commonRoot,
-		spaces,
+		inbox: evaluate({ kind: "inbox" }, queryContext(session)).length,
+		tickler: evaluate({ kind: "tickler" }, queryContext(session)).length,
+		boards: session.boards.discoverBoards().boards.length,
+		projects: session.projects.discoverProjects().length,
+		events: session.allTasks.filter((task) => task.container === "events").length,
+		scopes: session.scopeCatalog.scopes.map((scope) => ({
+			id: scope.id,
+			name: scope.name,
+			archived: scope.archived,
+			task_count: session.allTasks.filter((task) => task.scopeId === scope.id).length,
+		})),
+		unscoped_task_count: session.allTasks.filter((task) => task.scopeId === null).length,
 	};
 }
 
@@ -225,7 +289,8 @@ export function gtdOverview(session: GtdSession): Record<string, unknown> {
 // ---------------------------------------------------------------------------
 
 export interface ListTasksArgs {
-	namespace?: string;
+	/** Canonical scope ID filter. */
+	scope?: string;
 	view?: "inbox" | "tickler" | "board" | "project" | "all";
 	board?: string;
 	project?: string;
@@ -233,77 +298,65 @@ export interface ListTasksArgs {
 }
 
 export function listTasks(session: GtdSession, args: ListTasksArgs): Record<string, unknown> {
-	const filter = resolveNamespaceFilter(args.namespace, session.settings);
-	const defs = session.settings.namespaces;
+	if (args.scope !== undefined) assertKnownScope(session, args.scope);
 	const view = args.view ?? "all";
 	const includeDone = args.include_done ?? false;
-	const inNs = (t: Task): boolean => inNamespace(t.filePath, t.nsOverride ?? null, filter);
 	const keepDone = (t: Task): boolean => includeDone || !(isDone(t) || isCancelled(t));
 
 	let rows: Record<string, unknown>[];
 	switch (view) {
 		case "inbox":
-			rows = evaluate({ kind: "inbox" }, queryContext(session, filter)).map((t) =>
-				taskJson(t, defs),
-			);
+			rows = evaluate({ kind: "inbox" }, queryContext(session)).map((t) => taskJson(t));
 			break;
 		case "tickler":
-			rows = evaluate({ kind: "tickler" }, queryContext(session, filter)).map((t) =>
-				taskJson(t, defs),
-			);
+			rows = evaluate({ kind: "tickler" }, queryContext(session)).map((t) => taskJson(t));
 			break;
 		case "board": {
 			if (args.board !== undefined && args.board !== "") {
-				const board = findBoard(session, filter, args.board);
+				const board = findBoard(session, args.board);
 				const model = session.boards.boardModel(board.path, board.def);
 				rows = [];
 				for (const col of model.columns) {
 					for (const t of col.tasks) {
 						if (!keepDone(t)) continue;
-						rows.push({ ...taskJson(t, defs), column: col.name, columnId: col.id });
+						rows.push({ ...taskJson(t), column: col.name, columnId: col.id });
 					}
 				}
 			} else {
 				rows = session.allTasks
 					.filter(
 						(t) =>
-							inNs(t) &&
 							keepDone(t) &&
 							(t.container === "board" ||
 								t.tags.some((tag) => tag.startsWith("#kanban/"))),
 					)
-					.map((t) => taskJson(t, defs));
+					.map((t) => taskJson(t));
 			}
 			break;
 		}
 		case "project": {
 			if (args.project !== undefined && args.project !== "") {
-				const path = findProjectPath(session, filter, args.project);
+				const path = findProjectPath(session, args.project);
 				rows = session.feed
 					.getIndex()
 					.fileTasks(path)
 					.filter(keepDone)
-					.map((t) => taskJson(t, defs));
+					.map((t) => taskJson(t));
 			} else {
 				rows = session.allTasks
-					.filter((t) => inNs(t) && keepDone(t) && t.container === "project")
-					.map((t) => taskJson(t, defs));
+					.filter((t) => keepDone(t) && t.container === "project")
+					.map((t) => taskJson(t));
 			}
 			break;
 		}
 		case "all":
 			rows = session.allTasks
-				.filter(
-					(t) =>
-						inNs(t) &&
-						keepDone(t) &&
-						t.container !== "events" &&
-						t.container !== "archive",
-				)
-				.map((t) => taskJson(t, defs));
+				.filter((t) => keepDone(t) && t.container !== "events" && t.container !== "archive")
+				.map((t) => taskJson(t));
 			break;
 	}
-	return { view, namespace: nsLabel(filter.active), count: rows.length, tasks: rows };
+	if (args.scope !== undefined) rows = rows.filter((task) => task.scope === args.scope);
+	return { view, scope: args.scope ?? null, count: rows.length, tasks: rows };
 }
 
 // ---------------------------------------------------------------------------
@@ -312,7 +365,11 @@ export function listTasks(session: GtdSession, args: ListTasksArgs): Record<stri
 
 export interface AddTaskArgs {
 	text: string;
-	namespace?: string;
+	duration_minutes?: number | null;
+	cognitive_intensity?: number | null;
+	emotional_intensity?: number | null;
+	physical_intensity?: number | null;
+	scope?: string | null;
 	due?: string;
 	scheduled?: string;
 	start?: string;
@@ -322,10 +379,6 @@ export async function addTask(
 	session: GtdSession,
 	args: AddTaskArgs,
 ): Promise<Record<string, unknown>> {
-	const filter = resolveWriteNamespace(args.namespace, session.settings);
-	const active = filter.active;
-	const defs = session.settings.namespaces;
-
 	let line = quickCaptureLine(args.text);
 	if (line === null) throw new Error("empty task text");
 	// поля-даты дописываются поверх строки захвата теми же сеттерами ядра
@@ -338,17 +391,15 @@ export async function addTask(
 		const dt = parseDateTime(raw);
 		line = setField(line, field, dt.date, dt.time, dt.timeEnd);
 	}
+	line = applyMetadataToNewLine(session, line, args);
 
-	const fallback = nsCommonTarget(active, defs, NS_CONVENTION.inbox, session.settings.commonRoot);
-	// nsCommonTarget всегда непуст (пустой commonRoot ⇒ голое имя файла конвенции),
-	// поэтому отдельной проверки target === "" не нужно.
-	const target = captureTargetInNamespace(session.allTasks, active, defs, fallback);
-	if (!(await ensureCaptureFileNs(session.vault, target, active, defs))) {
+	const target = session.settings.inboxFile;
+	if (!(await ensureCaptureFile(session.vault, target))) {
 		throw new Error(`could not prepare inbox file '${target}'`);
 	}
 	const ok = await session.vault.processFile(target, (content) => appendLine(content, line!));
 	if (!ok) throw new Error(`could not write to '${target}'`);
-	return { ok: true, file: target, namespace: nsLabel(active), line };
+	return { ok: true, file: target, line };
 }
 
 // ---------------------------------------------------------------------------
@@ -367,6 +418,11 @@ export interface UpdateTaskArgs {
 	 *  Применяется интентом ядра 'set-location' (📍 вырезано из content-key —
 	 *  ключ задачи стабилен). */
 	location?: string | null;
+	duration_minutes?: number | null;
+	cognitive_intensity?: number | null;
+	emotional_intensity?: number | null;
+	physical_intensity?: number | null;
+	scope?: string | null;
 }
 
 export async function updateTask(
@@ -429,6 +485,10 @@ export async function updateTask(
 			ops.push({ op: "location", intent: { type: "set-location", key, location: loc } });
 		}
 	}
+	const metadata = metadataPatchFromArgs(session, args);
+	if (Object.keys(metadata).length > 0) {
+		ops.push({ op: "metadata", intent: { type: "patch-task-metadata", key, ...metadata } });
+	}
 	if (args.done !== undefined) {
 		ops.push({
 			op: "done",
@@ -440,7 +500,7 @@ export async function updateTask(
 
 	if (ops.length === 0) {
 		throw new Error(
-			"nothing to update — provide done/text/due/scheduled/start/priority/location",
+			"nothing to update — provide done/text/due/scheduled/start/priority/location/duration_minutes/cognitive_intensity/emotional_intensity/physical_intensity/scope",
 		);
 	}
 
@@ -497,10 +557,7 @@ export async function moveCard(
 	session: GtdSession,
 	args: MoveCardArgs,
 ): Promise<Record<string, unknown>> {
-	// доски ищем по ВСЕМ пространствам: карточка едет на свою доску независимо от
-	// активного пространства сервера
-	const allFilter: NamespaceFilter = { active: ALL_NS, defs: session.settings.namespaces };
-	const board = findBoard(session, allFilter, args.board);
+	const board = findBoard(session, args.board);
 	const col = board.def.columns.find((c) => c.id === args.column || c.name === args.column);
 	if (col === undefined) {
 		const names = board.def.columns.map((c) => `'${c.name}'`).join(", ");
@@ -527,7 +584,6 @@ export async function moveCard(
 export interface ListEventsArgs {
 	from: string;
 	to: string;
-	namespace?: string;
 }
 
 interface Occurrence {
@@ -589,13 +645,7 @@ export function listEvents(session: GtdSession, args: ListEventsArgs): Record<st
 	const from = assertIsoDate(args.from, "from");
 	const to = assertIsoDate(args.to, "to");
 	if (from > to) throw new Error(`'from' (${from}) must not be after 'to' (${to})`);
-	const filter = resolveNamespaceFilter(args.namespace, session.settings);
-	const defs = session.settings.namespaces;
-	const events = session.allTasks.filter(
-		(t) =>
-			t.container === "events" &&
-			eventVisibleInNamespace(t.filePath, t.nsOverride ?? null, filter),
-	);
+	const events = session.allTasks.filter((task) => task.container === "events");
 	const occ = expandEvents(events, from, to).map((o) => {
 		const row: Record<string, unknown> = {
 			date: o.date,
@@ -603,7 +653,6 @@ export function listEvents(session: GtdSession, args: ListEventsArgs): Record<st
 			kind: o.kind,
 			file: o.task.filePath,
 			line: o.task.lineStart + 1,
-			namespace: fileNsLabel(o.task.filePath, o.task.nsOverride, defs),
 		};
 		if (o.time !== null) row.time = o.time;
 		if (o.timeEnd !== null) row.timeEnd = o.timeEnd;
@@ -612,7 +661,7 @@ export function listEvents(session: GtdSession, args: ListEventsArgs): Record<st
 		if (o.kind === "series") row.recurrence = o.task.recurrence;
 		return row;
 	});
-	return { from, to, namespace: nsLabel(filter.active), count: occ.length, events: occ };
+	return { from, to, count: occ.length, events: occ };
 }
 
 // ---------------------------------------------------------------------------
@@ -621,7 +670,6 @@ export function listEvents(session: GtdSession, args: ListEventsArgs): Record<st
 
 export interface AddEventArgs {
 	name: string;
-	namespace?: string;
 	date?: string;
 	time?: string;
 	rule?: string;
@@ -632,15 +680,7 @@ export async function addEvent(
 	session: GtdSession,
 	args: AddEventArgs,
 ): Promise<Record<string, unknown>> {
-	const filter = resolveWriteNamespace(args.namespace, session.settings);
-	const active = filter.active;
-	const defs = session.settings.namespaces;
-	const eventsFile = nsTargetPath(
-		active,
-		defs,
-		NS_CONVENTION.events,
-		session.settings.eventsFile,
-	);
+	const eventsFile = session.settings.eventsFile;
 	const location =
 		args.location !== undefined && args.location.trim() !== "" ? args.location : null;
 
@@ -714,7 +754,7 @@ export async function addEvent(
 	}
 
 	if (!res.ok) throw new Error(`add_event failed: ${res.reason}`);
-	return { ok: true, kind, file: eventsFile, namespace: nsLabel(active), name: args.name };
+	return { ok: true, kind, file: eventsFile, name: args.name };
 }
 
 /**
@@ -759,14 +799,10 @@ async function writeSingleEvent(
 // list_boards
 // ---------------------------------------------------------------------------
 
-export interface ListBoardsArgs {
-	namespace?: string;
-}
+export type ListBoardsArgs = Record<string, never>;
 
-export function listBoards(session: GtdSession, args: ListBoardsArgs): Record<string, unknown> {
-	const filter = resolveNamespaceFilter(args.namespace, session.settings);
-	const defs = session.settings.namespaces;
-	const { boards, errors } = session.boards.discoverBoards(filter);
+export function listBoards(session: GtdSession, _args: ListBoardsArgs): Record<string, unknown> {
+	const { boards, errors } = session.boards.discoverBoards();
 	const rows = boards.map((b) => {
 		const model = session.boards.boardModel(b.path, b.def);
 		const columns = model.columns.map((c) => ({
@@ -775,18 +811,15 @@ export function listBoards(session: GtdSession, args: ListBoardsArgs): Record<st
 			count: c.tasks.length,
 		}));
 		const total = columns.reduce((n, c) => n + c.count, 0);
-		const nsOverride = frontmatterNamespace(session.vault.readFrontmatterSync(b.path));
 		return {
 			id: b.def.id,
 			name: b.def.name,
 			path: b.path,
-			namespace: fileNsLabel(b.path, nsOverride, defs),
 			total,
 			columns,
 		};
 	});
 	const result: Record<string, unknown> = {
-		namespace: nsLabel(filter.active),
 		count: rows.length,
 		boards: rows,
 	};
@@ -798,8 +831,8 @@ export function listBoards(session: GtdSession, args: ListBoardsArgs): Record<st
 // Резолверы доски/проекта
 // ---------------------------------------------------------------------------
 
-function findBoard(session: GtdSession, filter: NamespaceFilter, board: string): DiscoveredBoard {
-	const { boards } = session.boards.discoverBoards(filter);
+function findBoard(session: GtdSession, board: string): DiscoveredBoard {
+	const { boards } = session.boards.discoverBoards();
 	const matches = boards.filter((b) => b.def.id === board || b.def.name === board);
 	if (matches.length === 0) {
 		const avail = boards.map((b) => `'${b.def.name}'`).join(", ") || "none";
@@ -811,8 +844,8 @@ function findBoard(session: GtdSession, filter: NamespaceFilter, board: string):
 	return matches[0]!;
 }
 
-function findProjectPath(session: GtdSession, filter: NamespaceFilter, project: string): string {
-	const summaries = session.projects.discoverProjects(filter);
+function findProjectPath(session: GtdSession, project: string): string {
+	const summaries = session.projects.discoverProjects();
 	const matches = summaries.filter(
 		(p) =>
 			p.path === project ||

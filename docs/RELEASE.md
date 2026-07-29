@@ -8,6 +8,8 @@
 - [ ] Выполнить `npm version <x.y.z>`. Скрипт `version-bump.mjs` синхронизирует
       `package.json`, `manifest.json` и `versions.json`.
 - [ ] Проверить `git diff` и release notes.
+- [ ] Проверить [breaking AI Inbox MVP release notes](BREAKING_AI_INBOX_MVP.md)
+      и убедиться, что D1/D2 остаются явными выборами каждого migration run.
 - [ ] Выполнить `npm run verify:release` (или полный `npm run verify`, который также
       проверяет собранные артефакты).
 - [ ] Опубликовать тег, созданный `npm version` (например `v0.12.0`). Контракт также
@@ -76,6 +78,7 @@ GitHub release публикует отдельными файлами:
 
 `manifest.json` и `versions.json` остаются в корне репозитория, как требует
 экосистема Obsidian. `widget-core.js` не нужно копировать в папку Obsidian-плагина.
+`manifest.json` для этого breaking release содержит `isDesktopOnly: true`.
 
 Для локальной проверки полного набора:
 
@@ -92,9 +95,15 @@ sha256sum --check SHA256SUMS
 - [ ] Компиляция использует API, доступные в `manifest.minAppVersion`.
 - [ ] Smoke-тест чистой установки Obsidian на минимальной поддерживаемой версии.
 - [ ] Smoke-тест последней Obsidian на desktop.
-- [ ] Smoke-тест iOS или Android: установка, открытие видов, quick capture.
+- [ ] Проверить, что mobile не заявлен и не загружается как поддерживаемая
+      поверхность (`isDesktopOnly: true`).
 - [ ] MCP запускается заявленным минимальным Node и возвращает правильную
       `serverInfo.version`.
+- [ ] Проверить breaking MCP contract: нет `namespace` входов/выходов; есть
+      `scope`, `duration_minutes`, `cognitive_intensity`,
+      `emotional_intensity` и `physical_intensity`.
+- [ ] Проверить widget-core v2: scope-filter/metadata и camelCase edits
+      соответствуют README.
 
 ## 6. Ручная проверка продукта
 
@@ -109,7 +118,9 @@ sha256sum --check SHA256SUMS
 - восстановление после искусственно вызванных write errors;
 - календарные подписки, таймаут и удаление во время активной синхронизации;
 - клавиатурную работу календаря;
-- pop-out и mobile fallbacks;
+- pop-out на desktop;
+- unified inbox/scope migration: dry-run, apply, interrupted resume and rollback;
+- AI setup, reconnect-after-restart behavior and explicit queue retry;
 - отсутствие неожиданных изменений соседних строк/frontmatter.
 
 ## 7. Сетевое и приватное поведение
@@ -121,6 +132,13 @@ sha256sum --check SHA256SUMS
 - отсутствие URL/содержимого приватных календарей в логах;
 - корректные лимиты размера, времени и числа событий;
 - удаление или миграцию управляемых mirror-файлов при изменении настроек.
+
+AI также выполняет сеть только после явной команды/сообщения. Перед релизом
+проверить, что OpenRouter OAuth использует PKCE/S256 и `openrouter/free`, без
+платного fallback; policy `require-zdr` закрывает запрос при отсутствии
+совместимого маршрута; OAuth key не появляется в vault, `.gtd-flow`, `data.json`,
+логах или экспортируемой истории. В текущем MVP credential memory-only, поэтому
+после перезапуска Desktop требуется reconnect.
 
 MCP пишет прямо в Markdown-файлы. Перед релизом прогнать параллельные write-тесты,
 проверку conflict detection, сохранение file mode и fail-closed поведение для
@@ -135,5 +153,7 @@ MCP пишет прямо в Markdown-файлы. Перед релизом пр
 - [ ] Установка через BRAT проверена с нуля.
 - [ ] `SHA256SUMS` сходится с опубликованными файлами.
 - [ ] Известные ограничения и миграции перечислены в release notes.
+- [ ] Release notes явно называют breaking переход с runtime namespaces на
+      unified inbox + task scopes и дают путь к dry-run/apply/resume/rollback.
 - [ ] После публикации отслеживать CI dependency audit и пользовательские ошибки
       синхронизации/writeback.

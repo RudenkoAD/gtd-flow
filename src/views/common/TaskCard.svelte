@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { Notice, Platform, type App } from "obsidian";
 	import type { Intent } from "../../core/intents/Intent";
+	import type { TaskEstimateProvenance } from "../../core/estimates/provenance";
 	import type { IsoDate, Task } from "../../core/model/Task";
 	import type { IntentDispatcher } from "../../services/WritebackService";
 	import type { GtdFlowSettings } from "../../settings/Settings";
@@ -14,6 +15,7 @@
 		displaySegments,
 		renderWikiLinks,
 	} from "./cardFormat";
+	import { taskMetadataBadges } from "./taskMetadataDisplay";
 
 	let {
 		task,
@@ -111,6 +113,28 @@
 	// затем сегментация #тегов без структурных тегов колонок доски (#kanban/…)
 	const segments = $derived(displaySegments(renderWikiLinks(task.description, task.taskId)));
 	const badges = $derived(dateBadges(task));
+	let metadataProvenance = $state<TaskEstimateProvenance | null>(null);
+	$effect(() => {
+		const metadata = menuPorts?.metadata ?? null;
+		const taskId = task.taskId;
+		metadataProvenance = null;
+		if (metadata === null || taskId === null) return;
+		let alive = true;
+		void metadata
+			.provenanceForTask(taskId)
+			.then((value) => {
+				if (alive) metadataProvenance = value;
+			})
+			.catch(() => {
+				if (alive) metadataProvenance = null;
+			});
+		return () => {
+			alive = false;
+		};
+	});
+	const metadataBadges = $derived(
+		taskMetadataBadges(task, menuPorts?.metadata ?? null, metadataProvenance),
+	);
 
 	// --- инлайн-редактирование названия (dblclick) ---
 
@@ -265,6 +289,13 @@
 				{/each}
 			</div>
 		{/if}
+		{#if metadataBadges.length > 0}
+			<div class="gtd-task-metadata" aria-label="Task estimate and scope">
+				{#each metadataBadges as badge (badge.field)}
+					<span class="gtd-task-metadata-badge" title={badge.title}>{badge.label}</span>
+				{/each}
+			</div>
+		{/if}
 	</div>
 	{#if progress !== null}
 		<button
@@ -340,6 +371,19 @@
 	.gtd-task-badge {
 		font-size: var(--font-ui-smaller, 0.85em);
 		color: var(--text-muted);
+	}
+	.gtd-task-metadata {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 6px;
+		margin-top: 3px;
+	}
+	.gtd-task-metadata-badge {
+		font-size: var(--font-ui-smaller, 0.8em);
+		color: var(--text-muted);
+		background: var(--background-secondary-alt);
+		border-radius: var(--radius-s, 4px);
+		padding: 0 4px;
 	}
 	.gtd-task-progress {
 		flex: none;

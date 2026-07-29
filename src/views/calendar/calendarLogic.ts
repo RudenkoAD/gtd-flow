@@ -6,13 +6,6 @@
 import type { IsoDate, Priority, Task } from "../../core/model/Task";
 import { taskToCalendarEvent, type CalendarField } from "../../core/model/projections";
 import { setValueField } from "../../core/parser/serializeTaskLine";
-import {
-	ALL_NS,
-	NS_CONVENTION,
-	nsCommonTarget,
-	nsTargetPath,
-	type NamespaceDef,
-} from "../../core/namespace/namespace";
 import { isInTickler } from "../../core/query/QueryEngine";
 import { isParseError, parseRule } from "../../core/recurrence/grammar";
 import { expandOccurrences } from "../../core/recurrence/occurrences";
@@ -487,27 +480,6 @@ export function appendLine(content: string, line: string): string {
 	return content.trimEnd() !== ""
 		? content + (content.endsWith("\n") ? "" : "\n") + line + "\n"
 		: line + "\n";
-}
-
-/**
- * Файл событий (container events) для ИНЛАЙН-создания события в календаре по
- * ЛОКАЛЬНОМУ пространству вида:
- *  • именованное / «Общее» (local ≠ ALL_NS) — <root>/События.md (nsTargetPath),
- *    фолбэк «Общего» (root не выделен) — eventsFileFallback (settings.eventsFile);
- *  • вкладка «Все» (local === ALL_NS) — конкретного пространства нет, поэтому файл
- *    событий ОБЩЕЙ папки <commonRoot>/События.md (nsCommonTarget): общий календарь
- *    пишет в «дом» «Общего», а не в глобальный дефолт.
- * Настроек ядро не знает — eventsFileFallback и commonRoot приходят снаружи.
- */
-export function eventTargetForNamespace(
-	local: string,
-	defs: readonly NamespaceDef[],
-	eventsFileFallback: string,
-	commonRoot: string,
-): string {
-	return local === ALL_NS
-		? nsCommonTarget(ALL_NS, defs, NS_CONVENTION.events, commonRoot)
-		: nsTargetPath(local, defs, NS_CONVENTION.events, eventsFileFallback);
 }
 
 // ---------------------------------------------------------------------------

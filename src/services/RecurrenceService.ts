@@ -58,20 +58,11 @@ export interface RecurrenceDeps {
 	feed: IndexFeed;
 	write: WritePort;
 	dispatcher: IntentDispatcher;
-	settings: () => { spawnTarget: string; catchUp: "latest" | "all" | "none"; catchUpCap: number };
+	settings: () => { inboxFile: string; catchUp: "latest" | "all" | "none"; catchUpCap: number };
 	todayIso: () => IsoDate;
 	indexReady: () => boolean;
 	/** Создать файл-цель спавна (и папку), если его ещё нет (VaultAdapter.ensureFile). */
 	ensureFile: (path: string) => Promise<void>;
-	/**
-	 * Цель спавна для КОНКРЕТНОГО шаблона: копия регулярного идёт во входящие
-	 * ПРОСТРАНСТВА ШАБЛОНА (не активного!) — рабочий шаблон спавнит в рабочий inbox,
-	 * даже когда активна «Жизнь» (дизайн). Резолвинг пространства/цели инжектируется
-	 * (сервис не знает о Settings/defs): main.ts подставляет nsTargetPath(...). Опционален
-	 * — без него ВСЕ спавны идут в единый settings().spawnTarget (обратная совместимость,
-	 * поведение до пространств; тесты без деп-функции им и пользуются).
-	 */
-	spawnTargetFor?: (template: Task) => string;
 	/** Генератор 🆔; по умолчанию 6 символов base36 (как в WritebackService/CardService). */
 	genId?: () => string;
 }
@@ -211,17 +202,9 @@ export class RecurrenceService implements RecurrencePort {
 		this.genId = deps.genId ?? defaultGenId;
 	}
 
-	/**
-	 * Файл-цель спавна шаблона: деп-функция spawnTargetFor (пространство ШАБЛОНА),
-	 * иначе единый глобальный settings().spawnTarget (обратная совместимость).
-	 * template === undefined (шаблон исчез из индекса между планом и записью) —
-	 * тоже глобальный фолбэк.
-	 */
-	private spawnTargetOf(template: Task | undefined): string {
-		if (this.deps.spawnTargetFor !== undefined && template !== undefined) {
-			return this.deps.spawnTargetFor(template);
-		}
-		return this.deps.settings().spawnTarget;
+	/** Every recurrence instance is written to the configured unified inbox. */
+	private spawnTargetOf(_template: Task | undefined): string {
+		return this.deps.settings().inboxFile;
 	}
 
 	private locked<T>(fn: () => Promise<T>): Promise<T> {
@@ -299,8 +282,7 @@ export class RecurrenceService implements RecurrencePort {
 		//    копим отдельно — им нужна ленивая инъекция, а не ошибка
 		const idless: Task[] = [];
 		const existingIds = new Set<string>();
-		// templateId → задача-шаблон: нужна на фазе записи, чтобы развести спавны
-		// по входящим ПРОСТРАНСТВА каждого шаблона (spawnTargetOf).  It is filled
+		// templateId → задача-шаблон: нужна на фазе записи, чтобы resolve the target.
 		// only after duplicate template carriers have been rejected below.
 		const templateById = new Map<string, Task>();
 		const templatesById = new Map<string, TemplateInfo[]>();
@@ -379,8 +361,8 @@ export class RecurrenceService implements RecurrencePort {
 			report.errors.push({ templateId: e.templateId, message: e.message });
 		}
 
-		// 2. СНАЧАЛА копии: спавны группируются по файлу-цели (входящие пространства
-		//    шаблона), по одному processFile на цель.
+		// 2. СНАЧАЛА копии: спавны группируются по настроенному файлу-цели,
+		//    по одному processFile на цель.
 		const failedSpawnTemplates = await this.applySpawns(
 			plan,
 			(templateId) => this.spawnTargetOf(templateById.get(templateId)),
@@ -458,10 +440,10 @@ export class RecurrenceService implements RecurrencePort {
 
 	/**
 	 * Возвращает templateId, чьи копии НЕ записаны (их курсоры трогать нельзя).
-	 * Спавны группируются по файлу-цели (targetOf по templateId → входящие
-	 * пространства шаблона) — по одному ensureFile+processFile на цель. Отказ
+	 * Спавны группируются по файлу-цели (targetOf по templateId) — по одному
+	 * ensureFile+processFile на цель. Отказ
 	 * записи одной цели помечает failed ТОЛЬКО её шаблоны: курсоры шаблонов
-	 * других пространств двигаются штатно (их копии легли). report.spawned
+	 * других целей двигаются штатно (их копии легли). report.spawned
 	 * аккумулируется по всем целям.
 	 */
 	private async applySpawns(

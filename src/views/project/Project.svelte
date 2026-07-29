@@ -12,16 +12,6 @@
 	import { runAction, runVoidAction } from "../common/runAction";
 	import ProjectGraph from "./ProjectGraph.svelte";
 	import type { ProjectPort } from "../../services/ProjectService";
-	// Общий переключатель пространств из views/common (создаётся параллельной зоной;
-	// гейт-фаза срастит реальный компонент). Контракт props — см. использование ниже.
-	import NamespaceSwitcher from "../common/NamespaceSwitcher.svelte";
-	import { namespaceLabel } from "../common/namespaceSwitcher";
-	import {
-		NS_CONVENTION,
-		nsTargetPath,
-		type NamespaceDef,
-		type NamespaceFilter,
-	} from "../../core/namespace/namespace";
 	import { NamePromptModal } from "../projects/NamePromptModal";
 	import { newProjectPath, projectDir } from "../projects/projectsOverviewLogic";
 	import {
@@ -38,10 +28,7 @@
 		app,
 		projects,
 		settings,
-		settingsRevision,
-		activeNamespace$,
-		namespaces: _namespaces,
-		setActiveNamespace,
+		settingsRevision: _settingsRevision,
 		menuPorts = null,
 		persisted,
 		persist,
@@ -54,12 +41,6 @@
 		projects: ProjectPort | null;
 		settings: GtdFlowSettings;
 		settingsRevision: Readable<number>;
-		/** Реактивное ЛОКАЛЬНОЕ активное пространство вида (per-tab, см. GtdView). */
-		activeNamespace$: Readable<string>;
-		/** Определения пространств (settings.namespaces); пусто ⇒ switcher скрыт. */
-		namespaces: readonly NamespaceDef[];
-		/** Смена ЛОКАЛЬНОГО пространства этого вида (persist в viewState). */
-		setActiveNamespace: (name: string) => void;
 		/** Порты паритета без drag (меню/пикеры/карточка), ТЗ §8 слой 3. */
 		menuPorts?: TaskMenuPorts | null;
 		/** Состояние из workspace-раскладки; приходит ПОСЛЕ монтирования. */
@@ -74,18 +55,6 @@
 	const epoch = taskStore.epoch;
 	// svelte-ignore state_referenced_locally
 	const today = taskStore.today;
-	// Локальное пространство вида — как epoch: снимок стора; подписка ($activeNs)
-	// пере-запускает discovery на переключение (смена эпоху НЕ бампает).
-	// svelte-ignore state_referenced_locally
-	const activeNs = activeNamespace$;
-	// switcher виден только при настроенных пространствах; метка активного для
-	// пустых состояний (DEFAULT_NS → «Общее»).
-	const liveNamespaces = $derived.by(() => {
-		void $settingsRevision;
-		return settings.namespaces;
-	});
-	const hasNamespaces = $derived(liveNamespaces.length >= 1);
-	const activeLabel = $derived(namespaceLabel($activeNs));
 
 	// ТЗ §7: на телефоне Svelte Flow не монтируется вообще — read-only список
 	const isPhone = Platform.isPhone;
@@ -99,11 +68,9 @@
 		}),
 	);
 
-	// фильтр discovery — ЛОКАЛЬНОЕ пространство вида (не активное глобальное)
-	const nsFilter = $derived<NamespaceFilter>({ active: $activeNs, defs: liveNamespaces });
 	const summaries = $derived.by(() => {
 		void $epoch; // проекты живут в индексе — пересканируем на каждую его смену
-		return projects === null ? [] : sortProjectSummaries(projects.discoverProjects(nsFilter));
+		return projects === null ? [] : sortProjectSummaries(projects.discoverProjects());
 	});
 	const shownPath = $derived(pickProjectPath(summaries, selectedPath));
 	const shown = $derived(summaries.find((s) => s.path === shownPath) ?? null);
@@ -128,14 +95,7 @@
 		if (port === null) return;
 		new NamePromptModal(app, "Новый проект", "Создать", (name) => {
 			const existing = summaries.map((s) => s.path);
-			// Каталог нового проекта — активного пространства: <root>/Проекты для
-			// именованного, иначе (Общее / без пространств) — рядом с существующими.
-			const dir = nsTargetPath(
-				$activeNs,
-				liveNamespaces,
-				NS_CONVENTION.projectsDir,
-				projectDir(existing),
-			);
+			const dir = projectDir(existing);
 			const path = newProjectPath(
 				existing,
 				name,
@@ -226,14 +186,6 @@
 				↑
 			</button>
 		{/if}
-		{#if hasNamespaces}
-			<!-- Глобальный переключатель пространства; виден только при настроенных пространствах -->
-			<NamespaceSwitcher
-				active={activeNamespace$}
-				namespaces={liveNamespaces}
-				setActive={setActiveNamespace}
-			/>
-		{/if}
 		<select
 			class="dropdown gtd-project-select"
 			aria-label="Проект"
@@ -274,11 +226,7 @@
 		<div class="gtd-project-empty">Вид проектов не подключён (сервис недоступен)</div>
 	{:else if shownPath === null}
 		<div class="gtd-project-empty">
-			<p>
-				{hasNamespaces
-					? `В пространстве «${activeLabel}» проектов нет.`
-					: "Проектов не найдено."}
-			</p>
+			<p>Проектов не найдено.</p>
 			<button class="mod-cta" onclick={createProject}>＋ Создать проект</button>
 		</div>
 	{:else if isPhone}

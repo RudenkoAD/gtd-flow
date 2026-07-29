@@ -1,19 +1,6 @@
 import { Notice, Plugin, requestUrl, type WorkspaceLeaf } from "obsidian";
-import { writable, type Writable } from "svelte/store";
 import { VIEW_META, VIEW_TYPES, type GtdViewKind } from "./views/registry";
-import {
-	DEFAULT_SETTINGS,
-	defaultUnderCommonRoot,
-	type GtdFlowSettings,
-} from "./settings/Settings";
-import {
-	NS_CONVENTION,
-	type NamespaceFilter,
-	normalizeActiveNamespace,
-	nsCommonTarget,
-	nsTargetPath,
-	resolveNamespace,
-} from "./core/namespace/namespace";
+import { DEFAULT_SETTINGS, type GtdFlowSettings } from "./settings/Settings";
 import { mergeSettingsWithDiagnostics } from "./settings/mergeSettings";
 import { GtdSettingsTab } from "./settings/SettingsTab";
 import { MetadataAdapter } from "./adapters/MetadataAdapter";
@@ -33,17 +20,36 @@ import type { IsoDate } from "./core/model/Task";
 import { createTaskStore, type TaskStore } from "./stores/taskStore";
 import { createSettingsRevision } from "./stores/settingsRevision";
 import { createGtdView } from "./views/createView";
-import { GtdView } from "./views/GtdView";
 import { DndService } from "./views/dnd/DndService";
 import { reportAsync } from "./views/common/runAction";
 import { createDemoVault, demoVaultNotice } from "./onboarding/demoVault";
 import { WelcomeModal } from "./onboarding/WelcomeModal";
+import { ensureCaptureFile } from "./views/common/taskActions";
 import {
-	captureTargetInNamespace,
-	ensureCaptureFile,
-	ensureCaptureFileNs,
-} from "./views/common/taskActions";
-import { SerializedSettingsSaver } from "./settings/SerializedSettingsSaver";
+	runSerializedCompareAndSet,
+	SerializedSettingsSaver,
+} from "./settings/SerializedSettingsSaver";
+import { ScopeCatalogService } from "./services/ScopeCatalogService";
+import {
+	cloneSettingsSnapshot,
+	namespaceMigrationSettingsEqual,
+	NamespaceMigrationService,
+} from "./services/NamespaceMigrationService";
+import {
+	discoverLegacyNamespaceInventory,
+	type LegacyNamespaceDiscovery,
+} from "./services/LegacyNamespaceDiscovery";
+import {
+	readLegacyNamespaceSettings,
+	type LegacyNamespaceCompatibilityFields,
+	type LegacyNamespaceSettings,
+	type NamespaceMigrationSettingsSnapshot,
+} from "./core/scope/namespaceMigration";
+import { isActiveScopeId } from "./core/scope/scope";
+import { AiPluginServices } from "./ai/integration/AiPluginServices";
+import type { AIViewController } from "./ai/integration/AIViewController";
+import type { TaskMetadataService } from "./services/TaskMetadataService";
+import { openTaskInFile } from "./views/common/openTask";
 
 export default class GtdFlowPlugin extends Plugin {
 	settings: GtdFlowSettings = DEFAULT_SETTINGS;
@@ -52,8 +58,8 @@ export default class GtdFlowPlugin extends Plugin {
 	readonly settingsRevision = createSettingsRevision();
 	/** saveData callers come from UI and concurrent calendar/background work.
 	 * Snapshot + serialize them so an older completion cannot replace newer data. */
-	private readonly settingsSaver = new SerializedSettingsSaver<GtdFlowSettings>((snapshot) =>
-		this.saveData(snapshot),
+	private readonly settingsSaver = new SerializedSettingsSaver<Record<string, unknown>>(
+		(snapshot) => this.saveData(snapshot),
 	);
 	indexer!: IndexerService;
 	vaultAdapter!: VaultAdapter;
@@ -67,19 +73,28 @@ export default class GtdFlowPlugin extends Plugin {
 	cards!: CardService;
 	dayStatus!: DayStatusService;
 	sync!: SyncService;
-	/**
-	 * ГЛОБАЛЬНЫЙ дефолт активного пространства (store). С итерации 2 фидбека виды
-	 * переключаются ПОФАЙЛОВО и на него НЕ подписаны — он лишь задаёт стартовое
-	 * пространство новой вкладки и цель палитры-захвата (плюс синхронен с
-	 * settings.activeNamespace). Инициализируется в onload из настроек.
-	 */
-	activeNamespace$!: Writable<string>;
+	scopes!: ScopeCatalogService;
+	/** Explicitly invoked one-time executor for legacy namespace → scope migration. */
+	namespaceMigration!: NamespaceMigrationService;
+	/** Desktop-only AI composition root and narrow view/menu ports. */
+	ai!: AiPluginServices;
+	aiViewPort!: AIViewController;
+	taskMetadata!: TaskMetadataService;
+	/** Compatibility-only input for the explicit namespace migration modal. */
+	private legacyNamespaceSettings: LegacyNamespaceSettings = {
+		commonRoot: null,
+		activeNamespace: null,
+		namespaces: [],
+	};
+	/** Kept out of runtime settings, but re-serialized until the user-approved migration completes. */
+	private legacyNamespacePersisted: LegacyNamespaceCompatibilityFields = {};
+	private legacyTodayIso: () => IsoDate = () => new Date().toISOString().slice(0, 10) as IsoDate;
+	private legacyInboxPaths: () => string[] = () => [];
+	private legacyNamespaceOverride: (path: string) => string | null = () => null;
 	private indexReadyFlag = false;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
-		// нормализованное активное пространство → реактивный store (см. поле выше)
-		this.activeNamespace$ = writable(this.settings.activeNamespace);
 
 		const metadata = new MetadataAdapter(this);
 		// Гейт ленивого frontmatter-индекса: до резолва metadataCache он построился
@@ -88,7 +103,16 @@ export default class GtdFlowPlugin extends Plugin {
 		// resolve, поэтому containerPaths до готовности отдаёт [] без побочек.
 		let fmIndexReady = false;
 		const clock = new ObsidianClock(this);
+		this.legacyTodayIso = () => clock.todayIso();
 		this.vaultAdapter = new VaultAdapter(this.app);
+		// `gtd-namespace` is deliberately NOT a runtime frontmatter field. The
+		// migration wizard is the sole compatibility reader that may inspect it.
+		this.legacyInboxPaths = () =>
+			fmIndexReady ? metadata.pathsByFrontmatterValue("gtd-inbox", true) : [];
+		this.legacyNamespaceOverride = (path) => {
+			const value = metadata.frontmatter(path)?.["gtd-namespace"];
+			return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+		};
 		this.indexer = new IndexerService({
 			events: metadata,
 			clock,
@@ -101,9 +125,38 @@ export default class GtdFlowPlugin extends Plugin {
 				// «Всплытие во входящие» пропущенных откатов дня (приложение было
 				// закрыто в момент наступления 🛫): при promoteTo="inbox" — не no-op.
 				reportAsync("фоновое возвращение отложенных", () => this.promote.runPass());
+				reportAsync("сверка владельцев AI-полей", () => this.ai.reconcileOwnership());
 			},
 		});
 		this.taskStore = createTaskStore(this.indexer);
+		this.scopes = new ScopeCatalogService(
+			{
+				read: (path) => this.vaultAdapter.read(path),
+				writeAtomic: (path, content) => this.vaultAdapter.writeAtomic(path, content),
+			},
+			{
+				countTasksWithScope: (scopeId) =>
+					[...this.indexer.getIndex().all()].filter((task) => task.scopeId === scopeId)
+						.length,
+			},
+		);
+		await this.scopes.load();
+		this.namespaceMigration = new NamespaceMigrationService(
+			this.vaultAdapter,
+			{
+				snapshot: () => this.namespaceMigrationSettingsSnapshot(),
+				compareAndSet: (expected, next) =>
+					this.compareAndSetNamespaceMigrationSettings(expected, next),
+			},
+			{ now: () => new Date().toISOString() },
+			{
+				next: () =>
+					`migration-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
+			},
+			{
+				isActive: (scopeId) => isActiveScopeId(this.scopes.current(), scopeId),
+			},
+		);
 		this.dispatcher = new WritebackService({
 			write: this.vaultAdapter,
 			feed: this.indexer,
@@ -129,44 +182,26 @@ export default class GtdFlowPlugin extends Plugin {
 			// UUID v4 comes from the platform CSPRNG (randomUUID, or getRandomValues
 			// on older mobile WebViews); BoardService adds the readable name slug.
 			genBoardIdSuffix: secureBoardIdSuffix,
-			namespaceFilter: () => this.namespaceFilter(),
 		});
 		this.dnd = new DndService(this);
 		this.recurrence = new RecurrenceService({
 			feed: this.indexer,
 			write: this.vaultAdapter,
 			dispatcher: this.dispatcher,
-			settings: () => this.settings.recurring,
+			settings: () => ({ inboxFile: this.settings.inboxFile, ...this.settings.recurring }),
 			todayIso: () => clock.todayIso(),
 			indexReady: () => this.indexReadyFlag,
-			// spawnTarget — цель захвата: помечаем gtd-inbox (идемпотентно), иначе
+			// Unified inbox is a capture container; mark it before writing instances.
 			// при скоупе входящих «только GTD-файлы» копии регулярных стали бы
 			// невидимы во входящих (ensureFile создал бы файл без флага)
 			ensureFile: async (path) => {
 				await ensureCaptureFile(this.vaultAdapter, path);
 			},
-			// копия регулярного идёт во входящие ПРОСТРАНСТВА ШАБЛОНА (не активного):
-			// именованное — <root>/Входящие.md, «Общее» — глобальный spawnTarget.
-			spawnTargetFor: (template) => {
-				const ns = resolveNamespace(
-					template.filePath,
-					template.nsOverride ?? null,
-					this.settings.namespaces,
-				);
-				return nsTargetPath(
-					ns,
-					this.settings.namespaces,
-					NS_CONVENTION.inbox,
-					this.settings.recurring.spawnTarget,
-				);
-			},
 		});
 		clock.onDayRollover(() =>
 			reportAsync("проход регулярных после смены дня", () => this.recurrence.runPass()),
 		);
-		// Возврат отложенной задачи (фидбек): при promoteTo="inbox" задача, чья 🛫
-		// наступила на откате дня, приходит во «Входящие» своего пространства
-		// (снятие тегов досок + перенос строки в inbox-файл). "origin" — no-op.
+		// Deferred tasks promoted to inbox always land in the configured unified file.
 		this.promote = new PromoteService({
 			feed: this.indexer,
 			dispatcher: this.dispatcher,
@@ -176,38 +211,8 @@ export default class GtdFlowPlugin extends Plugin {
 				promoteTo: this.settings.promoteTo,
 				includePlain: this.settings.inboxIncludePlain,
 			}),
-			// цель — inbox-файл ПРОСТРАНСТВА задачи (как quick-add во «Входящих»):
-			// первый существующий gtd-inbox файл пространства, иначе конвенционный путь.
-			inboxTargetFor: (task) => {
-				const ns = resolveNamespace(
-					task.filePath,
-					task.nsOverride ?? null,
-					this.settings.namespaces,
-				);
-				const fallback = nsCommonTarget(
-					ns,
-					this.settings.namespaces,
-					NS_CONVENTION.inbox,
-					this.settings.commonRoot,
-				);
-				return captureTargetInNamespace(
-					this.indexer.getIndex().all(),
-					ns,
-					this.settings.namespaces,
-					fallback,
-				);
-			},
-			// файл входящих создаётся и помечается gtd-inbox (+ gtd-namespace для
-			// файла-исключения) СТРОГО до переноса строки — иначе перенесённая задача
-			// осела бы в plain-файле и снова не попала во входящие.
-			ensureInboxFile: (path, task) => {
-				const ns = resolveNamespace(
-					task.filePath,
-					task.nsOverride ?? null,
-					this.settings.namespaces,
-				);
-				return ensureCaptureFileNs(this.vaultAdapter, path, ns, this.settings.namespaces);
-			},
+			inboxTargetFor: () => this.settings.inboxFile,
+			ensureInboxFile: (path) => ensureCaptureFile(this.vaultAdapter, path),
 			// окно прохода (lastRun, today]: первый проход усыновляет дату без обработки
 			lastRun: () => (this.settings.promoteLastRun as IsoDate | null) ?? null,
 			setLastRun: async (day) => {
@@ -237,7 +242,6 @@ export default class GtdFlowPlugin extends Plugin {
 			ensureFile: (path) => this.vaultAdapter.ensureFile(path),
 			containerPaths: () =>
 				fmIndexReady ? metadata.pathsByFrontmatterValue("gtd-project", true) : [],
-			namespaceFilter: () => this.namespaceFilter(),
 			dispatcher: this.dispatcher,
 			todayIso: () => clock.todayIso(),
 		});
@@ -263,14 +267,7 @@ export default class GtdFlowPlugin extends Plugin {
 			processFile: (path, transform) => this.vaultAdapter.processFile(path, transform),
 			ensureFile: (path) => this.vaultAdapter.ensureFile(path),
 			processFrontmatter: (path, fn) => this.vaultAdapter.processFrontmatter(path, fn),
-			// дефолтный путь статусов «следует за commonRoot»: нетронутое поле
-			// создаётся в «Корневой папке Общего», кастомное значение — как задано
-			defaultFilePath: () =>
-				defaultUnderCommonRoot(
-					this.settings.dayStatusFile,
-					DEFAULT_SETTINGS.dayStatusFile,
-					this.settings.commonRoot,
-				),
+			defaultFilePath: () => this.settings.dayStatusFile,
 			onVaultChange: (cb) => {
 				// после полного резолва кэша (в т.ч. первого после старта/перезагрузки)
 				// — файл статусов уже обнаружим по frontmatter-флагу
@@ -341,12 +338,45 @@ export default class GtdFlowPlugin extends Plugin {
 			},
 			clock: { now: () => new Date() },
 			subscriptions: () => this.settings.externalCalendars,
-			namespaces: () => this.settings.namespaces,
-			commonRoot: () => this.settings.commonRoot,
+			inboxFile: () => this.settings.inboxFile,
 			intervalMin: () => this.settings.externalSyncIntervalMin,
 			onResult: (id, result) => this.recordSyncResult(id, result),
 			onLifecycleWarning: (message) => console.warn(`GTD Flow: ${message}`),
 		});
+		this.ai = new AiPluginServices({
+			app: this.app,
+			vault: this.vaultAdapter,
+			dispatcher: this.dispatcher,
+			scopes: this.scopes,
+			projects: this.projects,
+			boards: this.boards,
+			allTasks: () => [...this.indexer.getIndex().all()],
+			inboxFile: () => this.settings.inboxFile,
+			ensureInbox: async (path) => {
+				if (!(await ensureCaptureFile(this.vaultAdapter, path))) {
+					throw new Error(`inbox-file-unavailable:${path}`);
+				}
+			},
+			enabled: () => this.settings.ai.enabled,
+			privacyPolicy: () =>
+				this.settings.ai.privacyPolicy === "unconfigured"
+					? null
+					: this.settings.ai.privacyPolicy,
+			credentialStorage: () =>
+				this.settings.ai.credentialStorage === "memory-only" ? "memory-only" : null,
+			durationLongStyle: () => this.settings.durationLongStyle,
+			openTask: (task) => openTaskInFile(this.app, task),
+			openAiView: async () => {
+				await this.activateView("ai");
+			},
+		});
+		this.aiViewPort = this.ai.view;
+		this.taskMetadata = this.ai.metadata;
+		this.register(this.indexer.onChange(() => this.ai.observeTasks()));
+		if (this.settings.ai.storageVersion !== 1) {
+			this.settings.ai.storageVersion = 1;
+			reportAsync("сохранение версии AI-хранилища", () => this.saveSettings());
+		}
 		registerCommands(this);
 		this.addSettingTab(new GtdSettingsTab(this.app, this));
 		// Первичная сборка — вне критического пути старта, строго после
@@ -431,6 +461,7 @@ export default class GtdFlowPlugin extends Plugin {
 		this.taskStore.dispose();
 		this.indexer.dispose();
 		this.sync.dispose();
+		reportAsync("очистка локального AI-ключа", () => this.ai.dispose());
 	}
 
 	/** Записать статус синхронизации подписки (SyncService.onResult) + персист, если
@@ -520,81 +551,112 @@ export default class GtdFlowPlugin extends Plugin {
 	async loadSettings(): Promise<void> {
 		// поключевое слияние вложенных объектов — плоский assign терял бы
 		// вложенные дефолты при частичном data.json (см. mergeSettings)
-		const merged = mergeSettingsWithDiagnostics(
-			DEFAULT_SETTINGS,
-			(await this.loadData()) as unknown,
-		);
+		const raw = (await this.loadData()) as unknown;
+		this.legacyNamespaceSettings = readLegacyNamespaceSettings(raw);
+		this.legacyNamespacePersisted = legacyNamespaceFields(raw);
+		const merged = mergeSettingsWithDiagnostics(DEFAULT_SETTINGS, raw);
 		this.settings = merged.settings;
 		// Диагностика намеренно содержит только имена полей/версии (см. schema),
 		// а не приватные значения из data.json (URL календарей, пути и т.п.).
 		if (merged.diagnostics.length > 0)
 			console.warn("GTD Flow: recovered invalid settings", merged.diagnostics);
-		// активное пространство могло указывать на удалённое из namespaces — откат
-		// к «Общему», иначе фильтр резал бы все виды в пустоту
-		this.settings.activeNamespace = normalizeActiveNamespace(
-			this.settings.activeNamespace,
-			this.settings.namespaces,
-		);
 	}
 
 	async saveSettings(): Promise<void> {
-		const saved = await this.settingsSaver.save(this.settings);
+		// Capture only after earlier settings transactions have completed. Otherwise
+		// an ordinary background save could freeze a migration's speculative live
+		// fields and persist them after that migration write fails and rolls back.
+		const saved = await this.settingsSaver.saveFrom(() =>
+			this.settingsForPersistence(this.settings),
+		);
 		// Бампим только когда успешно записан ПОСЛЕДНИЙ запрошенный снимок.
 		// Более старый success уже durable, но live settings к этому моменту могут
 		// содержать queued snapshot, который ещё не записан (и может упасть).
 		if (saved.latest) this.settingsRevision.notifySaved();
 	}
 
-	/** Текущий фильтр пространства для сервисов (discovery, цели) — читает из
-	 *  настроек (всегда актуальны, синхронны с activeNamespace$). */
-	namespaceFilter(): NamespaceFilter {
-		return { active: this.settings.activeNamespace, defs: this.settings.namespaces };
+	/** Explicit user-requested export; credentials are not part of feedback events. */
+	async exportAiLearningHistory(): Promise<string> {
+		const timestamp = new Date().toISOString().replace(/[:.]/gu, "-");
+		const path = `.gtd-flow/exports/learning-history-${timestamp}.json`;
+		await this.vaultAdapter.writeAtomic(path, await this.ai.exportFeedback());
+		return path;
 	}
 
-	/**
-	 * Сменить ГЛОБАЛЬНЫЙ дефолт активного пространства: персист в настройках + толчок
-	 * store (дефолт новых вкладок + цель палитры-захвата). Неизвестное имя нормализуется
-	 * к «Общему» (ALL_NS глобальному не даём — он только у вкладки «Все» календаря).
-	 * ВАЖНО: с итерации 2 фидбека виды переключаются ПОФАЙЛОВО и на этот store НЕ
-	 * подписаны — глобальный дефолт лишь задаёт стартовое пространство новой вкладки.
-	 * SettingsTab зовёт это при правке списка; палитра — через setNamespaceEverywhere.
-	 */
-	setActiveNamespace(name: string): void {
-		const next = normalizeActiveNamespace(name, this.settings.namespaces);
-		if (next === this.settings.activeNamespace) return;
-		this.settings.activeNamespace = next;
-		this.activeNamespace$.set(next);
-		reportAsync("сохранение активного пространства", () => this.saveSettings());
+	/** Builds an inventory only when the user explicitly opens the migration UI. */
+	legacyNamespaceMigrationInventory(): LegacyNamespaceDiscovery {
+		return discoverLegacyNamespaceInventory({
+			namespaces: this.legacyNamespaceSettings.namespaces,
+			tasks: [...this.indexer.getIndex().all()],
+			today: this.legacyTodayIso(),
+			inboxPaths: this.legacyInboxPaths(),
+			overrideForPath: this.legacyNamespaceOverride,
+		});
 	}
 
-	/** Все открытые вкладки видов GTD (для команды палитры «переключить всё» и poke). */
-	private gtdViews(): GtdView[] {
-		const out: GtdView[] = [];
-		for (const kind of Object.keys(VIEW_TYPES) as GtdViewKind[]) {
-			for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPES[kind])) {
-				if (leaf.view instanceof GtdView) out.push(leaf.view);
-			}
-		}
-		return out;
+	private settingsForPersistence(snapshot: GtdFlowSettings): Record<string, unknown> {
+		return { ...snapshot, ...this.legacyNamespacePersisted };
 	}
 
-	/**
-	 * Команда палитры «Переключить пространство GTD»: меняет ГЛОБАЛЬНЫЙ дефолт И
-	 * локальные пространства ВСЕХ открытых вкладок GTD (старое «переключить всё
-	 * разом»). Отдельные виды по-прежнему переключаются своими селекторами шапок.
-	 */
-	setNamespaceEverywhere(name: string): void {
-		this.setActiveNamespace(name);
-		for (const v of this.gtdViews()) v.setLocalNamespace(name);
+	private namespaceMigrationSettingsSnapshot(): NamespaceMigrationSettingsSnapshot {
+		return cloneSettingsSnapshot({
+			inboxFile: this.settings.inboxFile,
+			legacy: this.legacyNamespacePersisted,
+		});
 	}
 
-	/**
-	 * После правки СПИСКА пространств (SettingsTab): каждый открытый вид
-	 * пере-нормализует своё локальное пространство (удалённое имя → «Общее») и
-	 * толкает свой store — пере-рендер с обновлённым списком корней. Смена настроек
-	 * эпоху индекса не бампает, поэтому именно этот толчок обновляет виды.
-	 */
-	pokeNamespaceViews(): void {
-		for (const v of this.gtdViews()) v.pokeNamespace();
+	private async compareAndSetNamespaceMigrationSettings(
+		expected: NamespaceMigrationSettingsSnapshot,
+		next: NamespaceMigrationSettingsSnapshot,
+	): Promise<boolean> {
+		const result = await runSerializedCompareAndSet(this.settingsSaver, {
+			read: () => this.namespaceMigrationSettingsSnapshot(),
+			expected,
+			next,
+			equal: namespaceMigrationSettingsEqual,
+			replace: (value) => this.replaceNamespaceMigrationSettings(value),
+			restore: (before, speculative, current) =>
+				this.restoredNamespaceMigrationSettings(before, speculative, current),
+			persistenceSnapshot: () => this.settingsForPersistence(this.settings),
+		});
+		// A later queued save owns the notification and will observe the committed
+		// or restored live migration fields when it reaches the queue head.
+		if (result.latest) this.settingsRevision.notifySaved();
+		return result.value;
 	}
+
+	private replaceNamespaceMigrationSettings(snapshot: NamespaceMigrationSettingsSnapshot): void {
+		const copy = cloneSettingsSnapshot(snapshot);
+		this.settings.inboxFile = copy.inboxFile;
+		this.legacyNamespacePersisted = copy.legacy;
+		this.legacyNamespaceSettings = readLegacyNamespaceSettings(copy.legacy);
+	}
+
+	private restoredNamespaceMigrationSettings(
+		before: NamespaceMigrationSettingsSnapshot,
+		speculative: NamespaceMigrationSettingsSnapshot,
+		current: NamespaceMigrationSettingsSnapshot,
+	): NamespaceMigrationSettingsSnapshot {
+		const legacyStillSpeculative = namespaceMigrationSettingsEqual(
+			{ inboxFile: current.inboxFile, legacy: current.legacy },
+			{ inboxFile: current.inboxFile, legacy: speculative.legacy },
+		);
+		// Preserve a later user edit to either migration-owned field, but restore
+		// every field that still contains this failed transaction's value.
+		return {
+			inboxFile:
+				current.inboxFile === speculative.inboxFile ? before.inboxFile : current.inboxFile,
+			legacy: legacyStillSpeculative ? before.legacy : current.legacy,
+		};
+	}
+}
+
+function legacyNamespaceFields(raw: unknown): LegacyNamespaceCompatibilityFields {
+	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {};
+	const record = raw as Record<string, unknown>;
+	const kept: LegacyNamespaceCompatibilityFields = {};
+	for (const key of ["commonRoot", "namespaces", "activeNamespace"] as const) {
+		if (key in record) kept[key] = record[key];
+	}
+	return kept;
 }

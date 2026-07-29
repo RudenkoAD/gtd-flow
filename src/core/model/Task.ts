@@ -11,6 +11,51 @@ export type IsoDate = string;
 
 export type Priority = "highest" | "high" | "medium" | "low" | "lowest" | "none";
 
+export const MIN_TASK_DURATION_MINUTES = 5;
+export const MINUTES_PER_DAY = 24 * 60;
+
+/**
+ * Duration is stored canonically in minutes. Sub-day values use five-minute
+ * increments; one day and longer use whole-day increments.
+ */
+export type DurationMinutes = number;
+
+export function isDurationMinutes(value: unknown): value is DurationMinutes {
+	return (
+		typeof value === "number" &&
+		Number.isSafeInteger(value) &&
+		value >= MIN_TASK_DURATION_MINUTES &&
+		(value < MINUTES_PER_DAY ? value % 5 === 0 : value % MINUTES_PER_DAY === 0)
+	);
+}
+
+/** One independently estimated task-intensity dimension. */
+export type IntensityLevel = 0 | 1 | 2 | 3 | 4 | 5;
+
+export function isIntensityLevel(value: unknown): value is IntensityLevel {
+	return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 5;
+}
+
+/** A successful AI estimate always contains all three dimensions. */
+export interface TaskIntensity {
+	cognitive: IntensityLevel;
+	emotional: IntensityLevel;
+	physical: IntensityLevel;
+}
+
+export function isTaskIntensity(value: unknown): value is TaskIntensity {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	const candidate = value as Record<string, unknown>;
+	return (
+		isIntensityLevel(candidate["cognitive"]) &&
+		isIntensityLevel(candidate["emotional"]) &&
+		isIntensityLevel(candidate["physical"])
+	);
+}
+
+/** Scope IDs are owned by the synced scope catalog; re-export its single validator. */
+export { isScopeId } from "../scope/scope";
+
 /** Полная цепочка вывода состояния, по убыванию приоритета (ТЗ §1). */
 export type GtdState =
 	| "TEMPLATE" // задача в файле gtd-recurring: true — шаблон регулярного ящика
@@ -31,7 +76,7 @@ export type GtdState =
  * recurring > events > card > project > board > archive > inbox > plain.
  * - "archive" — gtd-archive: true, полная инертность (состояние ARCHIVED, вне запросов);
  * - "inbox"   — gtd-inbox: true, маркер файла захвата (в деривации состояний ведёт
- *               себя как "plain"; служит целью записи быстрого ввода, см. captureTargets).
+ *               себя как "plain"; runtime-членство также требует configured inboxFile).
  */
 export type ContainerKind =
 	"plain" | "board" | "project" | "recurring" | "card" | "events" | "archive" | "inbox";
@@ -44,10 +89,6 @@ export interface FileContext {
 	container: ContainerKind;
 	/** Только для container === "project"; отсутствие в frontmatter ⇒ "active". */
 	projectStatus?: ProjectStatus;
-	/** Сырой frontmatter gtd-namespace: непустая строка ПЕРЕБИВАЕТ папку при
-	 *  вычислении пространства (см. core/namespace/resolveNamespace). Отсутствует
-	 *  (ключ опущен), когда override не задан или его значение — не строка/пусто. */
-	nsOverride?: string | null;
 	/** Файл — зеркало внешнего календаря (frontmatter gtd-external: true). Такие
 	 *  файлы READ-ONLY: перезаписываются синхронизацией, поэтому write-back в них
 	 *  отказан, а меню события предлагает лишь «Копировать»/«Открыть файл». Опущен
@@ -132,6 +173,16 @@ export interface Task {
 	 *  ПОКАЗЫВАЕТСЯ только у событий календаря — при наведении под названием).
 	 *  Payload читается до следующего эмодзи поля (как 🔁); пустой ⇒ null. */
 	location: string | null;
+	/** ⏱ — total elapsed estimate in minutes; null for unprocessed/unknown. */
+	durationMinutes: DurationMinutes | null;
+	/** 🧠 — cognitive estimate; null while the task remains unprocessed. */
+	cognitiveIntensity: IntensityLevel | null;
+	/** 💓 — emotional estimate; null while the task remains unprocessed. */
+	emotionalIntensity: IntensityLevel | null;
+	/** 💪 — literal physical-exertion estimate; null while unprocessed. */
+	physicalIntensity: IntensityLevel | null;
+	/** 🧭 — stable scope-catalog ID; null while unprocessed or cleared. */
+	scopeId: string | null;
 	/** #теги строки (включая #kanban/<board>/<col> и #waiting). */
 	tags: string[];
 
@@ -139,12 +190,6 @@ export interface Task {
 	container: ContainerKind;
 	/** Проект задачи активен (для container === "project"; иначе true). */
 	projectActive: boolean;
-	/** Сырой frontmatter gtd-namespace файла: непустая строка — override
-	 *  пространства (перебивает папку), иначе null. Эффективное пространство
-	 *  НЕ хранится: считается лениво resolveNamespace(filePath, nsOverride, defs)
-	 *  на границе фильтрации (зависит от списка корней-настройки). Опционально —
-	 *  фикстуры/синтетические задачи без контекста файла его не задают. */
-	nsOverride?: string | null;
 	/** Файл — зеркало внешнего календаря (frontmatter gtd-external: true). Проставляет
 	 *  индексатор из FileContext.external. READ-ONLY-маркер для меню события и защиты
 	 *  write-back; опущен (не true) у обычных файлов. */

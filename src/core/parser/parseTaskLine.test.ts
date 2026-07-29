@@ -115,6 +115,63 @@ describe("parseTaskLine: дубли полей — последний побеж
 	});
 });
 
+describe("parseTaskLine: estimates and scope", () => {
+	it("reads every metadata field and excludes it from the description", () => {
+		const line = "- [ ] Reconcile invoices ⏱ 90m 🧠 4 💓 2 💪 0 🧭 work ^task-1";
+		const task = parseTaskLine(line, ctx())!;
+		expect(task.durationMinutes).toBe(90);
+		expect(task.cognitiveIntensity).toBe(4);
+		expect(task.emotionalIntensity).toBe(2);
+		expect(task.physicalIntensity).toBe(0);
+		expect(task.scopeId).toBe("work");
+		expect(task.description).toBe("Reconcile invoices");
+		expect(task.rawLine).toBe(line);
+	});
+
+	it("keeps the content key stable when metadata is added", () => {
+		const plain = parseTaskLine("- [ ] Reconcile invoices", ctx())!;
+		const annotated = parseTaskLine(
+			"- [ ] Reconcile invoices ⏱ 90m 🧠 4 💓 2 💪 0 🧭 work",
+			ctx(),
+		)!;
+		expect(annotated.key).toBe(plain.key);
+	});
+
+	it("uses the final duplicate, including an invalid final payload", () => {
+		const task = parseTaskLine(
+			"- [ ] T ⏱ 60m 🧠 1 💓 2 💪 3 🧭 work ⏱ nope 🧠 6 💓 1.0 💪 -1 🧭 Work",
+			ctx(),
+		)!;
+		expect(task.durationMinutes).toBeNull();
+		expect(task.cognitiveIntensity).toBeNull();
+		expect(task.emotionalIntensity).toBeNull();
+		expect(task.physicalIntensity).toBeNull();
+		expect(task.scopeId).toBeNull();
+	});
+
+	it("rejects invalid payloads without discarding their raw syntax", () => {
+		for (const payload of ["0m", "91m", "1445m", "2220m", "9007199254740995m", "90", "-5m"]) {
+			const line = `- [ ] T ⏱ ${payload}`;
+			const task = parseTaskLine(line, ctx())!;
+			expect(task.durationMinutes, payload).toBeNull();
+			expect(task.rawLine, payload).toBe(line);
+		}
+		for (const payload of ["-1", "6", "1.0", "x"]) {
+			expect(
+				parseTaskLine(`- [ ] T 🧠 ${payload}`, ctx())!.cognitiveIntensity,
+				payload,
+			).toBeNull();
+		}
+	});
+
+	it("accepts arbitrarily large safe whole-day durations", () => {
+		const largestWholeDay = Math.floor(Number.MAX_SAFE_INTEGER / 1_440) * 1_440;
+		expect(parseTaskLine(`- [ ] T ⏱ ${largestWholeDay}m`, ctx())!.durationMinutes).toBe(
+			largestWholeDay,
+		);
+	});
+});
+
 describe("parseTaskLine: офсеты ±Nd в шаблонах", () => {
 	it("офсеты не попадают в даты, но живут в rawLine", () => {
 		const t = parseTaskLine(

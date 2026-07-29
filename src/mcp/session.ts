@@ -13,6 +13,7 @@ import type { IndexFeed } from "../services/types";
 import { WritebackService } from "../services/WritebackService";
 import type { GtdFlowSettings } from "../settings/Settings";
 import type { Task } from "../core/model/Task";
+import { createScopeCatalog, parseScopeCatalog, type ScopeCatalog } from "../core/scope/scope";
 import { buildIndex, type BuiltIndex } from "./buildIndex";
 import type { FsVault } from "./fsVault";
 
@@ -50,6 +51,8 @@ export interface GtdSession {
 	allTasks: Task[];
 	boardPaths: string[];
 	projectPaths: string[];
+	/** Synced scope definitions are read independently from Markdown indexing. */
+	scopeCatalog: ScopeCatalog;
 }
 
 export interface SessionDeps {
@@ -77,6 +80,7 @@ export async function openSession(deps: SessionDeps): Promise<GtdSession> {
 		rememberIndex(cacheKey, cached);
 	}
 	const { feed, boardPaths, projectPaths, externalPaths } = built;
+	const scopeCatalog = await readScopeCatalog(vault);
 
 	const writeback = new WritebackService({
 		write: vault,
@@ -107,7 +111,7 @@ export async function openSession(deps: SessionDeps): Promise<GtdSession> {
 		containerPaths: () => boardPaths,
 		knownTaskId: (key) => writeback.knownTaskId(key),
 		genBoardIdSuffix: secureBoardIdSuffix,
-		// namespaceFilter не инжектируем: discovery всегда с ЯВНЫМ фильтром из инструмента.
+		// Discovery is global; scope is an explicit task field, not a path filter.
 	});
 
 	const projects = new ProjectService({
@@ -133,5 +137,18 @@ export async function openSession(deps: SessionDeps): Promise<GtdSession> {
 		allTasks: [...feed.getIndex().all()],
 		boardPaths,
 		projectPaths,
+		scopeCatalog,
 	};
+}
+
+async function readScopeCatalog(vault: FsVault): Promise<ScopeCatalog> {
+	const raw = await vault.readFile(".gtd-flow/config/scopes.json");
+	if (raw === null) return createScopeCatalog();
+	try {
+		return parseScopeCatalog(JSON.parse(raw)).catalog;
+	} catch {
+		// Invalid synced configuration must not invent scope identities. Mutations
+		// that name a scope fail validation in handlers; read-only tasks stay visible.
+		return createScopeCatalog();
+	}
 }

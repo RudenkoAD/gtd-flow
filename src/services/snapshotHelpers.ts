@@ -67,17 +67,6 @@ export function fileContextFromFrontmatter(
 	return fileContextFromContainerFrontmatter(path, projectContainerFrontmatter(fm));
 }
 
-/** frontmatter gtd-namespace → override пространства (перебивает папку). Только
- *  НЕПУСТАЯ строка (после trim) даёт override; число/boolean/пусто/отсутствие ⇒
- *  null (мусор игнорируется, файл остаётся в пространстве своей папки). Экспорт —
- *  для discovery сервисов (Board/Project), фильтрующих по пространству напрямую
- *  из сырого frontmatter, минуя индекс. */
-export function frontmatterNamespace(
-	fm: Record<string, unknown> | null | undefined,
-): string | null {
-	return projectContainerFrontmatter(fm).nsOverride ?? null;
-}
-
 /** Локальная календарная дата (не UTC: день пользователя — день его таймзоны). */
 export function localTodayIso(now: Date): IsoDate {
 	const y = String(now.getFullYear()).padStart(4, "0");

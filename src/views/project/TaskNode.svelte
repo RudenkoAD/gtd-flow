@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { Handle, Position } from "@xyflow/svelte";
+	import type { TaskEstimateProvenance } from "../../core/estimates/provenance";
 	import type { NodeState } from "../../core/projects/graphEngine";
 	import type { Task } from "../../core/model/Task";
 	import {
@@ -10,6 +11,8 @@
 		renderWikiLinks,
 	} from "../common/cardFormat";
 	import { stateColorClass } from "./projectGraphLogic";
+	import type { TaskMetadataPort } from "../common/taskMenu";
+	import { taskMetadataBadges } from "../common/taskMetadataDisplay";
 
 	/** data узла собирается в ProjectGraph: VM + подсветка + колбэки. */
 	interface TaskNodeData {
@@ -22,6 +25,8 @@
 		progress: { done: number; total: number } | null;
 		/** Открыть карточку задачи (порт cards); у призрака — no-op (read-only). */
 		openCard: () => void;
+		/** Optional view-only bridge for scope names and field ownership. */
+		metadata: TaskMetadataPort | null;
 	}
 
 	// Svelte Flow передаёт кастомному узлу все NodeProps; нам нужны data и selected
@@ -34,6 +39,26 @@
 	// вики-ссылки → плоский текст (ссылка на свою карточку скрыта), затем
 	// сегментация #тегов без структурных тегов колонок доски — как на доске
 	const segments = $derived(displaySegments(renderWikiLinks(task.description, task.taskId)));
+	let metadataProvenance = $state<TaskEstimateProvenance | null>(null);
+	$effect(() => {
+		const metadata = data.metadata;
+		const taskId = task.taskId;
+		metadataProvenance = null;
+		if (metadata === null || taskId === null) return;
+		let alive = true;
+		void metadata
+			.provenanceForTask(taskId)
+			.then((value) => {
+				if (alive) metadataProvenance = value;
+			})
+			.catch(() => {
+				if (alive) metadataProvenance = null;
+			});
+		return () => {
+			alive = false;
+		};
+	});
+	const metadataBadges = $derived(taskMetadataBadges(task, data.metadata, metadataProvenance));
 
 	/** Иконка состояния (ТЗ §7): blocked — замок, deferred — часы, waiting — ожидание. */
 	const stateIcon = $derived.by(() => {
@@ -88,6 +113,15 @@
 				<div class="gtd-tnode-badges">
 					{#each badges as b (b.field)}
 						<span class="gtd-tnode-badge">{b.icon} {b.date}</span>
+					{/each}
+				</div>
+			{/if}
+			{#if metadataBadges.length > 0}
+				<div class="gtd-tnode-metadata" aria-label="Task estimate and scope">
+					{#each metadataBadges as badge (badge.field)}
+						<span class="gtd-tnode-metadata-badge" title={badge.title}
+							>{badge.label}</span
+						>
 					{/each}
 				</div>
 			{/if}
@@ -197,6 +231,19 @@
 	.gtd-tnode-badge {
 		font-size: var(--font-ui-smaller, 0.8em);
 		color: var(--text-muted);
+	}
+	.gtd-tnode-metadata {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 4px;
+		margin-top: 3px;
+	}
+	.gtd-tnode-metadata-badge {
+		font-size: var(--font-ui-smaller, 0.78em);
+		color: var(--text-muted);
+		background: var(--background-secondary-alt);
+		border-radius: var(--radius-s, 4px);
+		padding: 0 3px;
 	}
 	.gtd-tnode-state-icon {
 		flex: none;

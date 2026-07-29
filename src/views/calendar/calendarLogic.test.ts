@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Task } from "../../core/model/Task";
 import type { CalendarField } from "../../core/model/projections";
-import { ALL_NS, DEFAULT_NS, type NamespaceDef } from "../../core/namespace/namespace";
 import {
 	AGENDA_PAGE_DAYS,
 	agendaDays,
@@ -11,7 +10,6 @@ import {
 	appendLine,
 	deferredUntil,
 	dropDateField,
-	eventTargetForNamespace,
 	expandEventOccurrences,
 	formatTimeRange,
 	mergeDayItems,
@@ -70,6 +68,11 @@ function makeTask(overrides: Partial<Task> = {}): Task {
 		dependsOn: [],
 		excludedDates: [],
 		location: null,
+		durationMinutes: null,
+		cognitiveIntensity: null,
+		emotionalIntensity: null,
+		physicalIntensity: null,
+		scopeId: null,
 		tags: [],
 		container: "plain",
 		projectActive: true,
@@ -769,45 +772,5 @@ describe("formatTimeRange — преднаполнение поля времен
 			time: "09:15",
 			timeEnd: null,
 		});
-	});
-});
-
-describe("eventTargetForNamespace — файл событий инлайн-создания по пространству", () => {
-	const WORK: NamespaceDef = { name: "Работа", root: "Work" };
-	const LIFE: NamespaceDef = { name: "Жизнь", root: "Личное" };
-	const DEFS = [WORK, LIFE];
-	const EVENTS_FALLBACK = "GTD/Events.md";
-	const COMMON = "GTD";
-
-	it("именованное пространство — <root>/События.md", () => {
-		expect(eventTargetForNamespace("Работа", DEFS, EVENTS_FALLBACK, COMMON)).toBe(
-			"Work/События.md",
-		);
-		expect(eventTargetForNamespace("Жизнь", DEFS, EVENTS_FALLBACK, COMMON)).toBe(
-			"Личное/События.md",
-		);
-	});
-
-	it("«Общее» (DEFAULT_NS) — выделенный фолбэк settings.eventsFile", () => {
-		expect(eventTargetForNamespace(DEFAULT_NS, DEFS, EVENTS_FALLBACK, COMMON)).toBe(
-			"GTD/Events.md",
-		);
-	});
-
-	it("вкладка «Все» (ALL_NS) — файл событий ОБЩЕЙ папки <commonRoot>/События.md", () => {
-		expect(eventTargetForNamespace(ALL_NS, DEFS, EVENTS_FALLBACK, COMMON)).toBe(
-			"GTD/События.md",
-		);
-	});
-
-	it("ALL_NS с пустым commonRoot — голое имя файла (в корне хранилища)", () => {
-		expect(eventTargetForNamespace(ALL_NS, DEFS, EVENTS_FALLBACK, "")).toBe("События.md");
-	});
-
-	it("пространств не настроено — любое имя падает на фолбэк, ALL_NS — на commonRoot", () => {
-		expect(eventTargetForNamespace(DEFAULT_NS, [], EVENTS_FALLBACK, COMMON)).toBe(
-			"GTD/Events.md",
-		);
-		expect(eventTargetForNamespace(ALL_NS, [], EVENTS_FALLBACK, COMMON)).toBe("GTD/События.md");
 	});
 });

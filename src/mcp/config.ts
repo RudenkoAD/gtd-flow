@@ -8,7 +8,6 @@
  */
 import { promises as fs } from "fs";
 import * as path from "path";
-import { normalizeActiveNamespace } from "../core/namespace/namespace";
 import { DEFAULT_SETTINGS, type GtdFlowSettings } from "../settings/Settings";
 import { PersistedSettingsSchema, mergeSettingsWithDiagnostics } from "../settings/mergeSettings";
 
@@ -78,9 +77,5 @@ export async function loadSettings(vaultRoot: string): Promise<GtdFlowSettings> 
 		}
 	}
 	const merged = result.settings;
-	// Legacy files persisted the display label "Общее" before the stable sentinel
-	// existed. Normalizing that selection is safe: it cannot change any folder
-	// path, unlike recovering an invalid path-bearing field above.
-	merged.activeNamespace = normalizeActiveNamespace(merged.activeNamespace, merged.namespaces);
 	return merged;
 }

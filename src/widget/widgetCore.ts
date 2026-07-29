@@ -11,22 +11,16 @@
  * list_tasks view:'inbox'. Ошибки изолируются в errors[] — виджет не должен падать.
  *
  * Экспорт (звать из QuickJS как GtdWidgetCore.<name>) — API v2:
- *  • computeWidgetData(input) → JSON-строка данных виджета. input.inboxNamespace
- *    'Все' (ALL_NS) → входящие-АГРЕГАТ со всех пространств, у каждого item namespace.
+ *  • computeWidgetData(input) → JSON-строка данных виджета. input.inboxScope
+ *    optionally filters the unified inbox by a stable task scope ID.
  *    input.agendaDays?: number (0/нет = не считать; максимум 30) → секция agenda.days
  *    по дням от todayIso включительно (тот же состав/сортировка, что today.items).
  *    Элементы today/agenda обогащены rawLine/itemKind/recurrenceText (для шторки деталей).
  *  • buildCaptureLine(text, location?) → строка быстрого захвата '- [ ] …[ 📍 …]';
- *  • captureTargetPath(dataJson, namespace?) → путь файла входящих пространства;
+ *  • captureTargetPath(dataJson) → configured unified inbox path;
  *  • buildEditedLine(rawLine, edits) → JSON {ok:true,line} | {ok:false,error}: правка
  *    строки задачи/события (title/date/timeRange/location) для шторки деталей.
  */
-import {
-	DEFAULT_NS,
-	NS_CONVENTION,
-	nsCommonTarget,
-	type NamespaceDef,
-} from "../core/namespace/namespace";
 import type { Task } from "../core/model/Task";
 import type { CalendarField } from "../core/model/projections";
 import { setValueField } from "../core/parser/serializeTaskLine";
@@ -50,13 +44,8 @@ import { minutesToTime, timeToMinutes } from "../views/calendar/timeGrid";
 import { addDaysIso } from "../views/common/dates";
 import { quickCaptureLineNl } from "../views/common/taskActions";
 import { buildWidgetIndex, errorMessage } from "./widgetIndex";
-import {
-	fileNsLabel,
-	loadWidgetSettings,
-	nsLabel,
-	resolveWidgetActive,
-	widgetFilter,
-} from "./widgetSettings";
+import { widgetScopeCatalog, widgetTaskMetadata, type WidgetTaskMetadata } from "./widgetMetadata";
+import { loadWidgetSettings } from "./widgetSettings";
 
 // ---------------------------------------------------------------------------
 // Публичные типы входа/выхода
@@ -72,8 +61,8 @@ export interface WidgetInput {
 	todayIso: string;
 	/** Минуты от полуночи — для маркера «сейчас» (в generatedAt). */
 	nowMinutes: number;
-	/** Пространство виджета входящих; null/отсутствует ⇒ «Общее»; «Все» ⇒ агрегат. */
-	inboxNamespace?: string | null;
+	/** Optional stable task scope ID to filter the unified inbox. */
+	inboxScope?: string | null;
 	/** Сколько дней агенды считать от todayIso включительно (0/нет = не считать;
 	 *  клампится к [0, 30]). Пустые дни в agenda.days включаются с items: []. */
 	agendaDays?: number;
@@ -94,11 +83,12 @@ export interface WidgetTodayItem {
 	location: string | null;
 	file: string;
 	line: number;
-	namespace: string;
 	/** Исходная строка файла — источник правок шторки (buildEditedLine). */
 	rawLine: string;
 	/** Текст правила 🔁 для вхождения серии; null для одноразового события/задачи. */
 	recurrenceText: string | null;
+	/** Duration/intensities/scope from the task line; no AI state or OAuth required. */
+	metadata: WidgetTaskMetadata;
 }
 
 export interface WidgetInboxItem {
@@ -107,8 +97,7 @@ export interface WidgetInboxItem {
 	line: number;
 	id: string | null;
 	location: string | null;
-	/** Пространство файла-источника (метка) — нужно агрегату «Все». */
-	namespace: string;
+	metadata: WidgetTaskMetadata;
 }
 
 /** Один день агенды: дата и лента того же состава/сортировки, что today.items. */
@@ -120,8 +109,8 @@ export interface WidgetAgendaDay {
 export interface WidgetData {
 	today: { date: string; items: WidgetTodayItem[]; generatedAt: string };
 	agenda: { days: WidgetAgendaDay[] };
-	inbox: { namespace: string; items: WidgetInboxItem[] };
-	namespaces: { name: string; root: string }[];
+	inbox: { scope: string | null; items: WidgetInboxItem[] };
+	scopes: { id: string; name: string; archived: boolean }[];
 	errors: string[];
 }
 
@@ -149,7 +138,7 @@ export async function computeWidgetData(input: WidgetInput): Promise<string> {
 
 	const { settings, error: settingsError } = loadWidgetSettings(dataJson);
 	if (settingsError !== null) errors.push(settingsError);
-	const defs = settings.namespaces;
+	const scopeCatalog = widgetScopeCatalog(files, errors);
 
 	// --- индекс ---
 	let allTasks: Task[] = [];
@@ -175,7 +164,7 @@ export async function computeWidgetData(input: WidgetInput): Promise<string> {
 	if (validToday) for (let i = 1; i < agendaDays; i++) rangeDates.push(addDaysIso(todayIso, i));
 	const lastIso = rangeDates[rangeDates.length - 1]!;
 
-	// --- сегодня + агенда: агрегат ВСЕХ пространств (события ∪ задачи с датами) ---
+	// --- сегодня + агенда: глобальный агрегат (события ∪ задачи с датами) ---
 	const todayItems: WidgetTodayItem[] = [];
 	const agendaByDate = new Map<string, WidgetTodayItem[]>();
 	try {
@@ -215,9 +204,9 @@ export async function computeWidgetData(input: WidgetInput): Promise<string> {
 					location: o.location,
 					file: o.task.filePath,
 					line: o.task.lineStart + 1,
-					namespace: fileNsLabel(o.task.filePath, o.task.nsOverride, defs),
 					rawLine: o.task.rawLine,
 					recurrenceText: o.kind === "series" ? o.task.recurrence : null,
+					metadata: widgetTaskMetadata(o.task, scopeCatalog, settings.durationLongStyle),
 				});
 			}
 			for (const pe of placedMap.get(dateIso) ?? []) {
@@ -236,9 +225,9 @@ export async function computeWidgetData(input: WidgetInput): Promise<string> {
 					location: t.location,
 					file: t.filePath,
 					line: t.lineStart + 1,
-					namespace: fileNsLabel(t.filePath, t.nsOverride, defs),
 					rawLine: t.rawLine,
 					recurrenceText: null,
+					metadata: widgetTaskMetadata(t, scopeCatalog, settings.durationLongStyle),
 				});
 			}
 			sortTodayItems(items);
@@ -259,25 +248,30 @@ export async function computeWidgetData(input: WidgetInput): Promise<string> {
 			? rangeDates.map((d) => ({ date: d, items: agendaByDate.get(d) ?? [] }))
 			: [];
 
-	// --- входящие: inbox-скоуп выбранного пространства (тот же путь, что MCP inbox) ---
-	const inboxActive = resolveWidgetActive(input?.inboxNamespace ?? null, settings, errors, true);
+	// --- configured inbox, with an optional explicit task-scope filter ---
+	const inboxScope =
+		input?.inboxScope !== null &&
+		input?.inboxScope !== undefined &&
+		input.inboxScope.trim() !== ""
+			? input.inboxScope.trim()
+			: null;
 	const inboxItems: WidgetInboxItem[] = [];
 	try {
 		const ctx: QueryContext = {
 			tasks: allTasks,
 			today: todayIso,
 			resolveDep,
-			settingsBits: defaultInboxConfig(settings.inboxIncludePlain),
-			namespace: widgetFilter(inboxActive, settings),
+			settingsBits: defaultInboxConfig(settings.inboxIncludePlain, settings.inboxFile),
 		};
 		for (const t of evaluate({ kind: "inbox" }, ctx)) {
+			if (inboxScope !== null && t.scopeId !== inboxScope) continue;
 			inboxItems.push({
 				title: t.description,
 				file: t.filePath,
 				line: t.lineStart + 1,
 				id: t.taskId,
 				location: t.location,
-				namespace: fileNsLabel(t.filePath, t.nsOverride, defs),
+				metadata: widgetTaskMetadata(t, scopeCatalog, settings.durationLongStyle),
 			});
 		}
 	} catch (e) {
@@ -291,8 +285,12 @@ export async function computeWidgetData(input: WidgetInput): Promise<string> {
 			generatedAt: `${todayIso}T${minutesToTime(nowMinutes)}`,
 		},
 		agenda: { days: agendaDaysList },
-		inbox: { namespace: nsLabel(inboxActive), items: inboxItems },
-		namespaces: defs.map((d: NamespaceDef) => ({ name: d.name, root: d.root })),
+		inbox: { scope: inboxScope, items: inboxItems },
+		scopes: scopeCatalog.scopes.map((scope) => ({
+			id: scope.id,
+			name: scope.name,
+			archived: scope.archived,
+		})),
 		errors,
 	};
 	return JSON.stringify(data);
@@ -355,23 +353,17 @@ export function buildCaptureLine(
 }
 
 // ---------------------------------------------------------------------------
-// captureTargetPath — файл входящих пространства
+// captureTargetPath — configured unified inbox
 // ---------------------------------------------------------------------------
 
 /**
- * Путь файла входящих для записи быстрого захвата в пространстве `namespace`
- * (семантика nsCommonTarget / captureTargetInNamespace-фолбэка): именованное
- * пространство ⇒ `<root>/Входящие.md`, «Общее»/null ⇒ `<commonRoot>/Входящие.md`
- * (пустой commonRoot ⇒ голое «Входящие.md» в корне). Агрегат «Все» — не цель
- * записи, откатывается к «Общему». Существующие gtd-inbox файлы здесь не
- * учитываются (у функции нет содержимого vault) — это конвенционный путь-цель,
- * который сторона Android помечает gtd-inbox при создании (ensureCaptureFileNs).
+ * Widgets have one configured capture target. Existing gtd-inbox discovery is
+ * intentionally not attempted here because this pure function receives only
+ * settings, not a vault index.
  */
-export function captureTargetPath(dataJson: string | null, namespace?: string | null): string {
+export function captureTargetPath(dataJson: string | null): string {
 	const { settings } = loadWidgetSettings(typeof dataJson === "string" ? dataJson : null);
-	const errors: string[] = [];
-	const active = resolveWidgetActive(namespace ?? null, settings, errors, false);
-	return nsCommonTarget(active, settings.namespaces, NS_CONVENTION.inbox, settings.commonRoot);
+	return settings.inboxFile;
 }
 
 // buildEditedLine — синхронная правка строки для шторки деталей (см. widgetEditLine).
@@ -381,6 +373,3 @@ export { buildEditedLine, type LineEdits } from "./widgetEditLine";
 // parseNlDate — чистый распознаватель русских дат (для шторок/капчера Android):
 // глобал GtdWidgetCore.parseNlDate. Тот же модуль ядра, что и в quickCaptureLineNl.
 export { parseNlDate, type NlDateResult } from "../core/parser/nlDate";
-
-// re-export для удобства потребителей бандла/тестов (тип sentinel «Общее»)
-export { DEFAULT_NS };

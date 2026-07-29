@@ -1,7 +1,6 @@
 import { get, writable } from "svelte/store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Task } from "../../core/model/Task";
-import type { NamespaceFilter } from "../../core/namespace/namespace";
 import { evaluate } from "../../core/query/QueryEngine";
 import { defaultInboxConfig } from "../../core/query/querySpec";
 import { createTaskStore, type TaskStore } from "../taskStore";
@@ -202,7 +201,7 @@ describe("готовые фабрики: реальный evaluate поверх 
 		});
 		feed.replaceFile("notes.md", [captured, withDue]);
 
-		const store = inboxStore(ts, defaultInboxConfig());
+		const store = inboxStore(ts, defaultInboxConfig(false, "notes.md"));
 		const items = get(store);
 		expect(items.map((t) => t.lineStart)).toEqual([1]);
 		ts.dispose();
@@ -273,18 +272,13 @@ describe("готовые фабрики: реальный evaluate поверх 
 	});
 });
 
-describe("per-namespace фильтр запросов и реактивность", () => {
+describe("глобальные query stores", () => {
 	beforeEach(() => {
 		vi.useFakeTimers();
 	});
 	afterEach(() => {
 		vi.useRealTimers();
 	});
-
-	const DEFS = [
-		{ name: "Работа", root: "Work" },
-		{ name: "Жизнь", root: "Личное" },
-	];
 
 	function seedTwoInboxes(feed: FakeFeed): void {
 		feed.replaceFile("Work/Входящие.md", [
@@ -295,74 +289,44 @@ describe("per-namespace фильтр запросов и реактивност�
 		]);
 	}
 
-	it("inboxStore режет по активному пространству; смена ns пере-считывает без bump epoch", () => {
+	it("inboxStore возвращает только настроенный inbox, игнорируя legacy-маркеры", () => {
 		const feed = new FakeFeed("2026-07-15");
 		const ts = createTaskStore(feed);
 		seedTwoInboxes(feed);
-		const ns$ = writable<NamespaceFilter>({ active: "Работа", defs: DEFS });
-		const store = inboxStore(ts, defaultInboxConfig(), 50, ns$);
+		const store = inboxStore(ts, defaultInboxConfig(false, "Work/Входящие.md"), 50);
 		let value: Task[] = [];
 		const un = store.subscribe((v) => {
 			value = v;
 		});
 		expect(value.map((t) => t.filePath)).toEqual(["Work/Входящие.md"]);
-
-		// переключение активного пространства — только через store, epoch не бампается
-		ns$.set({ active: "Жизнь", defs: DEFS });
-		vi.advanceTimersByTime(50);
-		expect(value.map((t) => t.filePath)).toEqual(["Личное/Входящие.md"]);
-
-		// «Общее» (DEFAULT_NS-подобное именованное отсутствие) — ни одного файла из корней
-		ns$.set({ active: "Работа", defs: DEFS });
-		vi.advanceTimersByTime(50);
-		expect(value.map((t) => t.filePath)).toEqual(["Work/Входящие.md"]);
 		un();
 		ts.dispose();
 	});
 
-	it("пустой defs ⇒ фильтр прозрачен (все inbox-файлы, обратная совместимость)", () => {
+	it("revision настроек, а не namespace, инвалидирует memo", () => {
 		const feed = new FakeFeed("2026-07-15");
 		const ts = createTaskStore(feed);
 		seedTwoInboxes(feed);
-		const ns$ = writable<NamespaceFilter>({ active: "Работа", defs: [] });
-		const store = inboxStore(ts, defaultInboxConfig(), 50, ns$);
-		expect(
-			get(store)
-				.map((t) => t.filePath)
-				.sort(),
-		).toEqual(["Work/Входящие.md", "Личное/Входящие.md"]);
-		ts.dispose();
-	});
-
-	it("без namespace$ фильтра нет (существующие виды не меняются)", () => {
-		const feed = new FakeFeed("2026-07-15");
-		const ts = createTaskStore(feed);
-		seedTwoInboxes(feed);
-		const store = inboxStore(ts, defaultInboxConfig());
-		expect(get(store).length).toBe(2);
-		ts.dispose();
-	});
-
-	it("смена ns инвалидирует мемо-ключ (пересчёт), несмотря на равные epoch/today", () => {
-		const feed = new FakeFeed("2026-07-15");
-		const ts = createTaskStore(feed);
-		seedTwoInboxes(feed);
-		const ns$ = writable<NamespaceFilter>({ active: "Работа", defs: DEFS });
+		const revision$ = writable(0);
 		const spy = vi.fn(evaluate);
 		const store = createQueryStore(
 			ts,
 			{ kind: "inbox" },
-			{ settingsBits: defaultInboxConfig(), namespace$: ns$, evaluate: spy },
+			{
+				settingsBits: defaultInboxConfig(false, "Work/Входящие.md"),
+				settingsRevision$: revision$,
+				evaluate: spy,
+			},
 			50,
 		);
 		const un = store.subscribe(() => {});
 		expect(spy).toHaveBeenCalledTimes(1);
 
-		ns$.set({ active: "Жизнь", defs: DEFS });
+		revision$.set(1);
 		vi.advanceTimersByTime(50);
 		expect(spy).toHaveBeenCalledTimes(2);
-		// тот же active повторно — ключ не изменился, пересчёта нет
-		ns$.set({ active: "Жизнь", defs: DEFS });
+		// same revision is memo-equivalent
+		revision$.set(1);
 		vi.advanceTimersByTime(50);
 		expect(spy).toHaveBeenCalledTimes(2);
 		un();

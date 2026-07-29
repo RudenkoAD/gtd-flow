@@ -2,7 +2,7 @@
  * PromoteService — «всплытие отложенной задачи во Входящие» (фидбек:
  * promoteTo="inbox"). Когда 🛫 задачи наступает САМА (перешагнута смена дня или
  * пропущенный откат при старте), пользователь ожидает задачу именно во
- * «Входящих» своего пространства, а не «где лежала» (это старое поведение
+ * настроенный единый файл входящих, а не «где лежала» (это поведение
  * promoteTo="origin", при котором сервис не пишет НИЧЕГО — чистое всплытие §5).
  *
  * Проход промоушена (образец RecurrenceService.runPass): чистый planPromotions
@@ -13,8 +13,8 @@
  * после него start === null ⇒ задача больше не кандидат.
  *
  * Ноль импортов obsidian: запись — через IntentDispatcher, цель/создание
- * inbox-файла пространства инжектируются (main.ts подставляет nsTargetPath /
- * ensureCaptureFileNs), как spawnTargetFor/ensureFile у RecurrenceService.
+ * единый inbox-файл и его создание инжектируются, как
+ * spawnTargetFor/ensureFile у RecurrenceService.
  */
 import type { IsoDate, Task } from "../core/model/Task";
 import {
@@ -49,10 +49,9 @@ export interface PromoteDeps {
 	 *  settings.inboxIncludePlain). "origin" ⇒ проход не пишет ничего. Тип
 	 *  структурный (сервис не тянет формат Settings, как RecurrenceService). */
 	settings: () => { promoteTo: "origin" | "inbox"; includePlain: boolean };
-	/** Целевой inbox-файл ПРОСТРАНСТВА задачи (nsTargetPath / captureTargetInNamespace). */
+	/** Configured unified inbox file. */
 	inboxTargetFor: (task: Task) => string;
-	/** Убедиться, что целевой файл существует и помечен gtd-inbox (+ ns-override
-	 *  для файла-исключения). Совместимо с ensureCaptureFileNs. false — не удалось. */
+	/** Убедиться, что целевой файл существует и помечен gtd-inbox. */
 	ensureInboxFile: (path: string, task: Task) => Promise<boolean>;
 	/** Последний обработанный день (персист, settings.promoteLastRun); null — проходов
 	 *  ещё не было. Кандидаты каждого прохода — start ∈ (lastRun, today]. */

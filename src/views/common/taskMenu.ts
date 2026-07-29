@@ -9,7 +9,9 @@
 import { Menu, Notice, type App, type MenuItem } from "obsidian";
 import type { Readable } from "svelte/store";
 import type { Intent } from "../../core/intents/Intent";
+import type { EstimatePatch, TaskEstimateProvenance } from "../../core/estimates/provenance";
 import type { IsoDate, Task } from "../../core/model/Task";
+import type { ScopeCatalog } from "../../core/scope/scope";
 import type { BoardDef } from "../../core/board/boardFile";
 import type { CardPort } from "../../services/CardService";
 import type { DiscoveredBoard } from "../../services/BoardService";
@@ -23,16 +25,13 @@ import { openTaskInFile } from "./openTask";
 import { pickBoardColumn, pickDate, pickProject } from "./pickers";
 import { reportAsync } from "./runAction";
 import { TextPromptModal } from "./TextPromptModal";
-import {
-	NS_CONVENTION,
-	nsTargetPath,
-	resolveNamespace,
-	type NamespaceFilter,
-} from "../../core/namespace/namespace";
+import { TaskMetadataModal } from "./TaskMetadataModal";
+import { patchForMetadataField } from "./taskMetadata";
+import type { TaskMetadataDisplayPort } from "./taskMetadataDisplay";
 import {
 	ensureArchiveFile,
 	moveTaskToTemplates,
-	recurringFilePathsInNamespace,
+	recurringFilePaths,
 	type FrontmatterVaultPort,
 } from "./taskActions";
 import {
@@ -50,10 +49,9 @@ export type { CardPort } from "../../services/CardService";
 // Порты (структурные срезы сервисов — виды не тянут классы целиком)
 // ---------------------------------------------------------------------------
 
-/** Срез BoardService: обнаружение досок + перенос карточки. filter — пространство
- *  ЗАДАЧИ (перенос внутри её пространства, не активного вида). */
+/** Global board discovery + card move in the unified task model. */
 export interface BoardMenuPort {
-	discoverBoards(filter?: NamespaceFilter): { boards: DiscoveredBoard[] };
+	discoverBoards(): { boards: DiscoveredBoard[] };
 	moveCard(
 		boardPath: string,
 		def: BoardDef,
@@ -63,19 +61,29 @@ export interface BoardMenuPort {
 	): Promise<IntentResult>;
 }
 
-/** Срез ProjectService: только список проектов (перенос — move-line). filter —
- *  пространство ЗАДАЧИ (перенос внутри её пространства, не активного вида). */
+/** Global project discovery in the unified task model. */
 export interface ProjectMenuPort {
-	discoverProjects(filter?: NamespaceFilter): ProjectSummary[];
+	discoverProjects(): ProjectSummary[];
 }
 
-/** Порты «Сделать шаблоном…»: где лежат шаблоны и чем создать файл.
- *  Методы принимают задачу: цели считаются в ЕЁ пространстве (не активном) —
- *  иначе шаблон утекал бы в первый глобальный файл регулярных (ревью). */
+/** Ports for a global recurring-template target. */
 export interface TemplateMenuPort {
-	recurringFiles(task: Task): string[];
-	spawnTarget(task: Task): string;
+	recurringFiles(): string[];
+	spawnTarget(): string;
 	vault: FrontmatterVaultPort;
+}
+
+/**
+ * Narrow bridge from task views to scope/provenance services. The view does not
+ * import AI storage or the plugin main class. applyManualPatch must persist the
+ * feedback/lock after its one atomic Markdown metadata write; this is especially
+ * important for id-less tasks whose write injects a stable ID.
+ */
+export interface TaskMetadataPort extends TaskMetadataDisplayPort {
+	scopes(): ScopeCatalog;
+	provenanceForTask(taskId: string): Promise<TaskEstimateProvenance | null>;
+	applyManualPatch(task: Task, patch: EstimatePatch): Promise<IntentResult>;
+	openRelatedAiRun?(task: Task): Promise<IntentResult>;
 }
 
 /** Связка портов паритета; каждый опционален — вид работает и без них. */
@@ -84,6 +92,7 @@ export interface TaskMenuPorts {
 	projects?: ProjectMenuPort | null;
 	cards?: CardPort | null;
 	template?: TemplateMenuPort | null;
+	metadata?: TaskMetadataPort | null;
 	/** Создать файл архива и проставить gtd-archive: true — для «Архивировать». */
 	archive?: FrontmatterVaultPort | null;
 	/** Смена индекса — для реактивного прогресса n/m на карточке. */
@@ -95,39 +104,22 @@ export interface TaskMenuPorts {
  * Поля читаются опционально (паттерн видов): чего нет — того нет в меню.
  */
 export function taskMenuPortsFromPlugin(plugin: GtdFlowPlugin): TaskMenuPorts {
-	const p = plugin as GtdFlowPlugin & { cards?: CardPort };
+	const p = plugin as GtdFlowPlugin & {
+		cards?: CardPort;
+		taskMetadata?: TaskMetadataPort;
+	};
 	return {
 		boards: plugin.boards ?? null,
 		projects: plugin.projects ?? null,
 		cards: p.cards ?? null,
+		metadata: p.taskMetadata ?? null,
 		archive: {
 			ensureFile: (path) => plugin.vaultAdapter.ensureFile(path),
 			processFrontmatter: (path, fn) => plugin.vaultAdapter.processFrontmatter(path, fn),
 		},
 		template: {
-			// пространство ЗАДАЧИ (не активное): шаблон уходит в регулярные своего
-			// пространства; «Общее» с пустым defs — прежнее глобальное поведение
-			recurringFiles: (task) =>
-				recurringFilePathsInNamespace(
-					plugin.taskStore.index().all(),
-					resolveNamespace(
-						task.filePath,
-						task.nsOverride ?? null,
-						plugin.settings.namespaces,
-					),
-					plugin.settings.namespaces,
-				),
-			spawnTarget: (task) =>
-				nsTargetPath(
-					resolveNamespace(
-						task.filePath,
-						task.nsOverride ?? null,
-						plugin.settings.namespaces,
-					),
-					plugin.settings.namespaces,
-					NS_CONVENTION.inbox,
-					plugin.settings.recurring.spawnTarget,
-				),
+			recurringFiles: () => recurringFilePaths(plugin.taskStore.index().all()),
+			spawnTarget: () => plugin.settings.inboxFile,
 			vault: {
 				ensureFile: (path) => plugin.vaultAdapter.ensureFile(path),
 				processFrontmatter: (path, fn) => plugin.vaultAdapter.processFrontmatter(path, fn),
@@ -166,6 +158,8 @@ export function buildTaskMenu(ctx: TaskMenuCtx): Menu {
 		hasProjects: ports?.projects != null,
 		hasCards: ports?.cards != null,
 		hasTemplates: ports?.template != null,
+		hasMetadata: ports?.metadata != null,
+		hasRelatedAiRun: ports?.metadata?.openRelatedAiRun != null,
 	});
 	const menu = new Menu();
 	for (const node of model) {
@@ -300,13 +294,7 @@ async function archiveTask(ctx: TaskMenuCtx): Promise<void> {
 		new Notice("GTD Flow: архивирование недоступно");
 		return;
 	}
-	// архив ПРОСТРАНСТВА задачи: именованное — <root>/Архив.md, «Общее» — настройка
-	const archiveFile = nsTargetPath(
-		resolveNamespace(ctx.task.filePath, ctx.task.nsOverride ?? null, ctx.settings.namespaces),
-		ctx.settings.namespaces,
-		NS_CONVENTION.archive,
-		ctx.settings.archiveFile,
-	);
+	const archiveFile = ctx.settings.archiveFile;
 	if (!(await ensureArchiveFile(archive, archiveFile))) {
 		new Notice("GTD Flow: не удалось создать файл архива");
 		return;
@@ -318,22 +306,6 @@ async function archiveTask(ctx: TaskMenuCtx): Promise<void> {
 	});
 	if (!moveRes.ok) new Notice(`GTD Flow: ${moveRes.reason}`);
 	else new Notice("GTD Flow: заархивировано");
-}
-
-/**
- * Пространство ЗАДАЧИ как фильтр discovery: пикеры «В колонку…»/«В проект…» показывают
- * доски/проекты пространства самой задачи, а не активного вида. По UX это правильнее —
- * перенос идёт внутри пространства задачи (решение фидбека итерации 2).
- */
-function taskNamespaceFilter(ctx: TaskMenuCtx): NamespaceFilter {
-	return {
-		active: resolveNamespace(
-			ctx.task.filePath,
-			ctx.task.nsOverride ?? null,
-			ctx.settings.namespaces,
-		),
-		defs: ctx.settings.namespaces,
-	};
 }
 
 async function runMenuAction(ctx: TaskMenuCtx, action: MenuAction): Promise<void> {
@@ -428,10 +400,46 @@ async function runMenuAction(ctx: TaskMenuCtx, action: MenuAction): Promise<void
 			return;
 		}
 
+		case "edit-metadata": {
+			const metadata = ports?.metadata;
+			if (metadata === null || metadata === undefined) return;
+			new TaskMetadataModal(
+				ctx.app,
+				ctx.task,
+				metadata.scopes(),
+				(patch) =>
+					reportAsync("не удалось изменить метаданные задачи", async () => {
+						const result = await metadata.applyManualPatch(ctx.task, patch);
+						if (!result.ok) new Notice(`GTD Flow: ${result.reason}`);
+					}),
+				action.focus,
+			).open();
+			return;
+		}
+
+		case "clear-metadata": {
+			const metadata = ports?.metadata;
+			if (metadata === null || metadata === undefined) return;
+			const result = await metadata.applyManualPatch(
+				ctx.task,
+				patchForMetadataField(action.field),
+			);
+			if (!result.ok) new Notice(`GTD Flow: ${result.reason}`);
+			return;
+		}
+
+		case "open-ai-run": {
+			const metadata = ports?.metadata;
+			if (metadata?.openRelatedAiRun === undefined) return;
+			const result = await metadata.openRelatedAiRun(ctx.task);
+			if (!result.ok) new Notice(`GTD Flow: ${result.reason}`);
+			return;
+		}
+
 		case "pick-column": {
 			const boards = ports?.boards;
 			if (boards == null) return; // недостижимо: пункт скрыт моделью
-			const found = boards.discoverBoards(taskNamespaceFilter(ctx)).boards;
+			const found = boards.discoverBoards().boards;
 			if (found.length === 0) {
 				new Notice("GTD Flow: досок не найдено");
 				return;
@@ -453,7 +461,7 @@ async function runMenuAction(ctx: TaskMenuCtx, action: MenuAction): Promise<void
 		case "pick-project": {
 			const projects = ports?.projects;
 			if (projects == null) return;
-			const found = projects.discoverProjects(taskNamespaceFilter(ctx));
+			const found = projects.discoverProjects();
 			if (found.length === 0) {
 				new Notice("GTD Flow: проектов не найдено");
 				return;
@@ -473,8 +481,8 @@ async function runMenuAction(ctx: TaskMenuCtx, action: MenuAction): Promise<void
 			if (tpl == null) return;
 			const res = await moveTaskToTemplates({
 				taskKey: ctx.task.key,
-				recurringFiles: tpl.recurringFiles(ctx.task),
-				spawnTarget: tpl.spawnTarget(ctx.task),
+				recurringFiles: tpl.recurringFiles(),
+				spawnTarget: tpl.spawnTarget(),
 				vault: tpl.vault,
 				dispatcher: ctx.dispatcher,
 			});

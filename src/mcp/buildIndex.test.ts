@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { resolveNamespace } from "../core/namespace/namespace";
 import { FsVault } from "./fsVault";
 import { buildIndex } from "./buildIndex";
 import { FIXTURE_FILES, FIXTURE_TODAY, makeVault, removeVault } from "./testVault";
@@ -14,7 +13,7 @@ describe("buildIndex", () => {
 		await removeVault(root);
 	});
 
-	it("строит индекс из скана vault'а с двумя пространствами", async () => {
+	it("строит глобальный индекс из скана vault'а", async () => {
 		const vault = new FsVault(root);
 		const files = await vault.listMarkdownFiles();
 		const { feed, boardPaths, projectPaths } = await buildIndex(files, FIXTURE_TODAY);
@@ -43,15 +42,8 @@ describe("buildIndex", () => {
 		const yoga = byFile("Жизнь/События.md").find((t) => t.description === "Йога");
 		expect(yoga?.recurrence).toBe("every monday at 08:00");
 
-		// пространства резолвятся по папкам
-		const defs = [
-			{ name: "Работа", root: "Работа" },
-			{ name: "Жизнь", root: "Жизнь" },
-		];
-		const card = all.find((t) => t.taskId === "card01")!;
-		expect(resolveNamespace(card.filePath, card.nsOverride ?? null, defs)).toBe("Работа");
-		const proj = all.find((t) => t.taskId === "proj01")!;
-		expect(resolveNamespace(proj.filePath, proj.nsOverride ?? null, defs)).toBe("Жизнь");
+		expect(all.find((task) => task.taskId === "card01")?.scopeId).toBe("work");
+		expect(all.find((task) => task.taskId === "proj01")?.scopeId).toBe("life");
 	});
 
 	it("пункты внутри огороженного блока кода не считаются задачами", async () => {

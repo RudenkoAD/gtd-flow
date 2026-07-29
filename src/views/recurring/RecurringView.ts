@@ -36,10 +36,6 @@ export class RecurringView extends GtdView {
 			cards: plugin.cards ?? null,
 			// структурный порт TemplateVaultPort — совместим с VaultAdapter
 			vault: plugin.vaultAdapter,
-			// ЛОКАЛЬНОЕ пространство вида (per-tab) + его переключатель (см. GtdView).
-			activeNamespace: { subscribe: this.localNamespace$.subscribe },
-			namespaces: plugin.settings.namespaces,
-			setActiveNamespace: (name: string) => this.setLocalNamespace(name),
 		};
 	}
 }

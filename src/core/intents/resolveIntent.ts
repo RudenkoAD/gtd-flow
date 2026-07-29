@@ -18,8 +18,11 @@ import {
 	removeTag,
 	setDependsOn,
 	setDescription,
+	setDurationMinutes,
 	setField,
+	setIntensity,
 	setPriority,
+	setScopeId,
 	setStatusChar,
 	setValueField,
 } from "../parser/serializeTaskLine";
@@ -81,6 +84,20 @@ export function resolveLineTransform(intent: Intent, currentLine: string): strin
 				"location",
 				intent.location?.trim() ? intent.location : null,
 			);
+
+		case "patch-task-metadata": {
+			let line = currentLine;
+			if (intent.durationMinutes !== undefined)
+				line = setDurationMinutes(line, intent.durationMinutes);
+			if (intent.cognitiveIntensity !== undefined)
+				line = setIntensity(line, "cognitiveIntensity", intent.cognitiveIntensity);
+			if (intent.emotionalIntensity !== undefined)
+				line = setIntensity(line, "emotionalIntensity", intent.emotionalIntensity);
+			if (intent.physicalIntensity !== undefined)
+				line = setIntensity(line, "physicalIntensity", intent.physicalIntensity);
+			if (intent.scopeId !== undefined) line = setScopeId(line, intent.scopeId);
+			return line;
+		}
 
 		case "move-column": {
 			// Перенос = ТОЛЬКО теги (fromTag/fromTags снять → toTag добавить); статус

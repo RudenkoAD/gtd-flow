@@ -17,22 +17,27 @@ test.describe("mounted GTD Flow Svelte component gate", () => {
 		const list = page.locator(".gtd-vlist");
 		await expect(list).toBeVisible();
 
-		await list.evaluate((element) => {
-			element.scrollTop = element.scrollHeight;
-		});
-		await expect(page.locator('[data-row-id="row-35"]')).toBeVisible();
 		await expect
-			.poll(() =>
-				list.evaluate(
-					(element) =>
+			.poll(async () =>
+				list.evaluate(async (element) => {
+					element.scrollTop = element.scrollHeight;
+					element.dispatchEvent(new Event("scroll"));
+					await new Promise<void>((resolve) =>
+						requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+					);
+					return (
+						element.querySelector('[data-row-id="row-35"]') !== null &&
 						Math.ceil(element.scrollTop + element.clientHeight) >=
-						Math.floor(element.scrollHeight),
-				),
+							Math.floor(element.scrollHeight)
+					);
+				}),
 			)
 			.toBe(true);
+		await expect(page.locator('[data-row-id="row-35"]')).toBeVisible();
 
 		await list.evaluate((element) => {
 			element.scrollTop = 0;
+			element.dispatchEvent(new Event("scroll"));
 		});
 		const firstDraft = page.getByTestId("draft-row-0");
 		await expect(firstDraft).toBeVisible();
@@ -54,7 +59,9 @@ test.describe("mounted GTD Flow Svelte component gate", () => {
 		await taskInput.fill("Persist this failed draft");
 		await taskInput.press("Enter");
 
-		await expect(page.getByRole("status")).toContainText("не удалось добавить задачу");
+		await expect(page.locator("#gtd-browser-notices")).toContainText(
+			"не удалось добавить задачу",
+		);
 		await expect(page.getByRole("textbox", { name: "Новая задача на 2026-07-28" })).toHaveValue(
 			"Persist this failed draft",
 		);
@@ -86,7 +93,87 @@ test.describe("mounted GTD Flow Svelte component gate", () => {
 		await expect(target).toHaveClass(/gtd-dnd-over/);
 		await page.mouse.up();
 
-		await expect(page.getByRole("status")).toContainText("не удалось перенести карточку");
+		await expect(page.locator("#gtd-browser-notices")).toContainText(
+			"не удалось перенести карточку",
+		);
 		await expectNoAxeViolations(page, '[data-testid="dnd-error-fixture"]');
+	});
+
+	test("integrates inbox processing, linked-field reprocessing, and user locks through visible UI", async ({
+		page,
+	}) => {
+		const fixture = page.getByTestId("ai-fixture");
+		await expect(fixture.getByRole("heading", { name: "GTD AI" })).toBeVisible();
+		await fixture.getByRole("button", { name: "Process inbox with AI" }).click();
+		await expect(fixture.getByTestId("ai-runtime-status")).toHaveText(
+			"Provisional values applied",
+		);
+		await expect(fixture.getByLabel("Atomic task writeback")).toContainText(
+			"Duration 90 Cognitive 4 Emotional 2 Physical 0 Scope work",
+		);
+		await expect(fixture.getByText("Does this include review time?")).toBeVisible();
+		await expect(fixture.getByText("Affects: duration")).toBeVisible();
+		await expect(fixture.getByLabel("Atomic task writeback")).toContainText(
+			"Last runtime fields all estimate fields",
+		);
+
+		await fixture.getByRole("button", { name: "Correct duration to 120 minutes" }).click();
+		await expect(fixture.getByTestId("ai-runtime-status")).toHaveText(
+			"Duration corrected and locked by user",
+		);
+		await expect(fixture.getByLabel("Atomic task writeback")).toContainText("Duration 120");
+		await expect(fixture.getByText("Does this include review time?")).toHaveCount(0);
+		await expect(fixture.getByLabel("Atomic task writeback")).toContainText(
+			"Duration 120 Cognitive 4 Emotional 2 Physical 0 Scope work Last runtime fields all estimate fields",
+		);
+		await expectNoAxeViolations(page, '[data-testid="ai-fixture"]');
+	});
+
+	test("integrates rate-limit retry and tool approval with one-shot undo through the AI UI", async ({
+		page,
+	}) => {
+		const fixture = page.getByTestId("ai-fixture");
+		await expect(fixture.getByRole("heading", { name: "GTD AI" })).toBeVisible();
+		await fixture.getByRole("button", { name: "Process inbox with AI" }).click();
+		await expect(fixture.getByTestId("ai-runtime-status")).toHaveText(
+			"Provisional values applied",
+		);
+
+		await fixture.getByRole("button", { name: "Trigger rate-limited run" }).click();
+		await expect(fixture.getByTestId("ai-runtime-status")).toHaveText(
+			"Rate limited — waiting for explicit retry",
+		);
+		await expect(fixture.getByLabel("Waiting inbox processing runs")).toContainText(
+			"Waiting for free capacity: 1 (rate-limited)",
+		);
+		await expect(fixture.getByRole("button", { name: "Retry waiting runs" })).toHaveCount(0);
+		await expect(fixture.getByLabel("Waiting inbox processing runs")).toContainText(
+			"Use the command palette to retry waiting AI jobs.",
+		);
+		await fixture.getByRole("button", { name: "Retry rate-limited run" }).click();
+		await expect(fixture.getByTestId("ai-runtime-status")).toHaveText(
+			"Explicit retry succeeded",
+		);
+		await expect(fixture.getByLabel("Waiting inbox processing runs")).toHaveCount(0);
+
+		const composer = fixture.getByRole("textbox", { name: "Message" });
+		await composer.fill("Create a follow-up");
+		await composer.press("Enter");
+		await expect(fixture.getByText("Create task")).toBeVisible();
+		await expect(fixture.getByRole("button", { name: "Undo" })).toBeVisible();
+		await expect(fixture.getByLabel("Atomic task writeback")).toContainText("Created tasks 1");
+		await fixture.getByRole("button", { name: "Undo" }).click();
+		await expect(fixture.getByText("Undone")).toBeVisible();
+		await expect(fixture.getByLabel("Atomic task writeback")).toContainText("Created tasks 0");
+
+		await composer.fill("Delete the task");
+		await composer.press("Enter");
+		await expect(fixture.getByRole("heading", { name: "Approval required" })).toBeVisible();
+		await expect(fixture.getByText("Delete task task-1")).toBeVisible();
+		await expect(fixture.getByLabel("Atomic task writeback")).toContainText("Task deleted no");
+		await fixture.getByRole("button", { name: "Reject" }).click();
+		await expect(fixture.getByText("Delete task task-1")).toHaveCount(0);
+		await expect(fixture.getByLabel("Atomic task writeback")).toContainText("Task deleted no");
+		await expectNoAxeViolations(page, '[data-testid="ai-fixture"]');
 	});
 });

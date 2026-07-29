@@ -15,7 +15,6 @@ import {
 	type ResolveDep,
 } from "../model/gtdState";
 import { taskToCalendarEvent } from "../model/projections";
-import { inNamespace, type NamespaceFilter } from "../namespace/namespace";
 import type { InboxConfig, QuerySpec } from "./querySpec";
 
 export interface QueryContext {
@@ -23,33 +22,18 @@ export interface QueryContext {
 	today: IsoDate;
 	resolveDep: ResolveDep;
 	settingsBits: InboxConfig;
-	/**
-	 * Активное пространство + определения (per-namespace виды). Кросс-режущий
-	 * параметр, а не свойство отдельного QuerySpec: активное пространство одно на
-	 * всё приложение. Опционален и прозрачен по умолчанию — существующие вызовы
-	 * (без namespace) и пустой defs фильтр не меняют (обратная совместимость).
-	 * Применяется к inbox / tickler / all-templates / calendar-range (per-namespace
-	 * русла §1); project-members и active им не затрагиваются (см. evaluate).
-	 */
-	namespace?: NamespaceFilter;
-}
-
-/** Предикат активного пространства. Прозрачен (всегда true), когда namespace не
- *  задан или пространств нет (defs пуст) — точка обратной совместимости. */
-function nsPredicate(ns: NamespaceFilter | undefined): (t: Task) => boolean {
-	if (ns === undefined || ns.defs.length === 0) return () => true;
-	return (t) => inNamespace(t.filePath, t.nsOverride ?? null, ns);
 }
 
 /**
  * §1, упрощено в фидбек-раунде 2 (решение пользователя: «задача с датой —
- * уже разобрана», force-include источников захвата упразднён; inboxSources
- * остались только целями записи quick-add/spawn):
+ * уже разобрана»; legacy-маркеры gtd-inbox сохранены для отката миграции, но
+ * runtime-входящим остаётся только настроенный файл):
  *
  * inbox := active && !hasBoardTag && !hasDue
  *       && (container === "project" ? (projectActive && ready)
  *           : container === "plain"  ? includePlain
- *           : true)                          // container "inbox" — всегда
+ *           : container === "inbox"  ? filePath === inboxFile
+ *           : true)
  * где hasDue = t.due !== null, includePlain — настройка скоупа входящих.
  *
  * !hasBoardTag — итог живой верификации раунда 1: карточка, перетащенная
@@ -60,7 +44,7 @@ function nsPredicate(ns: NamespaceFilter | undefined): (t: Task) => boolean {
  * чек-листов в обычных заметках формула «активная задача из любого файла»
  * затапливала входящие. По умолчанию (includePlain === false) задачи обычных
  * файлов (container "plain") во входящие НЕ попадают — остаются только захват
- * (container "inbox") и готовые задачи проектов. includePlain === true
+ * (container "inbox" only at configured inboxFile) и готовые задачи проектов. includePlain === true
  * возвращает старое поведение «всё хранилище». Календарь/отложенные/доски
  * настройка не затрагивает — меняется только членство во входящих.
  */
@@ -71,7 +55,9 @@ export function isInInbox(t: Task, ctx: QueryContext): boolean {
 	if (t.container === "project") return t.projectActive && ready(t, ctx.today, ctx.resolveDep);
 	// Обычные заметки: во входящие только с явного разрешения (скоуп входящих).
 	if (t.container === "plain") return bits.includePlain;
-	// container "inbox" — файл захвата, всегда во входящих (если активна и не разобрана).
+	// Legacy `gtd-inbox` flags are retained for migration rollback, but only the
+	// configured path is a runtime inbox.
+	if (t.container === "inbox") return t.filePath === bits.inboxFile;
 	return true;
 }
 
@@ -86,27 +72,25 @@ export function isInTickler(t: Task, today: IsoDate): boolean {
 }
 
 export function evaluate(spec: QuerySpec, ctx: QueryContext): Task[] {
-	const inNs = nsPredicate(ctx.namespace);
 	switch (spec.kind) {
 		case "inbox": {
-			const out = collect(ctx.tasks, (t) => inNs(t) && isInInbox(t, ctx));
+			const out = collect(ctx.tasks, (t) => isInInbox(t, ctx));
 			out.sort(cmpInbox);
 			return out;
 		}
 		case "tickler": {
-			const out = collect(ctx.tasks, (t) => inNs(t) && isInTickler(t, ctx.today));
+			const out = collect(ctx.tasks, (t) => isInTickler(t, ctx.today));
 			out.sort(cmpTickler);
 			return out;
 		}
 		case "active": {
-			// active — тестовый запрос, в проде не строится: пространством не режем.
+			// active — тестовый запрос, в проде не строится: scope здесь не фильтруем.
 			const out = collect(ctx.tasks, (t) => isActive(t, ctx.today));
 			out.sort(cmpLocation);
 			return out;
 		}
 		case "all-templates": {
-			// Регулярные — per-namespace вид (шаблоны активного пространства), §дизайн.
-			const out = collect(ctx.tasks, (t) => inNs(t) && isTemplate(t));
+			const out = collect(ctx.tasks, (t) => isTemplate(t));
 			out.sort(cmpLocation);
 			return out;
 		}
@@ -121,8 +105,6 @@ export function evaluate(spec: QuerySpec, ctx: QueryContext): Task[] {
 		case "calendar-range": {
 			const placed: { t: Task; date: IsoDate }[] = [];
 			for (const t of ctx.tasks) {
-				// не из активного пространства — мимо (per-namespace календарь §дизайн)
-				if (!inNs(t)) continue;
 				// EVENT-шаблоны рендерятся ОТДЕЛЬНО как виртуальные вхождения (expandOccurrences),
 				// сама строка события в календарь-диапазон как задача не протекает.
 				// ARCHIVED исключён здесь же: архив полностью инертен — зачёркнутая

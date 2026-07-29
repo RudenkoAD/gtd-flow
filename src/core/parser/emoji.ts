@@ -25,6 +25,11 @@ export const VALUE_FIELD_EMOJI = {
 	spawnedFrom: "🧬", // один токен
 	excludedDates: "🚫", // список дат-исключений вхождений серии через запятую без пробелов
 	location: "📍", // свободный текст места/адреса до следующего поля (как 🔁)
+	duration: "⏱", // sub-day 5m or whole-day minute payload, e.g. "90m"/"1440m"
+	cognitiveIntensity: "🧠", // 0..5
+	emotionalIntensity: "💓", // 0..5
+	physicalIntensity: "💪", // 0..5
+	scope: "🧭", // stable scope ID
 } as const;
 
 export type ValueFieldName = keyof typeof VALUE_FIELD_EMOJI;

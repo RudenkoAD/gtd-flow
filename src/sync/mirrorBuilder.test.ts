@@ -83,15 +83,12 @@ describe("buildMirrorFile — идемпотентность и порядок",
 });
 
 describe("buildMirrorFile — формат и frontmatter", () => {
-	it("frontmatter: gtd-events + gtd-external + gtd-external-name; gtd-namespace только для именованного", () => {
-		const общее = buildMirrorFile([], { name: "Личный" });
-		expect(общее).toContain("gtd-events: true");
-		expect(общее).toContain("gtd-external: true");
-		expect(общее).toContain('gtd-external-name: "Личный"');
-		expect(общее).not.toContain("gtd-namespace");
-
-		const named = buildMirrorFile([], { name: "Раб", namespace: "Работа" });
-		expect(named).toContain('gtd-namespace: "Работа"');
+	it("frontmatter: gtd-events + gtd-external + gtd-external-name without namespace", () => {
+		const text = buildMirrorFile([], { name: "Личный" });
+		expect(text).toContain("gtd-events: true");
+		expect(text).toContain("gtd-external: true");
+		expect(text).toContain('gtd-external-name: "Личный"');
+		expect(text).not.toContain("gtd-namespace");
 	});
 
 	it("заголовок-предупреждение в теле", () => {

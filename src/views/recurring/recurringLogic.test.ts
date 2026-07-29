@@ -380,37 +380,4 @@ describe("createTemplate", () => {
 		});
 		expect(res).toEqual({ ok: true, path: "Recurring.md" });
 	});
-
-	it("recurringFallback (пространство) без своих файлов — цель <root>/Регулярные.md, а не от spawnTarget", async () => {
-		const vault = new FakeVault();
-		const res = await createTemplate({
-			vault,
-			recurringFiles: [],
-			spawnTarget: "GTD/Inbox.md", // «Общее» — но fallback перебивает
-			recurringFallback: "Работа/Регулярные.md",
-			name: "Полить цветы",
-			ruleText: "every day",
-			genId: () => "tpl001",
-		});
-		expect(res).toEqual({ ok: true, path: "Работа/Регулярные.md" });
-		expect(vault.files.get("Работа/Регулярные.md")).toBe(
-			"- [ ] Полить цветы 🔁 every day 🆔 tpl001\n",
-		);
-		expect(vault.fm.get("Работа/Регулярные.md")).toEqual({ "gtd-recurring": true });
-	});
-
-	it("recurringFallback игнорируется, когда у пространства уже есть свой файл шаблонов", async () => {
-		const vault = new FakeVault({ "Работа/Рег.md": "- [ ] старый 🔁 every week" });
-		const res = await createTemplate({
-			vault,
-			recurringFiles: ["Работа/Рег.md"],
-			spawnTarget: "GTD/Inbox.md",
-			recurringFallback: "Работа/Регулярные.md",
-			name: "Полить цветы",
-			ruleText: "every day",
-			genId: () => "tpl001",
-		});
-		expect(res).toEqual({ ok: true, path: "Работа/Рег.md" });
-		expect(vault.files.has("Работа/Регулярные.md")).toBe(false);
-	});
 });

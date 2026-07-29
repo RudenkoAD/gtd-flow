@@ -194,13 +194,6 @@ export async function createTemplate(deps: {
 	ruleText: string;
 	/** Генератор 🆔; по умолчанию 6 символов base36 (как в WritebackService/CardService). */
 	genId?: () => string;
-	/**
-	 * Пер-namespace фолбэк-путь файла шаблонов (`<root>/Регулярные.md`) для
-	 * ИМЕНОВАННОГО пространства: когда своих gtd-recurring файлов ещё нет, шаблон
-	 * создаётся здесь, а не в производной от spawnTarget папке «Общего». Без него
-	 * (DEFAULT_NS / обратная совместимость) цель считает recurringTemplateTarget.
-	 */
-	recurringFallback?: string;
 }): Promise<TemplateWriteResult> {
 	if (isParseError(parseRule(deps.ruleText))) return { ok: false, reason: "invalid-rule" };
 	// проверка имени до записи (id не тратим, файл не создаём) — buildTemplateLine
@@ -208,14 +201,7 @@ export async function createTemplate(deps: {
 	if (buildTemplateLine(deps.name, deps.ruleText) === null)
 		return { ok: false, reason: "empty-name" };
 	const genId = deps.genId ?? defaultGenId;
-	// именованное пространство без своих файлов шаблонов — цель <root>/Регулярные.md;
-	// иначе (есть свой файл или «Общее») штатная логика от spawnTarget
-	const target: TemplateTarget =
-		deps.recurringFallback !== undefined
-			? deps.recurringFiles[0] !== undefined
-				? { path: deps.recurringFiles[0], create: false }
-				: { path: deps.recurringFallback, create: true }
-			: recurringTemplateTarget(deps.recurringFiles, deps.spawnTarget);
+	const target: TemplateTarget = recurringTemplateTarget(deps.recurringFiles, deps.spawnTarget);
 	try {
 		await deps.vault.ensureFile(target.path);
 		await deps.vault.processFrontmatter(target.path, (fm) => {

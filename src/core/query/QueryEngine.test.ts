@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import type { Task } from "../model/Task";
-import { DEFAULT_NS, type NamespaceDef } from "../namespace/namespace";
 import { evaluate, isInTickler, type QueryContext } from "./QueryEngine";
 import { defaultInboxConfig } from "./querySpec";
 
@@ -39,6 +38,11 @@ function makeTask(overrides: Partial<Task> = {}): Task {
 		dependsOn: [],
 		excludedDates: [],
 		location: null,
+		durationMinutes: null,
+		cognitiveIntensity: null,
+		emotionalIntensity: null,
+		physicalIntensity: null,
+		scopeId: null,
 		tags: [],
 		container: "plain",
 		projectActive: true,
@@ -75,12 +79,16 @@ describe("inbox — формула §1 (скоуп входящих: по умо
 		expect(inboxKeys([t])).toEqual([t.key]);
 	});
 
-	it("захват (container inbox) — во входящих из ЛЮБОГО файла-захвата (понятие источника из запроса ушло)", () => {
-		const anywhere = makeTask({ filePath: "Заметки/Inbox.md", container: "inbox" });
-		const inCapture = makeTask({ filePath: "GTD/Capture/phone.md", container: "inbox" });
-		expect(inboxKeys([anywhere, inCapture]).sort()).toEqual(
-			[anywhere.key, inCapture.key].sort(),
-		);
+	it("только configured inbox принимает container=inbox; legacy markers do not leak", () => {
+		const configured = makeTask({ filePath: "Capture.md", container: "inbox" });
+		const legacy = makeTask({ filePath: "GTD/Legacy Inbox.md", container: "inbox" });
+		const context: QueryContext = {
+			...ctxOf([configured, legacy]),
+			settingsBits: defaultInboxConfig(false, "Capture.md"),
+		};
+		expect(evaluate({ kind: "inbox" }, context).map((task) => task.key)).toEqual([
+			configured.key,
+		]);
 	});
 
 	it("hasDue исключает", () => {
@@ -410,120 +418,5 @@ describe("остальные запросы", () => {
 		);
 		expect(byDue).toEqual([]);
 		expect(bySched.map((x) => x.key)).toEqual([t.key]);
-	});
-});
-
-describe("пространства (namespace-фильтр запросов)", () => {
-	const NS_DEFS: NamespaceDef[] = [
-		{ name: "Работа", root: "Work" },
-		{ name: "Жизнь", root: "Личное" },
-	];
-
-	function ctxNs(
-		tasks: Task[],
-		active: string,
-		defs: readonly NamespaceDef[] = NS_DEFS,
-	): QueryContext {
-		return { ...ctxOf(tasks), namespace: { active, defs } };
-	}
-
-	const RANGE = {
-		kind: "calendar-range",
-		fromIso: "2026-07-01",
-		toIso: "2026-07-31",
-		placement: ["due", "scheduled", "start"],
-	} as const;
-
-	it("пустой defs ⇒ фильтр прозрачен при любом active (обратная совместимость)", () => {
-		const work = makeTask({ filePath: "Work/Inbox.md", container: "inbox" });
-		const life = makeTask({ filePath: "Личное/Inbox.md", container: "inbox" });
-		const keys = evaluate({ kind: "inbox" }, ctxNs([work, life], "Работа", []))
-			.map((t) => t.key)
-			.sort();
-		expect(keys).toEqual([work.key, life.key].sort());
-	});
-
-	it("отсутствие namespace в ctx ⇒ поведение как раньше (существующие вызовы)", () => {
-		const work = makeTask({ filePath: "Work/Inbox.md", container: "inbox" });
-		const life = makeTask({ filePath: "Личное/Inbox.md", container: "inbox" });
-		expect(evaluate({ kind: "inbox" }, ctxOf([work, life])).length).toBe(2);
-	});
-
-	it("inbox режется активным именованным пространством (по папке)", () => {
-		const work = makeTask({ filePath: "Work/Inbox.md", container: "inbox" });
-		const life = makeTask({ filePath: "Личное/Inbox.md", container: "inbox" });
-		const general = makeTask({ filePath: "Разное/Inbox.md", container: "inbox" });
-		expect(
-			evaluate({ kind: "inbox" }, ctxNs([work, life, general], "Работа")).map((t) => t.key),
-		).toEqual([work.key]);
-		expect(
-			evaluate({ kind: "inbox" }, ctxNs([work, life, general], "Жизнь")).map((t) => t.key),
-		).toEqual([life.key]);
-	});
-
-	it("активное DEFAULT_NS («Общее») — только файлы вне корней", () => {
-		const work = makeTask({ filePath: "Work/Inbox.md", container: "inbox" });
-		const general = makeTask({ filePath: "Разное/Inbox.md", container: "inbox" });
-		expect(
-			evaluate({ kind: "inbox" }, ctxNs([work, general], DEFAULT_NS)).map((t) => t.key),
-		).toEqual([general.key]);
-	});
-
-	it("override (frontmatter gtd-namespace) перебивает папку и в inbox", () => {
-		// файл лежит в Work/, но override уводит его в «Жизнь»
-		const moved = makeTask({
-			filePath: "Work/личное.md",
-			container: "inbox",
-			nsOverride: "Жизнь",
-		});
-		const stay = makeTask({ filePath: "Work/рабочее.md", container: "inbox" });
-		expect(
-			evaluate({ kind: "inbox" }, ctxNs([moved, stay], "Жизнь")).map((t) => t.key),
-		).toEqual([moved.key]);
-		expect(
-			evaluate({ kind: "inbox" }, ctxNs([moved, stay], "Работа")).map((t) => t.key),
-		).toEqual([stay.key]);
-	});
-
-	it("tickler режется пространством", () => {
-		const work = makeTask({ filePath: "Work/t.md", start: "2026-08-01" });
-		const life = makeTask({ filePath: "Личное/t.md", start: "2026-08-01" });
-		expect(
-			evaluate({ kind: "tickler" }, ctxNs([work, life], "Работа")).map((t) => t.key),
-		).toEqual([work.key]);
-	});
-
-	it("all-templates (регулярные) режутся пространством", () => {
-		const work = makeTask({ filePath: "Work/Регулярные.md", container: "recurring" });
-		const life = makeTask({ filePath: "Личное/Регулярные.md", container: "recurring" });
-		expect(
-			evaluate({ kind: "all-templates" }, ctxNs([work, life], "Работа")).map((t) => t.key),
-		).toEqual([work.key]);
-	});
-
-	it("calendar-range режется пространством", () => {
-		const work = makeTask({ filePath: "Work/c.md", due: "2026-07-20" });
-		const life = makeTask({ filePath: "Личное/c.md", due: "2026-07-21" });
-		expect(evaluate(RANGE, ctxNs([work, life], "Работа")).map((t) => t.key)).toEqual([
-			work.key,
-		]);
-	});
-
-	it("project-members НЕ режется пространством (файл проекта уже ns-консистентен)", () => {
-		const p = "Личное/Проекты/Кухня.md";
-		const a = makeTask({ filePath: p, container: "project", lineStart: 1 });
-		const b = makeTask({ filePath: p, container: "project", lineStart: 2, statusChar: "x" });
-		// активна «Работа», а проект в «Жизни» — члены всё равно возвращаются (byFile)
-		const keys = evaluate({ kind: "project-members", path: p }, ctxNs([a, b], "Работа")).map(
-			(t) => t.key,
-		);
-		expect(keys).toEqual([a.key, b.key]);
-	});
-
-	it("active НЕ режется пространством (тестовый запрос)", () => {
-		const life = makeTask({ filePath: "Личное/x.md" });
-		expect(evaluate({ kind: "active" }, ctxNs([life], "Работа")).map((t) => t.key)).toEqual([
-			life.key,
-		]);
 	});
 });

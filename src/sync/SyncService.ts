@@ -9,7 +9,6 @@
  * фейковыми портами. Ошибки сети/разбора НЕ роняют плагин: они ловятся и
  * пишутся в статус подписки (onResult), таймер продолжает жить.
  */
-import { nsCommonTarget, type NamespaceDef } from "../core/namespace/namespace";
 import type { ExternalCalendarSub } from "../settings/Settings";
 import { buildMirrorFile } from "./mirrorBuilder";
 import { mirrorWindow, parseIcs } from "./icsParse";
@@ -29,7 +28,7 @@ export interface SyncVaultPort {
 	 *  Идемпотентно: нет файла — тихо ничего. */
 	delete?(path: string): Promise<void>;
 	/** All generated external mirrors known to the host.  Supplying this enables
-	 * startup reconciliation after a subscription/root/namespace changed while
+	 * startup reconciliation after a subscription storage location changed while
 	 * the plugin was not running. */
 	listManagedMirrors?(): Promise<readonly ManagedMirror[]>;
 }
@@ -51,10 +50,8 @@ export interface SyncDeps {
 	clock: SyncClock;
 	/** Актуальный список подписок (читается на каждый проход из настроек). */
 	subscriptions: () => readonly ExternalCalendarSub[];
-	/** Актуальный список пространств (для пути и frontmatter gtd-namespace). */
-	namespaces: () => readonly NamespaceDef[];
-	/** Корневая папка «Общего» — дом зеркал подписок пространства «Общее». */
-	commonRoot: () => string;
+	/** Unified inbox determines the sibling folder for generated mirrors. */
+	inboxFile: () => string;
 	/** Интервал поллинга в минутах (min 1); читается при планировании. */
 	intervalMin: () => number;
 	/** Deadline одного сетевого запроса.  Адаптер может проигнорировать signal, но
@@ -68,7 +65,7 @@ export interface SyncDeps {
 	onLifecycleWarning?: (message: string) => void;
 }
 
-/** Подкаталог файлов-зеркал внутри корня пространства. */
+/** Подкаталог файлов-зеркал рядом с настроенным единым inbox. */
 const EXTERNAL_DIR = "External";
 export const DEFAULT_SYNC_FEED_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_CONCURRENT_FEEDS = 3;
@@ -104,35 +101,27 @@ export function subIdSlug(id: string): string {
 }
 
 /**
- * Путь файла-зеркала подписки: `<корень пространства>/External/<имя>-<slug>.md`.
- * Именованное пространство → под свой root; «Общее»/неизвестное → под commonRoot
- * (nsCommonTarget). Пустой commonRoot у «Общего» ⇒ `External/<имя>-<slug>.md` в корне.
+ * Path for a generated mirror: `<inbox parent>/External/<name>-<slug>.md`.
  * <slug> из id (см. subIdSlug) снимает коллизии одинаковых имён; переименование
  * подписки меняет часть-имя предсказуемо (slug стабилен — привязан к id).
  */
-export function mirrorPath(
-	sub: ExternalCalendarSub,
-	defs: readonly NamespaceDef[],
-	commonRoot: string,
-): string {
+export function mirrorPath(sub: ExternalCalendarSub, inboxFile: string): string {
 	const file = `${EXTERNAL_DIR}/${safeMirrorFileName(sub.name)}-${subIdSlug(sub.id)}.md`;
-	return nsCommonTarget(sub.namespace, defs, file, commonRoot);
+	return underInboxParent(inboxFile, file);
 }
 
 /** Pre-stable-id releases used this name-only form.  It is only used to
  * recognise a safe one-time migration candidate, never to delete an arbitrary
  * user-created `gtd-external` note. */
-function legacyMirrorPath(
-	sub: ExternalCalendarSub,
-	defs: readonly NamespaceDef[],
-	commonRoot: string,
-): string {
-	return nsCommonTarget(
-		sub.namespace,
-		defs,
-		`${EXTERNAL_DIR}/${safeMirrorFileName(sub.name)}.md`,
-		commonRoot,
-	);
+function legacyMirrorPath(sub: ExternalCalendarSub, inboxFile: string): string {
+	return underInboxParent(inboxFile, `${EXTERNAL_DIR}/${safeMirrorFileName(sub.name)}.md`);
+}
+
+function underInboxParent(inboxFile: string, child: string): string {
+	const normalized = inboxFile.trim().replace(/^\/+|\/+$/gu, "");
+	const slash = normalized.lastIndexOf("/");
+	const parent = slash === -1 ? "" : normalized.slice(0, slash);
+	return parent === "" ? child : `${parent}/${child}`;
 }
 
 function errMessage(e: unknown): string {
@@ -149,8 +138,7 @@ function stripCr(s: string): string {
 interface SyncContext {
 	sub: ExternalCalendarSub;
 	generation: number;
-	defs: readonly NamespaceDef[];
-	commonRoot: string;
+	inboxFile: string;
 }
 
 export class SyncService {
@@ -238,7 +226,7 @@ export class SyncService {
 	 * тихо ничего. Дёргает SettingsTab (кнопка удаления и смена имени).
 	 */
 	async deleteMirror(sub: ExternalCalendarSub): Promise<void> {
-		const path = mirrorPath(sub, this.deps.namespaces(), this.deps.commonRoot());
+		const path = mirrorPath(sub, this.deps.inboxFile());
 		await this.deletePath(path);
 		if (this.knownMirrorPaths.get(sub.id) === path) this.knownMirrorPaths.delete(sub.id);
 	}
@@ -278,11 +266,10 @@ export class SyncService {
 	async reconcileMirrors(): Promise<void> {
 		if (this.disposed) return;
 		const generation = this.configGeneration;
-		const defs = [...this.deps.namespaces()];
-		const commonRoot = this.deps.commonRoot();
+		const inboxFile = this.deps.inboxFile();
 		const subs = this.deps.subscriptions().map((sub) => ({ ...sub }));
 		const active = new Map(subs.map((sub) => [sub.id, sub]));
-		const desired = new Map(subs.map((sub) => [sub.id, mirrorPath(sub, defs, commonRoot)]));
+		const desired = new Map(subs.map((sub) => [sub.id, mirrorPath(sub, inboxFile)]));
 
 		const discovered = await this.deps.vault.listManagedMirrors?.();
 		if (!this.isConfigurationCurrent(generation)) return;
@@ -295,8 +282,8 @@ export class SyncService {
 					const legacy = subs.find(
 						(candidate) =>
 							mirror.subscriptionId === null &&
-							(mirror.path === mirrorPath(candidate, defs, commonRoot) ||
-								mirror.path === legacyMirrorPath(candidate, defs, commonRoot)),
+							(mirror.path === mirrorPath(candidate, inboxFile) ||
+								mirror.path === legacyMirrorPath(candidate, inboxFile)),
 					);
 					if (legacy !== undefined) {
 						const target = desired.get(legacy.id)!;
@@ -386,8 +373,7 @@ export class SyncService {
 		const context: SyncContext = {
 			sub,
 			generation: this.configGeneration,
-			defs: [...this.deps.namespaces()],
-			commonRoot: this.deps.commonRoot(),
+			inboxFile: this.deps.inboxFile(),
 		};
 		const promise = this.performSync(context);
 		this.inFlight.set(sub.id, { generation: context.generation, promise });
@@ -410,15 +396,11 @@ export class SyncService {
 			if (!this.isCurrent(context)) return;
 			const occurrences = parseIcs(text, mirrorWindow(this.deps.clock.now()));
 			if (!this.isCurrent(context)) return;
-			const defs = context.defs;
-			// gtd-namespace только для ИМЕНОВАННОГО пространства (есть в defs); «Общее» — опустить
-			const namedNs = defs.some((d) => d.name === sub.namespace) ? sub.namespace : null;
 			const content = buildMirrorFile(occurrences, {
 				name: sub.name,
-				namespace: namedNs,
 				subscriptionId: sub.id,
 			});
-			const path = mirrorPath(sub, defs, context.commonRoot);
+			const path = mirrorPath(sub, context.inboxFile);
 			const current = await this.deps.vault.read(path);
 			if (!this.isCurrent(context)) return;
 			// запись ТОЛЬКО при изменении — не будим Remotely Save на неизменной ленте.
@@ -450,8 +432,7 @@ export class SyncService {
 		return (
 			current !== undefined &&
 			current.name === context.sub.name &&
-			current.url === context.sub.url &&
-			current.namespace === context.sub.namespace
+			current.url === context.sub.url
 		);
 	}
 
@@ -490,7 +471,7 @@ export class SyncService {
 			await this.deletePath(path);
 			return;
 		}
-		const desired = mirrorPath(current, this.deps.namespaces(), this.deps.commonRoot());
+		const desired = mirrorPath(current, this.deps.inboxFile());
 		if (desired !== path) await this.deletePath(path);
 	}
 

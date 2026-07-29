@@ -1,12 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Intent } from "../core/intents/Intent";
 import type { ContainerKind, IsoDate, Task } from "../core/model/Task";
-import {
-	NS_CONVENTION,
-	type NamespaceDef,
-	nsTargetPath,
-	resolveNamespace,
-} from "../core/namespace/namespace";
 import { parseTaskLine } from "../core/parser/parseTaskLine";
 import { FakeFeed } from "../stores/testSupport";
 import { RecurrenceService } from "./RecurrenceService";
@@ -101,7 +95,7 @@ function makeHarness(over: HarnessOptions = {}) {
 		write: port,
 		dispatcher,
 		settings: () => ({
-			spawnTarget: INBOX,
+			inboxFile: INBOX,
 			catchUp: state.catchUp,
 			catchUpCap: state.catchUpCap,
 		}),
@@ -699,10 +693,7 @@ describe("RecurrenceService: правила «от выполнения» (§eve
 // Спавн по пространству ШАБЛОНА (spawnTargetFor)
 // ---------------------------------------------------------------------------
 
-describe("RecurrenceService: спавн во входящие пространства ШАБЛОНА", () => {
-	const WORK: NamespaceDef = { name: "Работа", root: "Work" };
-	const LIFE: NamespaceDef = { name: "Жизнь", root: "Личное" };
-	const DEFS = [WORK, LIFE];
+describe("RecurrenceService: единый inbox для всех шаблонов", () => {
 	const WORK_REC = "Work/Регулярные.md";
 	const LIFE_REC = "Личное/Регулярные.md";
 	const WORK_INBOX = "Work/Входящие.md";
@@ -711,8 +702,7 @@ describe("RecurrenceService: спавн во входящие пространс
 
 	const GLOBAL_REC = "Разное/Регулярные.md";
 
-	/** Обвязка с деп-функцией spawnTargetFor: цель = входящие пространства шаблона.
-	 *  recurringPaths — какие файлы индексатор помечает контейнером recurring. */
+	/** recurringPaths — какие файлы индексатор помечает контейнером recurring. */
 	function makeNsHarness(today: IsoDate, recurringPaths: readonly string[]) {
 		const port = new FakePort();
 		const feed = new FakeFeed();
@@ -723,16 +713,11 @@ describe("RecurrenceService: спавн во входящие пространс
 			feed,
 			write: port,
 			dispatcher,
-			settings: () => ({ spawnTarget: GLOBAL_INBOX, catchUp: "latest", catchUpCap: 30 }),
+			settings: () => ({ inboxFile: GLOBAL_INBOX, catchUp: "latest", catchUpCap: 30 }),
 			todayIso: () => today,
 			indexReady: () => true,
 			ensureFile: async (path) => {
 				if (!port.files.has(path)) port.files.set(path, "");
-			},
-			// пространство шаблона → его <root>/Входящие.md (иначе глобальный spawnTarget)
-			spawnTargetFor: (template) => {
-				const ns = resolveNamespace(template.filePath, template.nsOverride ?? null, DEFS);
-				return nsTargetPath(ns, DEFS, NS_CONVENTION.inbox, GLOBAL_INBOX);
 			},
 		});
 		const sync = () => {
@@ -746,7 +731,7 @@ describe("RecurrenceService: спавн во входящие пространс
 		return { port, feed, svc, sync };
 	}
 
-	it("копии двух шаблонов уходят каждая в свой inbox пространства (не активного)", async () => {
+	it("копии двух шаблонов уходят в единый inbox", async () => {
 		const { port, svc, sync } = makeNsHarness("2026-07-15", [WORK_REC, LIFE_REC]);
 		port.files.set(WORK_REC, "- [ ] Отчёт 🔁 every day 🆔 work-tpl 🔜 2026-07-15\n");
 		port.files.set(LIFE_REC, "- [ ] Зарядка 🔁 every day 🆔 life-tpl 🔜 2026-07-15\n");
@@ -756,15 +741,13 @@ describe("RecurrenceService: спавн во входящие пространс
 
 		expect(report.spawned).toBe(2);
 		expect(report.errors).toEqual([]);
-		// каждая копия — в inbox СВОЕГО пространства, глобальный spawnTarget не трогается
-		expect(port.files.get(WORK_INBOX)).toContain("work-tpl-20260715");
-		expect(port.files.get(LIFE_INBOX)).toContain("life-tpl-20260715");
-		expect(port.files.get(WORK_INBOX)).not.toContain("life-tpl");
-		expect(port.files.get(LIFE_INBOX)).not.toContain("work-tpl");
-		expect(port.files.has(GLOBAL_INBOX)).toBe(false);
+		expect(port.files.get(GLOBAL_INBOX)).toContain("work-tpl-20260715");
+		expect(port.files.get(GLOBAL_INBOX)).toContain("life-tpl-20260715");
+		expect(port.files.has(WORK_INBOX)).toBe(false);
+		expect(port.files.has(LIFE_INBOX)).toBe(false);
 	});
 
-	it("spawnNow пишет во входящие пространства шаблона", async () => {
+	it("spawnNow пишет в единый inbox", async () => {
 		const { port, svc, sync } = makeNsHarness("2026-07-15", [WORK_REC]);
 		port.files.set(WORK_REC, "- [ ] Отчёт 🔁 every day 🆔 work-tpl 🔜 2026-07-15\n");
 		sync();
@@ -772,11 +755,11 @@ describe("RecurrenceService: спавн во входящие пространс
 		const res = await svc.spawnNow("id:work-tpl");
 
 		expect(res.ok).toBe(true);
-		expect(port.files.get(WORK_INBOX)).toContain("work-tpl-20260715");
-		expect(port.files.has(GLOBAL_INBOX)).toBe(false);
+		expect(port.files.get(GLOBAL_INBOX)).toContain("work-tpl-20260715");
+		expect(port.files.has(WORK_INBOX)).toBe(false);
 	});
 
-	it("шаблон вне корней (DEFAULT_NS) спавнит в глобальный spawnTarget", async () => {
+	it("шаблон вне прежних корней также спавнит в единый inbox", async () => {
 		const { port, svc, sync } = makeNsHarness("2026-07-15", [GLOBAL_REC]);
 		port.files.set(GLOBAL_REC, "- [ ] Общая 🔁 every day 🆔 gen-tpl 🔜 2026-07-15\n");
 		sync();
@@ -784,7 +767,6 @@ describe("RecurrenceService: спавн во входящие пространс
 		const report = await svc.runPass();
 
 		expect(report.spawned).toBe(1);
-		// вне пространств → nsTargetPath вернул fallback (глобальный spawnTarget)
 		expect(port.files.get(GLOBAL_INBOX)).toContain("gen-tpl-20260715");
 		expect(port.files.has(WORK_INBOX)).toBe(false);
 		expect(port.files.has(LIFE_INBOX)).toBe(false);

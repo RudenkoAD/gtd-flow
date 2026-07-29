@@ -22,14 +22,12 @@
  */
 import { isCancelled, isDone } from "../core/model/gtdState";
 import type { IsoDate, ProjectStatus, Task } from "../core/model/Task";
-import { inNamespace, type NamespaceFilter } from "../core/namespace/namespace";
 import { parseTaskLine } from "../core/parser/parseTaskLine";
 import { setDependsOn } from "../core/parser/serializeTaskLine";
 import type { GraphIssue, NodeInfo, ResolveDep } from "../core/projects/graphEngine";
 import { buildGraph, wouldCreateCycle as edgeWouldCreateCycle } from "../core/projects/graphEngine";
 import type { LayoutMap, NodePosition } from "../core/projects/layout";
 import { normalizeLayout } from "../core/projects/layout";
-import { frontmatterNamespace } from "./snapshotHelpers";
 import type { IndexFeed } from "./types";
 import type { IntentDispatcher, WritePort } from "./WritebackService";
 import { locateTaskLine } from "./WritebackService";
@@ -52,7 +50,7 @@ export interface ProjectModel {
 	layout: LayoutMap;
 }
 export interface ProjectPort {
-	discoverProjects(filter?: NamespaceFilter): ProjectSummary[];
+	discoverProjects(): ProjectSummary[];
 	createProject(
 		path: string,
 		name: string,
@@ -93,10 +91,6 @@ export interface ProjectServiceDeps {
 	/** ВСЕ пути файлов с флагом gtd-project — проект без единой задачи виден discovery
 	 *  только через этот деп (индекс задач его не хранит). Зовётся лениво из discovery. */
 	containerPaths: () => string[];
-	/** Активное пространство + defs для фильтрации discoverProjects (пикеры/овервью
-	 *  показывают только активное пространство, дизайн). Прозрачен (defs пуст) ⇒
-	 *  фильтра нет. Опционален: без него discovery глобальна (обратная совместимость). */
-	namespaceFilter?: () => NamespaceFilter;
 	/** Не используется графовыми транзакциями (см. шапку) — маршрут строчных intents с полотна. */
 	dispatcher: IntentDispatcher;
 	/** Сегодняшняя дата для buildGraph (deferred/ready зависят от today). */
@@ -191,13 +185,8 @@ export class ProjectService implements ProjectPort {
 
 	// --- discovery ---
 
-	/**
-	 * discovery проектов пространства. `filter` — явное пространство вызывателя
-	 * (пофайловые виды Projects/Project передают своё ЛОКАЛЬНОЕ; меню-пикер — пространство
-	 * ЗАДАЧИ). Без него — фолбэк на инжектированный namespaceFilter() (обратная
-	 * совместимость). Прозрачен при пустом defs / ALL_NS.
-	 */
-	discoverProjects(filter?: NamespaceFilter): ProjectSummary[] {
+	/** Discover every project in the vault, regardless of its path. */
+	discoverProjects(): ProjectSummary[] {
 		// Файл-проект без единой задачи индексом задач не виден (byFile хранит
 		// только задачи) — добавляем его по frontmatter-флагу (NUX, dedupe через Set).
 		const paths = new Set<string>();
@@ -205,21 +194,7 @@ export class ProjectService implements ProjectPort {
 			if (t.container === "project") paths.add(t.filePath);
 		}
 		for (const p of this.deps.containerPaths()) paths.add(p);
-		// фильтр по пространству (пикеры/овервью); прозрачен при пустом defs / ALL_NS
-		const nsFilter = filter ?? this.deps.namespaceFilter?.();
-		const filtering = nsFilter !== undefined && nsFilter.defs.length > 0;
-		return [...paths]
-			.sort()
-			.filter(
-				(path) =>
-					!filtering ||
-					inNamespace(
-						path,
-						frontmatterNamespace(this.deps.readFrontmatter(path)),
-						nsFilter,
-					),
-			)
-			.map((path) => this.summarize(path));
+		return [...paths].sort().map((path) => this.summarize(path));
 	}
 
 	/**

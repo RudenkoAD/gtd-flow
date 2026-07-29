@@ -33,10 +33,6 @@ export class TicklerView extends GtdView {
 			app: plugin.app,
 			dnd: plugin.dnd ?? null,
 			menuPorts: taskMenuPortsFromPlugin(plugin),
-			// ЛОКАЛЬНОЕ пространство вида (per-tab) + его переключатель (см. GtdView).
-			activeNamespace: { subscribe: this.localNamespace$.subscribe },
-			namespaces: plugin.settings.namespaces,
-			setActiveNamespace: (name: string) => this.setLocalNamespace(name),
 		};
 	}
 }

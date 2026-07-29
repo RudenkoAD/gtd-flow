@@ -5,5 +5,5 @@
   "minAppVersion": "1.7.2",
   "description": "GTD workflow over plain Markdown tasks: inbox, kanban boards, calendar, tickler box, recurring tasks, and project dependency graphs.",
   "author": "Anton Roudenko",
-  "isDesktopOnly": false
+  "isDesktopOnly": true
 }

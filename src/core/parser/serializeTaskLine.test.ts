@@ -6,9 +6,12 @@ import {
 	removeTag,
 	setDependsOn,
 	setDescription,
+	setDurationMinutes,
 	setExcludedDates,
 	setField,
+	setIntensity,
 	setPriority,
+	setScopeId,
 	setStatusChar,
 	setValueField,
 } from "./serializeTaskLine";
@@ -29,6 +32,56 @@ function ctx(): ParseContext {
 		projectActive: true,
 	};
 }
+
+describe("metadata serializers", () => {
+	it("writes canonical metadata before a block ID and parses it back", () => {
+		let line = "- [ ] T ^block";
+		line = setDurationMinutes(line, 90);
+		line = setIntensity(line, "cognitiveIntensity", 4);
+		line = setIntensity(line, "emotionalIntensity", 2);
+		line = setIntensity(line, "physicalIntensity", 0);
+		line = setScopeId(line, "work");
+		expect(line).toBe("- [ ] T ⏱ 90m 🧠 4 💓 2 💪 0 🧭 work ^block");
+		const task = parseTaskLine(line, ctx())!;
+		expect(task).toMatchObject({
+			durationMinutes: 90,
+			cognitiveIntensity: 4,
+			emotionalIntensity: 2,
+			physicalIntensity: 0,
+			scopeId: "work",
+		});
+	});
+
+	it("replaces the final duplicate and clearing removes every duplicate", () => {
+		const duration = "- [ ] T ⏱ 30m x ⏱ 60m";
+		expect(setDurationMinutes(duration, 90)).toBe("- [ ] T ⏱ 30m x ⏱ 90m");
+		expect(setDurationMinutes(duration, null)).toBe("- [ ] T x");
+		const cognitive = "- [ ] T 🧠 1 x 🧠 2";
+		expect(setIntensity(cognitive, "cognitiveIntensity", 4)).toBe("- [ ] T 🧠 1 x 🧠 4");
+		expect(setIntensity(cognitive, "cognitiveIntensity", null)).toBe("- [ ] T x");
+		const scope = "- [ ] T 🧭 life x 🧭 work";
+		expect(setScopeId(scope, "home")).toBe("- [ ] T 🧭 life x 🧭 home");
+		expect(setScopeId(scope, null)).toBe("- [ ] T x");
+	});
+
+	it("validates values before any write", () => {
+		for (const value of [0, -5, 91, 1_445, 2_220, Number.MAX_SAFE_INTEGER]) {
+			expect(() => setDurationMinutes("- [ ] T", value), String(value)).toThrow();
+		}
+		for (const value of [-1, 6, 1.5]) {
+			expect(() => setIntensity("- [ ] T", "cognitiveIntensity", value as never)).toThrow();
+		}
+		expect(() => setScopeId("- [ ] T", "Work")).toThrow();
+		expect(() => setScopeId("- [ ] T", "two words")).toThrow();
+	});
+
+	it("has no product maximum below the safe-integer boundary", () => {
+		const largestWholeDay = Math.floor(Number.MAX_SAFE_INTEGER / 1_440) * 1_440;
+		expect(setDurationMinutes("- [ ] T", largestWholeDay)).toBe(
+			`- [ ] T ⏱ ${largestWholeDay}m`,
+		);
+	});
+});
 
 describe("setField: золотые случаи", () => {
 	it("вставка в конец строки", () => {

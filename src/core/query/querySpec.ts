@@ -19,15 +19,16 @@ export type QuerySpec =
 	  };
 
 /** Биты настроек, нужные inbox-запросу §1. Предикаты инжектируются,
- *  чтобы ядро не знало о формате настроек (projectStrategy и т.п.).
- *  inboxSources здесь БОЛЬШЕ НЕТ: с фидбек-раунда 2 источники захвата —
- *  только цели записи (quick-add, spawn), а не force-include запроса. */
+ *  чтобы ядро не знало о формате настроек (projectStrategy и т.п.). */
 export interface InboxConfig {
 	hasBoardTag: (t: Task) => boolean;
 	hasDue: (t: Task) => boolean;
+	/** The only configured capture file. Legacy `gtd-inbox` markers elsewhere are
+	 * retained for rollback, but cannot create additional runtime inboxes. */
+	inboxFile: string;
 	/** Скоуп входящих (скалярная настройка, а не Settings в ядре): включать ли
 	 *  активные задачи из ОБЫЧНЫХ заметок (container "plain"). false — входящие
-	 *  ограничены файлами GTD Flow (захват gtd-inbox + готовые задачи проектов).
+	 *  ограничены configured inbox + готовые задачи проектов.
 	 *  См. isInInbox в QueryEngine. */
 	includePlain: boolean;
 }
@@ -43,16 +44,9 @@ export function defaultHasDue(t: Task): boolean {
 	return t.due !== null;
 }
 
-/**
- * Параметр _inboxSources игнорируется и оставлен только ради совместимости
- * вызовов видов/фабрик (Inbox.svelte, queryStore передают settings.inboxSources):
- * формула входящих упрощена — «задача с датой — уже разобрана», force-include
- * источников захвата упразднён.
- *
- * includePlain — единственная реальная настройка формулы: скоуп входящих
- * (см. InboxConfig.includePlain). По умолчанию false: входящие смотрят только
- * на файлы GTD Flow. Вид передаёт сюда settings.inboxIncludePlain.
- */
-export function defaultInboxConfig(includePlain = false): InboxConfig {
-	return { hasBoardTag: defaultHasBoardTag, hasDue: defaultHasDue, includePlain };
+/** `inboxFile` is the only capture-container path. Keeping an older
+ * `gtd-inbox: true` marker is safe for migration rollback, but it no longer
+ * makes that file a runtime inbox source. */
+export function defaultInboxConfig(includePlain = false, inboxFile = "GTD/Inbox.md"): InboxConfig {
+	return { hasBoardTag: defaultHasBoardTag, hasDue: defaultHasDue, inboxFile, includePlain };
 }

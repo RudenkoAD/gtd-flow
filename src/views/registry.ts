@@ -5,6 +5,7 @@ export const VIEW_TYPES = {
 	kanban: "gtd-flow-kanban",
 	calendar: "gtd-flow-calendar",
 	tickler: "gtd-flow-tickler",
+	ai: "gtd-flow-ai",
 	recurring: "gtd-flow-recurring",
 	projects: "gtd-flow-projects",
 	project: "gtd-flow-project",
@@ -39,6 +40,7 @@ export const VIEW_META: Record<GtdViewKind, ViewMeta> = {
 		displayText: "GTD: Отложенные",
 		icon: "alarm-clock",
 	},
+	ai: { kind: "ai", type: VIEW_TYPES.ai, displayText: "GTD: AI", icon: "sparkles" },
 	recurring: {
 		kind: "recurring",
 		type: VIEW_TYPES.recurring,

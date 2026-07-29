@@ -223,13 +223,13 @@ describe("fileContextFromFrontmatter", () => {
 });
 
 describe("fileContextFromFrontmatter — gtd-namespace (override пространства)", () => {
-	it("непустая строка → nsOverride (обрезанный)", () => {
-		expect(fileContextFromFrontmatter("x.md", { "gtd-namespace": "Работа" }).nsOverride).toBe(
-			"Работа",
-		);
+	it("непустая строка игнорируется", () => {
 		expect(
-			fileContextFromFrontmatter("x.md", { "gtd-namespace": "  Жизнь  " }).nsOverride,
-		).toBe("Жизнь");
+			fileContextFromFrontmatter("x.md", { "gtd-namespace": "Работа" }),
+		).not.toHaveProperty("nsOverride");
+		expect(
+			fileContextFromFrontmatter("x.md", { "gtd-namespace": "  Жизнь  " }),
+		).not.toHaveProperty("nsOverride");
 	});
 
 	it("отсутствие / пусто / пробелы / не-строка → ключ nsOverride опущен", () => {
@@ -250,13 +250,13 @@ describe("fileContextFromFrontmatter — gtd-namespace (override простра�
 		expect(fileContextFromFrontmatter("x.md", undefined)).not.toHaveProperty("nsOverride");
 	});
 
-	it("override сосуществует с флагами контейнера (не влияет на container)", () => {
+	it("legacy key не влияет на container", () => {
 		const ctx = fileContextFromFrontmatter("b.md", {
 			"gtd-board": true,
 			"gtd-namespace": "Работа",
 		});
 		expect(ctx.container).toBe("board");
-		expect(ctx.nsOverride).toBe("Работа");
+		expect(ctx).not.toHaveProperty("nsOverride");
 	});
 });
 

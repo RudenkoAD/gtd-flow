@@ -125,6 +125,7 @@
 					toggle: () => void toggleStatus(vm.data.task),
 					progress,
 					openCard: vm.data.ghost ? () => {} : () => void openCardFor(vm.data.task),
+					metadata: menuPorts?.metadata ?? null,
 				},
 			};
 		});

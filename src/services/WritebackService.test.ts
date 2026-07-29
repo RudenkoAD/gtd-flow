@@ -838,6 +838,32 @@ describe("WritebackService: set-location", () => {
 	});
 });
 
+describe("WritebackService: patch-task-metadata", () => {
+	it("applies the whole metadata patch with one structural ID injection and one write", async () => {
+		const { port, svc, feed } = makeSvc({ genId: () => "meta1" });
+		const line = "- [ ] Reconcile invoices ^block";
+		port.files.set(INBOX, line + "\n");
+		feed.replaceFile(INBOX, [parseLine(INBOX, line, 0)]);
+		const key = feed.getIndex().fileTasks(INBOX)[0]!.key;
+
+		const res = await svc.dispatch({
+			type: "patch-task-metadata",
+			key,
+			durationMinutes: 90,
+			cognitiveIntensity: 4,
+			emotionalIntensity: 2,
+			physicalIntensity: 0,
+			scopeId: "work",
+		});
+
+		expect(res).toEqual({ ok: true });
+		expect(port.files.get(INBOX)).toBe(
+			"- [ ] Reconcile invoices 🆔 meta1 ⏱ 90m 🧠 4 💓 2 💪 0 🧭 work ^block\n",
+		);
+		expect(port.writes).toHaveLength(1);
+	});
+});
+
 describe("WritebackService: непокрытые этапы", () => {
 	it("spawn-instances/reorder/графовые → not-implemented-stage", async () => {
 		const { port, svc } = makeSvc();

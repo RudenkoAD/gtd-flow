@@ -2,22 +2,15 @@ import { describe, expect, it } from "vitest";
 import type { Intent } from "../../core/intents/Intent";
 import type { IntentResult } from "../../services/WritebackService";
 import { makeTask } from "../../stores/testSupport";
-import { DEFAULT_NS, type NamespaceDef } from "../../core/namespace/namespace";
 import {
-	captureTarget,
-	captureTargetInNamespace,
-	captureTargets,
-	captureTargetsInNamespace,
 	ensureArchiveFile,
 	ensureCaptureFile,
-	ensureCaptureFileNs,
 	findTaskAtLine,
 	moveTaskToTemplates,
 	nlCaptureHint,
 	quickCaptureLine,
 	quickCaptureLineNl,
 	recurringFilePaths,
-	recurringFilePathsInNamespace,
 	recurringTemplateTarget,
 } from "./taskActions";
 
@@ -191,152 +184,6 @@ describe("recurringFilePaths / recurringTemplateTarget", () => {
 			path: "Recurring.md",
 			create: true,
 		});
-	});
-});
-
-describe("captureTargets / captureTarget: цели записи быстрого ввода", () => {
-	it("нет gtd-inbox файлов → пустой список, цель = первый фолбэк", () => {
-		const tasks = [
-			makeTask({ filePath: "a.md", container: "plain" }),
-			makeTask({ filePath: "b.md", container: "board" }),
-		];
-		expect(captureTargets(tasks)).toEqual([]);
-		expect(captureTarget(tasks, ["GTD/Inbox.md"])).toBe("GTD/Inbox.md");
-	});
-
-	it("один gtd-inbox файл → он и есть цель (фолбэк не используется)", () => {
-		const tasks = [
-			makeTask({ filePath: "GTD/Capture.md", container: "inbox" }),
-			makeTask({ filePath: "other.md", container: "plain" }),
-		];
-		expect(captureTargets(tasks)).toEqual(["GTD/Capture.md"]);
-		expect(captureTarget(tasks, ["GTD/Inbox.md"])).toBe("GTD/Capture.md");
-	});
-
-	it("несколько gtd-inbox файлов → уникальные и сортированные, цель = первый", () => {
-		const tasks = [
-			makeTask({ filePath: "GTD/Работа.md", container: "inbox" }),
-			makeTask({ filePath: "GTD/Быт.md", container: "inbox" }),
-			makeTask({ filePath: "GTD/Работа.md", container: "inbox" }), // дубль пути
-		];
-		expect(captureTargets(tasks)).toEqual(["GTD/Быт.md", "GTD/Работа.md"]);
-		expect(captureTarget(tasks, ["GTD/Inbox.md"])).toBe("GTD/Быт.md");
-	});
-
-	it("ни помеченных файлов, ни фолбэка → undefined (вызывающий не пишет)", () => {
-		expect(captureTarget([], [])).toBeUndefined();
-	});
-});
-
-describe("captureTargetsInNamespace / captureTargetInNamespace: цели per-namespace", () => {
-	const WORK: NamespaceDef = { name: "Работа", root: "Work" };
-	const LIFE: NamespaceDef = { name: "Жизнь", root: "Личное" };
-	const defs = [WORK, LIFE];
-
-	it("оставляет только gtd-inbox файлы активного пространства (по папке)", () => {
-		const tasks = [
-			makeTask({ filePath: "Work/Входящие.md", container: "inbox" }),
-			makeTask({ filePath: "Личное/Входящие.md", container: "inbox" }),
-			makeTask({ filePath: "Разное/capture.md", container: "inbox" }),
-		];
-		expect(captureTargetsInNamespace(tasks, "Работа", defs)).toEqual(["Work/Входящие.md"]);
-		expect(captureTargetsInNamespace(tasks, "Жизнь", defs)).toEqual(["Личное/Входящие.md"]);
-		// «Общее» — только файлы вне корней
-		expect(captureTargetsInNamespace(tasks, DEFAULT_NS, defs)).toEqual(["Разное/capture.md"]);
-	});
-
-	it("frontmatter-override уводит файл в чужое пространство", () => {
-		const tasks = [
-			// физически в Work/, но override → «Жизнь»
-			makeTask({ filePath: "Work/личное.md", container: "inbox", nsOverride: "Жизнь" }),
-		];
-		expect(captureTargetsInNamespace(tasks, "Работа", defs)).toEqual([]);
-		expect(captureTargetsInNamespace(tasks, "Жизнь", defs)).toEqual(["Work/личное.md"]);
-	});
-
-	it("цель = первый файл пространства, иначе fallback (конвенция считается снаружи)", () => {
-		const tasks = [makeTask({ filePath: "Личное/Входящие.md", container: "inbox" })];
-		// в «Работе» своих файлов нет → fallback
-		expect(captureTargetInNamespace(tasks, "Работа", defs, "Work/Входящие.md")).toBe(
-			"Work/Входящие.md",
-		);
-		// в «Жизни» есть свой файл → он, не fallback
-		expect(captureTargetInNamespace(tasks, "Жизнь", defs, "Личное/Входящие.md")).toBe(
-			"Личное/Входящие.md",
-		);
-	});
-
-	it("пустой defs ⇒ DEFAULT_NS ловит все inbox-файлы (обратная совместимость)", () => {
-		const tasks = [
-			makeTask({ filePath: "GTD/Capture.md", container: "inbox" }),
-			makeTask({ filePath: "any/x.md", container: "inbox" }),
-		];
-		expect(captureTargetsInNamespace(tasks, DEFAULT_NS, [])).toEqual([
-			"GTD/Capture.md",
-			"any/x.md",
-		]);
-	});
-});
-
-describe("recurringFilePathsInNamespace: шаблоны per-namespace", () => {
-	const WORK: NamespaceDef = { name: "Работа", root: "Work" };
-	const LIFE: NamespaceDef = { name: "Жизнь", root: "Личное" };
-	const defs = [WORK, LIFE];
-
-	it("оставляет только gtd-recurring файлы активного пространства", () => {
-		const tasks = [
-			makeTask({ filePath: "Work/Регулярные.md", container: "recurring" }),
-			makeTask({ filePath: "Личное/Регулярные.md", container: "recurring" }),
-			makeTask({ filePath: "Work/other.md", container: "plain" }), // не recurring
-		];
-		expect(recurringFilePathsInNamespace(tasks, "Работа", defs)).toEqual([
-			"Work/Регулярные.md",
-		]);
-		expect(recurringFilePathsInNamespace(tasks, "Жизнь", defs)).toEqual([
-			"Личное/Регулярные.md",
-		]);
-	});
-});
-
-describe("ensureCaptureFileNs: gtd-inbox + условный gtd-namespace override", () => {
-	const WORK: NamespaceDef = { name: "Работа", root: "Work" };
-	const defs = [WORK];
-
-	function fakeVault() {
-		const fm: Record<string, unknown> = {};
-		return {
-			fm,
-			vault: {
-				ensureFile: async (): Promise<void> => {},
-				processFrontmatter: async (
-					_path: string,
-					fn: (fm: Record<string, unknown>) => void,
-				): Promise<void> => {
-					fn(fm);
-				},
-			},
-		};
-	}
-
-	it("файл ВНУТРИ корня именованного пространства — только gtd-inbox (override не нужен)", async () => {
-		const f = fakeVault();
-		const ok = await ensureCaptureFileNs(f.vault, "Work/Входящие.md", "Работа", defs);
-		expect(ok).toBe(true);
-		expect(f.fm).toEqual({ "gtd-inbox": true });
-	});
-
-	it("файл ВНЕ корня именованного пространства — добавляет gtd-namespace override", async () => {
-		const f = fakeVault();
-		const ok = await ensureCaptureFileNs(f.vault, "Разное/capture.md", "Работа", defs);
-		expect(ok).toBe(true);
-		expect(f.fm).toEqual({ "gtd-inbox": true, "gtd-namespace": "Работа" });
-	});
-
-	it("DEFAULT_NS — override не пишется никогда", async () => {
-		const f = fakeVault();
-		const ok = await ensureCaptureFileNs(f.vault, "Разное/capture.md", DEFAULT_NS, defs);
-		expect(ok).toBe(true);
-		expect(f.fm).toEqual({ "gtd-inbox": true });
 	});
 });
 

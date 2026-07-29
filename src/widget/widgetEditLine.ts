@@ -27,8 +27,21 @@
  *     src/views/calendar/calendarLogic.ts (parseTimeRange), но конец ОБЯЗАН быть
  *     строго позже начала (правило 'at' и запись на диск требуют этого).
  */
-import type { IsoDate } from "../core/model/Task";
-import { setDescription, setField, setValueField } from "../core/parser/serializeTaskLine";
+import {
+	isDurationMinutes,
+	isIntensityLevel,
+	isScopeId,
+	type IsoDate,
+	type IntensityLevel,
+} from "../core/model/Task";
+import {
+	setDescription,
+	setDurationMinutes,
+	setField,
+	setIntensity,
+	setScopeId,
+	setValueField,
+} from "../core/parser/serializeTaskLine";
 import {
 	serializeTokens,
 	TIME_RE,
@@ -49,6 +62,14 @@ export interface LineEdits {
 	timeRange?: string | null;
 	/** Место 📍; null/пустая строка — снять поле. */
 	location?: string | null;
+	/** Total elapsed minutes; null clears, otherwise sub-day 5m or whole-day increments. */
+	durationMinutes?: number | null;
+	/** Each intensity is 0..5; null clears that single manual field. */
+	cognitiveIntensity?: IntensityLevel | null;
+	emotionalIntensity?: IntensityLevel | null;
+	physicalIntensity?: IntensityLevel | null;
+	/** Stable scope ID; null clears. Widget callers cannot create scopes. */
+	scopeId?: string | null;
 }
 
 type EditOk = { ok: true; line: string };
@@ -260,6 +281,33 @@ function editLine(rawLine: unknown, editsRaw: unknown): EditResult {
 		const r = applyDateTime(line, edits.date, edits.timeRange);
 		if (!r.ok) return r;
 		line = r.line;
+	}
+
+	// Widget writes are local manual edits only. All requested metadata changes
+	// are folded into the one returned task line; the host remains responsible for
+	// its existing single-file write permission and any provenance integration.
+	try {
+		if (edits.durationMinutes !== undefined) {
+			if (edits.durationMinutes !== null && !isDurationMinutes(edits.durationMinutes)) {
+				return err("invalid-duration");
+			}
+			line = setDurationMinutes(line, edits.durationMinutes);
+		}
+		for (const [field, value] of [
+			["cognitiveIntensity", edits.cognitiveIntensity],
+			["emotionalIntensity", edits.emotionalIntensity],
+			["physicalIntensity", edits.physicalIntensity],
+		] as const) {
+			if (value === undefined) continue;
+			if (value !== null && !isIntensityLevel(value)) return err("invalid-intensity");
+			line = setIntensity(line, field, value);
+		}
+		if (edits.scopeId !== undefined) {
+			if (edits.scopeId !== null && !isScopeId(edits.scopeId)) return err("invalid-scope");
+			line = setScopeId(line, edits.scopeId);
+		}
+	} catch {
+		return err("invalid-metadata");
 	}
 
 	return { ok: true, line };

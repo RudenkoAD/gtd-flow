@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { Platform, type App } from "obsidian";
-	import { NS_CONVENTION, nsTargetPath, resolveNamespace } from "../../core/namespace/namespace";
 	import type { IntentDispatcher } from "../../services/WritebackService";
 	import type { GtdFlowSettings } from "../../settings/Settings";
 	import { obsidianTooltip } from "../common/tooltip";
@@ -26,7 +25,7 @@
 		app: App;
 		dispatcher: IntentDispatcher;
 		vault: EventVaultPort;
-		/** Настройки — для цели «Копировать…» у внешнего события (файл событий пространства). */
+		/** Настройки — для цели «Копировать…» у внешнего события. */
 		settings: GtdFlowSettings;
 		/** Геометрия для тайм-сетки; null — обычный chip (месяц/неделя/агенда/«Весь день»). */
 		block?: TimedBlock | null;
@@ -40,17 +39,8 @@
 	/** Событие из файла-зеркала внешнего календаря (gtd-external): read-only —
 	 *  приглушённый вид, метка 🔗, меню без правок/удаления/переноса. */
 	const external = $derived(occ.task.external === true);
-	/** Цель «Копировать…» у внешнего события: файл событий ПРОСТРАНСТВА зеркала —
-	 *  <root>/События.md (именованное) или settings.eventsFile («Общее»). Копия —
-	 *  наше одноразовое событие в обычном файле (зеркало не трогаем). */
-	const copyTargetFile = $derived.by(() => {
-		const ns = resolveNamespace(
-			occ.task.filePath,
-			occ.task.nsOverride ?? null,
-			settings.namespaces,
-		);
-		return nsTargetPath(ns, settings.namespaces, NS_CONVENTION.events, settings.eventsFile);
-	});
+	/** External-event copies always become local events in the configured global file. */
+	const copyTargetFile = $derived(settings.eventsFile);
 
 	/** Корневой элемент — призрак drag'а и якорь времени (верх блока = время начала). */
 	let rootEl = $state<HTMLElement | null>(null);

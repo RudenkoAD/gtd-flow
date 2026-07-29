@@ -1,11 +1,13 @@
 /** Модель настроек (ТЗ §9). Персистится через loadData/saveData. */
 
-import { DEFAULT_NS, normalizeNsPath, type NamespaceDef } from "../core/namespace/namespace";
 import type { PromotionRetry } from "../core/tickler/promote";
 
 export type PromoteTo = "origin" | "inbox";
 export type CatchUpPolicy = "latest" | "all" | "none";
 export type CalendarField = "due" | "scheduled" | "start";
+export type AiPrivacyPolicy = "unconfigured" | "account-policy" | "require-zdr";
+export type AiCredentialStorage = "unconfigured" | "memory-only";
+export type DurationLongStyle = "whole-days";
 /** Тип записи инлайн-ввода календаря (переключатель «Задача | Событие»). Канон
  *  союза живёт здесь — настройка lastQuickAddKind его же и хранит. */
 export type QuickAddKind = "task" | "event";
@@ -14,7 +16,7 @@ export type QuickAddKind = "task" | "event";
  * Версия формата data.json.  Она отделена от версии плагина: формат настроек
  * меняется только когда требуется миграция сохранённых пользовательских данных.
  */
-export const SETTINGS_FORMAT_VERSION = 1;
+export const SETTINGS_FORMAT_VERSION = 4;
 
 export interface DeferPreset {
 	label: string;
@@ -24,7 +26,7 @@ export interface DeferPreset {
 
 /**
  * Подписка на внешний iCal-календарь (§внешние календари). Материализуется в
- * файл-зеркало `<корень пространства>/External/<имя>.md`. Персистится в data.json.
+ * файл-зеркало рядом с единым GTD-хранилищем. Персистится в data.json.
  * lastSyncAt/lastError — статус последней синхронизации (обновляет SyncService).
  */
 export interface ExternalCalendarSub {
@@ -34,8 +36,6 @@ export interface ExternalCalendarSub {
 	name: string;
 	/** Секретный/публичный адрес .ics-ленты. Хранится локально в data.json. */
 	url: string;
-	/** Пространство подписки: DEFAULT_NS («Общее») или имя именованного пространства. */
-	namespace: string;
 	/** Epoch-мс последней УСПЕШНОЙ синхронизации; null — ещё не синхронизировалась. */
 	lastSyncAt: number | null;
 	/** Текст последней ошибки (сеть/разбор) или null — последняя попытка успешна. */
@@ -45,13 +45,22 @@ export interface ExternalCalendarSub {
 export interface GtdFlowSettings {
 	/** Версия сериализованного формата data.json (не версия плагина). */
 	settingsVersion: number;
-	/** Корневая папка «Общего» — «дом» для файлов, создаваемых в пространстве «Общее»
-	 *  (по конвенции NS_CONVENTION от этой папки, ровно как именованное пространство
-	 *  создаёт от своего корня): захват «Общего» → `<commonRoot>/Входящие.md` и т.д.
-	 *  ВАЖНО: это папка ДЛЯ СОЗДАНИЯ, а не признак принадлежности — любой файл ВНЕ
-	 *  корней пространств относится к «Общему» независимо от того, где он лежит.
-	 *  Заменил выпиленную настройку inboxSources (фидбек-раунд 2 итерации 2). */
-	commonRoot: string;
+	/** Single Markdown inbox. Capture, promotion, and recurrence write here. */
+	inboxFile: string;
+	/**
+	 * AI remains inert until the user explicitly enables it. Account-policy
+	 * routing and memory-only credentials are the decided MVP defaults; secrets
+	 * are never represented here.
+	 */
+	ai: {
+		enabled: boolean;
+		privacyPolicy: AiPrivacyPolicy;
+		credentialStorage: AiCredentialStorage;
+		/** Version of the synced `.gtd-flow` record layout seen by this device. */
+		storageVersion: number;
+	};
+	/** Durations from 24 hours upward are valid only as whole days and display as such. */
+	durationLongStyle: DurationLongStyle;
 	/** Включать ли во «Входящие» активные задачи из ОБЫЧНЫХ заметок (container
 	 *  "plain"). false (по умолчанию) — входящие ограничены файлами GTD Flow:
 	 *  захват (gtd-inbox) и готовые задачи проектов. true — старое поведение,
@@ -80,7 +89,6 @@ export interface GtdFlowSettings {
 	 * 🛫, поэтому следующий проход может продолжить работу после краша/отказа. */
 	promoteRetries: PromotionRetry[];
 	recurring: {
-		spawnTarget: string;
 		catchUp: CatchUpPolicy;
 		catchUpCap: number;
 	};
@@ -96,16 +104,6 @@ export interface GtdFlowSettings {
 	/** Пройден ли онбординг: приветственный диалог показывается один раз на чистом
 	 *  хранилище (см. src/onboarding). Существующему пользователю выставляется молча. */
 	onboarded: boolean;
-	/** Пользовательские пространства (гибрид «пространство = папка»): имя → корневая
-	 *  папка. Пустой список (по умолчанию) ⇒ пространств не настроено, поведение и UI
-	 *  прежние (обратная совместимость без единой настройки). Массив заменяется целиком
-	 *  при слиянии (см. mergeSettings). Резолвинг/членство — src/core/namespace. */
-	namespaces: NamespaceDef[];
-	/** Активное пространство — ОДНО на всё приложение, персистится. Sentinel DEFAULT_NS
-	 *  («Общее») по умолчанию: всё вне пользовательских корней и без frontmatter-override.
-	 *  При загрузке нормализуется (см. normalizeActiveNamespace): удалённое из namespaces
-	 *  пространство откатывается к DEFAULT_NS. */
-	activeNamespace: string;
 	/** Липкое положение переключателя «Задача | Событие» инлайн-ввода календаря:
 	 *  последний выбор пользователя переживает перезапуск. В UI настроек НЕ показывается —
 	 *  меняется только кликом по переключателю в сетке. Дефолт — «Задача». */
@@ -126,7 +124,14 @@ export interface GtdFlowSettings {
 export function createDefaultSettings(): GtdFlowSettings {
 	return {
 		settingsVersion: SETTINGS_FORMAT_VERSION,
-		commonRoot: "GTD",
+		inboxFile: "GTD/Inbox.md",
+		ai: {
+			enabled: false,
+			privacyPolicy: "account-policy",
+			credentialStorage: "memory-only",
+			storageVersion: 0,
+		},
+		durationLongStyle: "whole-days",
 		inboxIncludePlain: false,
 		projectStrategy: "tag",
 		projectTagPrefix: "#project/",
@@ -142,13 +147,12 @@ export function createDefaultSettings(): GtdFlowSettings {
 		autoInjectId: true,
 		debounceMs: { fileReindex: 150, queryRecompute: 50 },
 		virtualizeThreshold: 100,
-		// Дефолт "inbox" (фидбек пользователя): когда 🛫 наступает сама, задача
-		// приходит именно во «Входящие» своего пространства, а не остаётся на месте.
+		// Дефолт "inbox": когда наступает 🛫, задача переносится в единый
+		// настроенный файл входящих, а не остаётся в исходной заметке.
 		promoteTo: "inbox",
 		promoteLastRun: null,
 		promoteRetries: [],
 		recurring: {
-			spawnTarget: "GTD/Inbox.md",
 			catchUp: "latest",
 			catchUpCap: 30,
 		},
@@ -158,8 +162,6 @@ export function createDefaultSettings(): GtdFlowSettings {
 		archiveFile: "GTD/Archive.md",
 		dayStatusFile: "GTD/DayStatus.md",
 		onboarded: false,
-		namespaces: [],
-		activeNamespace: DEFAULT_NS,
 		lastQuickAddKind: "task",
 		externalCalendars: [],
 		externalSyncIntervalMin: 5,
@@ -180,25 +182,4 @@ function deepFreeze<T>(value: T): T {
 		for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
 	}
 	return value;
-}
-
-/**
- * «Дефолт следует за commonRoot»: если путь-настройка остался фабричным дефолтом,
- * а пользователь сменил commonRoot, пересобрать путь как `<commonRoot>/<имя-файла>`
- * (имя берём из фабричного дефолта). Пользовательский путь (≠ дефолту) не трогаем —
- * он задан осознанно. Пустой commonRoot ⇒ голое имя файла (в корне хранилища).
- *
- * Применяется к dayStatusFile (см. main.ts): при commonRoot="GTD" (дефолт) выдаёт
- * тот же "GTD/DayStatus.md" — no-op обратной совместимости; при commonRoot="Жизнь" и
- * нетронутом поле — "Жизнь/DayStatus.md". spawnTarget этому правилу НЕ следует (по ТЗ).
- */
-export function defaultUnderCommonRoot(
-	current: string,
-	factoryDefault: string,
-	commonRoot: string,
-): string {
-	if (current !== factoryDefault) return current;
-	const base = factoryDefault.split("/").pop() ?? factoryDefault;
-	const root = normalizeNsPath(commonRoot);
-	return root === "" ? base : `${root}/${base}`;
 }

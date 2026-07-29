@@ -66,11 +66,18 @@ jobs:
       - name: Publish verified GitHub release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_PREAMBLE: |
+            **Breaking release:** runtime namespaces are replaced by one unified inbox and explicit task scopes; the plugin is now desktop-only and adds the opt-in AI Inbox MVP.
+
+            Back up the vault before upgrading. Legacy namespace vaults must use the built-in dry-run, apply, resume, and rollback migration commands. [Read the full upgrade and privacy guide](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/docs/BREAKING_AI_INBOX_MVP.md).
         run: |
           gh release create "$GITHUB_REF_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
+            --notes "$RELEASE_PREAMBLE" \
+            --verify-tag \
+            --fail-on-no-commits \
             dist/release/main.js \
             dist/release/manifest.json \
             dist/release/styles.css \

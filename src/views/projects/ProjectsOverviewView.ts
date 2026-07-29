@@ -28,13 +28,6 @@ export class ProjectsOverviewView extends GtdView {
 			app: plugin.app,
 			settings: plugin.settings,
 			settingsRevision: plugin.settingsRevision.store,
-			// ЛОКАЛЬНОЕ пространство вида (per-tab): реактивный источник, список
-			// определений и локальный сеттер — для NamespaceSwitcher в шапке, фильтра
-			// discovery проектов и ns-цели нового проекта. Смена активного эпоху
-			// индекса не бампает — вид пере-рендерится подпиской на localNamespace$.
-			activeNamespace$: { subscribe: this.localNamespace$.subscribe },
-			namespaces: plugin.settings.namespaces,
-			setActiveNamespace: (name: string) => this.setLocalNamespace(name),
 			openProject: (projectPath: string) =>
 				reportAsync("открытие проекта", () => this.openProjectGraph(projectPath)),
 		};

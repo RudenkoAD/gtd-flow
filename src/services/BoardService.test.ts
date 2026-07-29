@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { BoardDef } from "../core/board/boardFile";
 import type { Task } from "../core/model/Task";
-import { type NamespaceFilter } from "../core/namespace/namespace";
 import { FakeFeed, makeTask } from "../stores/testSupport";
 import {
 	BoardService,
@@ -61,7 +60,7 @@ function boardIdSuffixes(...suffixes: string[]): () => string {
 }
 
 function makeHarness(
-	nsFilter?: () => NamespaceFilter,
+	_legacyPathFilter?: () => unknown,
 	genBoardIdSuffix: () => string = sequentialBoardIdSuffix(),
 ): Harness {
 	const queue: string[] = [];
@@ -94,7 +93,6 @@ function makeHarness(
 		},
 		containerPaths: () => [...containers],
 		genBoardIdSuffix,
-		...(nsFilter !== undefined ? { namespaceFilter: nsFilter } : {}),
 	});
 	return {
 		feed,
@@ -280,18 +278,24 @@ describe("BoardService.discoverBoards: фильтр по пространств�
 		});
 	}
 
-	it("активное именованное пространство показывает только свои доски", () => {
+	it("обнаруживает доски глобально, независимо от старого активного пространства", () => {
 		let active = "Работа";
 		const h = makeHarness(() => ({ active, defs: DEFS }));
 		seedTwoBoards(h);
 
-		expect(h.service.discoverBoards().boards.map((b) => b.path)).toEqual([
-			"Work/Доски/Спринт.md",
-		]);
+		expect(
+			h.service
+				.discoverBoards()
+				.boards.map((b) => b.path)
+				.sort(),
+		).toEqual(["Work/Доски/Спринт.md", "Личное/Доски/Дом.md"].sort());
 		active = "Жизнь";
-		expect(h.service.discoverBoards().boards.map((b) => b.path)).toEqual([
-			"Личное/Доски/Дом.md",
-		]);
+		expect(
+			h.service
+				.discoverBoards()
+				.boards.map((b) => b.path)
+				.sort(),
+		).toEqual(["Work/Доски/Спринт.md", "Личное/Доски/Дом.md"].sort());
 	});
 
 	it("пустой defs ⇒ фильтр прозрачен (обе доски)", () => {
@@ -300,16 +304,18 @@ describe("BoardService.discoverBoards: фильтр по пространств�
 		expect(h.service.discoverBoards().boards).toHaveLength(2);
 	});
 
-	it("явный filter (пофайловый вид) ПЕРЕБИВАЕТ инжектированный namespaceFilter", () => {
-		// инжектированный фильтр — «Работа», но вид передаёт локальный «Жизнь»
+	it("discoverBoards не принимает path-based filter", () => {
 		const h = makeHarness(() => ({ active: "Работа", defs: DEFS }));
 		seedTwoBoards(h);
 		expect(
-			h.service.discoverBoards({ active: "Жизнь", defs: DEFS }).boards.map((b) => b.path),
-		).toEqual(["Личное/Доски/Дом.md"]);
+			h.service
+				.discoverBoards()
+				.boards.map((b) => b.path)
+				.sort(),
+		).toEqual(["Work/Доски/Спринт.md", "Личное/Доски/Дом.md"].sort());
 	});
 
-	it("gtd-namespace override уводит доску в другое пространство", () => {
+	it("legacy gtd-namespace не влияет на обнаружение доски", () => {
 		const h = makeHarness(() => ({ active: "Жизнь", defs: DEFS }));
 		h.containers.add("Work/Доски/Личная.md");
 		h.frontmatters.set("Work/Доски/Личная.md", {

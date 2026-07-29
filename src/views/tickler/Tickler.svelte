@@ -1,15 +1,12 @@
 <script lang="ts">
 	import { Notice, type App } from "obsidian";
-	import { derived, type Readable } from "svelte/store";
+	import { type Readable } from "svelte/store";
 	import type { Task } from "../../core/model/Task";
-	import { type NamespaceDef, type NamespaceFilter } from "../../core/namespace/namespace";
 	import type { IntentDispatcher } from "../../services/WritebackService";
 	import type { GtdFlowSettings } from "../../settings/Settings";
 	import { ticklerStore } from "../../stores/derived/queryStore";
 	import type { TaskStore } from "../../stores/taskStore";
 	import { confirm } from "../common/ConfirmModal";
-	import NamespaceSwitcher from "../common/NamespaceSwitcher.svelte";
-	import { namespaceLabel } from "../common/namespaceSwitcher";
 	import { pickDate } from "../common/pickers";
 	import TaskCard from "../common/TaskCard.svelte";
 	import type { TaskMenuPorts } from "../common/taskMenu";
@@ -25,9 +22,6 @@
 		app,
 		dnd = null,
 		menuPorts = null,
-		activeNamespace,
-		namespaces: _namespaces,
-		setActiveNamespace,
 	}: {
 		taskStore: TaskStore;
 		dispatcher: IntentDispatcher;
@@ -38,37 +32,14 @@
 		dnd?: DndPort | null;
 		/** Порты паритета без drag (меню/пикеры/карточка), ТЗ §8 слой 3. */
 		menuPorts?: TaskMenuPorts | null;
-		/** Реактивное ЛОКАЛЬНОЕ активное пространство вида (per-tab, см. GtdView). */
-		activeNamespace: Readable<string>;
-		/** Снимок списка пространств (settings.namespaces). */
-		namespaces: readonly NamespaceDef[];
-		/** Смена ЛОКАЛЬНОГО пространства этого вида (persist в viewState). */
-		setActiveNamespace: (name: string) => void;
 	} = $props();
-
-	const liveNamespaces = $derived.by(() => {
-		void $settingsRevision;
-		return settings.namespaces;
-	});
-	// Фильтр пространства для ticklerStore: смена ЛОКАЛЬНОГО пространства вида
-	// инвалидирует мемо стора и пере-рендерит подпиской (эпоху индекса не бампает).
-	// svelte-ignore state_referenced_locally
-	const namespace$: Readable<NamespaceFilter> = derived(activeNamespace, (a) => ({
-		active: a,
-		defs: liveNamespaces,
-	}));
 
 	// props фиксированы на время монтирования (вид пересоздаётся с leaf) —
 	// одноразовый снимок при инициализации намеренный
 	let tasks = $state<Task[]>([]);
 	$effect(() => {
 		void $settingsRevision;
-		const store = ticklerStore(
-			taskStore,
-			settings.debounceMs.queryRecompute,
-			namespace$,
-			settingsRevision,
-		);
+		const store = ticklerStore(taskStore, settings.debounceMs.queryRecompute, settingsRevision);
 		return store.subscribe((value) => (tasks = value));
 	});
 	// svelte-ignore state_referenced_locally
@@ -78,8 +49,6 @@
 		void $settingsRevision;
 		return bucketize(tasks, $today, settings.firstDayOfWeek);
 	});
-	/** Метка активного пространства для шапки — только когда настроено. */
-	const nsLabel = $derived(liveNamespaces.length === 0 ? null : namespaceLabel($activeNamespace));
 
 	let collapsed = $state<Record<BucketId, boolean>>({
 		tomorrow: false,
@@ -159,17 +128,6 @@
 </script>
 
 <div class="gtd-tickler">
-	<!-- Шапка со сменой пространства видна только когда пространства настроены. -->
-	{#if nsLabel !== null}
-		<div class="gtd-tickler-header">
-			<span class="gtd-tickler-title">Отложенные · {nsLabel}</span>
-			<NamespaceSwitcher
-				active={activeNamespace}
-				namespaces={liveNamespaces}
-				onSelect={setActiveNamespace}
-			/>
-		</div>
-	{/if}
 	<div class="gtd-tickler-body">
 		<!-- Бакеты видны и при пустом тикле: пустая секция — всё ещё drop-цель. -->
 		{#each BUCKET_ORDER as bucket (bucket.id)}
@@ -214,22 +172,6 @@
 		min-height: 0;
 		display: flex;
 		flex-direction: column;
-	}
-	.gtd-tickler-header {
-		flex: none;
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		padding: 6px 10px;
-		border-bottom: 1px solid var(--background-modifier-border);
-	}
-	.gtd-tickler-title {
-		flex: 1 1 auto;
-		min-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		font-weight: 600;
 	}
 	.gtd-tickler-body {
 		flex: 1 1 auto;

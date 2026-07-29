@@ -9,16 +9,6 @@
 	import { runAction } from "../common/runAction";
 	import type { DndPort } from "../dnd/types";
 	import Column from "./Column.svelte";
-	// Общий переключатель пространств из views/common (создаётся параллельной зоной;
-	// гейт-фаза срастит реальный компонент). Контракт props — см. использование ниже.
-	import NamespaceSwitcher from "../common/NamespaceSwitcher.svelte";
-	import { namespaceLabel } from "../common/namespaceSwitcher";
-	import {
-		NS_CONVENTION,
-		nsCommonTarget,
-		type NamespaceDef,
-		type NamespaceFilter,
-	} from "../../core/namespace/namespace";
 	import {
 		buildColumnVMs,
 		pickBoardPath,
@@ -33,9 +23,6 @@
 		settings,
 		settingsRevision,
 		app,
-		activeNamespace$,
-		namespaces: _namespaces,
-		setActiveNamespace,
 		boards,
 		dnd,
 		menuPorts = null,
@@ -48,12 +35,6 @@
 		settings: GtdFlowSettings;
 		settingsRevision: Readable<number>;
 		app: App;
-		/** Реактивное ЛОКАЛЬНОЕ активное пространство вида (per-tab, см. GtdView). */
-		activeNamespace$: Readable<string>;
-		/** Определения пространств (settings.namespaces); пусто ⇒ switcher скрыт. */
-		namespaces: readonly NamespaceDef[];
-		/** Смена ЛОКАЛЬНОГО пространства этого вида (persist в viewState). */
-		setActiveNamespace: (name: string) => void;
 		/** null до интеграции этапа 4 в main.ts (plugin.boards). */
 		boards: BoardService | null;
 		/** null — drag выключен (plugin.dnd ещё не подключён / телефон). */
@@ -73,18 +54,6 @@
 	const epoch = taskStore.epoch;
 	// svelte-ignore state_referenced_locally
 	const today = taskStore.today;
-	// Локальное пространство вида — как epoch: одноразовый снимок стора; подписка
-	// ($activeNs) пере-запускает discovery на переключение (смена эпоху НЕ бампает).
-	// svelte-ignore state_referenced_locally
-	const activeNs = activeNamespace$;
-	// switcher виден только при настроенных пространствах (ТЗ, обратная совместимость);
-	// метка активного для пустых состояний (DEFAULT_NS → «Общее»).
-	const liveNamespaces = $derived.by(() => {
-		void $settingsRevision;
-		return settings.namespaces;
-	});
-	const hasNamespaces = $derived(liveNamespaces.length >= 1);
-	const activeLabel = $derived(namespaceLabel($activeNs));
 
 	// настройка появится в SettingsTab позже; поле читаем опционально
 	const defaultBoardPath = $derived.by(() => {
@@ -101,12 +70,9 @@
 		}),
 	);
 
-	// фильтр discovery — ЛОКАЛЬНОЕ пространство вида (не активное глобальное):
-	// список досок и модель режутся пространством этой вкладки
-	const nsFilter = $derived<NamespaceFilter>({ active: $activeNs, defs: liveNamespaces });
 	const discovery = $derived.by(() => {
 		void $epoch; // доски живут в индексе — пересканируем на каждую его смену
-		return boards === null ? { boards: [], errors: [] } : boards.discoverBoards(nsFilter);
+		return boards === null ? { boards: [], errors: [] } : boards.discoverBoards();
 	});
 	const shownPath = $derived(pickBoardPath(discovery.boards, defaultBoardPath, selectedPath));
 	const model = $derived.by(() => {
@@ -215,15 +181,8 @@
 		if (boards === null) return;
 		const svc = boards;
 		new TextPromptModal(app, "Новая доска", "", "Название доски", (name) => {
-			// Каталог новой доски — ЛОКАЛЬНОГО пространства вида: <root>/Доски для
-			// именованного, <commonRoot>/Доски для «Общего» (nsCommonTarget ставит
-			// «Общее» в один ряд с именованными под корнем «Общего»).
-			const dir = nsCommonTarget(
-				$activeNs,
-				liveNamespaces,
-				NS_CONVENTION.boardsDir,
-				settings.commonRoot,
-			);
+			const inboxDir = settings.inboxFile.split("/").slice(0, -1).join("/");
+			const dir = inboxDir === "" ? "Boards" : `${inboxDir}/Boards`;
 			// уникализуем путь по реальным файлам хранилища: createBoard не должен
 			// дописать флаг доски в чужую заметку с тем же именем
 			const path = uniqueBoardPath(dir, name, (p) => app.vault.getFileByPath(p) !== null);
@@ -262,14 +221,6 @@
 
 <div class="gtd-kanban">
 	<div class="gtd-kanban-header">
-		{#if hasNamespaces}
-			<!-- Глобальный переключатель пространства; виден только при настроенных пространствах -->
-			<NamespaceSwitcher
-				active={activeNamespace$}
-				namespaces={liveNamespaces}
-				setActive={setActiveNamespace}
-			/>
-		{/if}
 		<select
 			class="dropdown gtd-kanban-select"
 			aria-label="Доска"
@@ -310,9 +261,7 @@
 		<div class="gtd-kanban-empty">Kanban не подключён (сервис досок недоступен)</div>
 	{:else if model === null}
 		<div class="gtd-kanban-empty">
-			<p>
-				{hasNamespaces ? `В пространстве «${activeLabel}» досок нет.` : "Досок пока нет."}
-			</p>
+			<p>Досок пока нет.</p>
 			<button class="mod-cta gtd-kanban-create-board" onclick={promptCreateBoard}>
 				＋ Создать доску
 			</button>

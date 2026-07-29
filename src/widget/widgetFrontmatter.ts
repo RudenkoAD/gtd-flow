@@ -3,7 +3,7 @@
  *
  * The MCP owns complete YAML parsing and mutation through `yaml`.  Pulling that
  * package into the widget is unnecessary: indexing consumes only container
- * flags, card id, namespace, and project status.  This reader accepts the
+ * flags, card id, and project status. This reader accepts the
  * one-line scalar forms of exactly those fields, then feeds the same core
  * projection as the MCP.  Unsupported or malformed relevant syntax is refused
  * rather than guessed, so it cannot create a positive container classification.

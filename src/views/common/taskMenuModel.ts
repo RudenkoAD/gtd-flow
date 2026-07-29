@@ -10,13 +10,23 @@
  * требует модалов и портов, которых у чистой модели нет по построению.
  */
 import type { Intent } from "../../core/intents/Intent";
+import type { EstimateField } from "../../core/estimates/provenance";
 import type { IsoDate, Task } from "../../core/model/Task";
 import type { DeferPreset } from "../../settings/Settings";
 import { PRIORITY_LABELS, PRIORITY_ORDER } from "./cardFormat";
 import { addDaysIso } from "./dates";
 
 export type MenuSection =
-	"status" | "priority" | "schedule" | "defer" | "location" | "move" | "card" | "nav";
+	| "status"
+	| "priority"
+	| "schedule"
+	| "defer"
+	| "location"
+	| "metadata"
+	| "ai"
+	| "move"
+	| "card"
+	| "nav";
 
 export type MenuAction =
 	| { kind: "intent"; intent: Intent }
@@ -24,6 +34,9 @@ export type MenuAction =
 	| { kind: "pick-scheduled" } // «Запланировать (⏳)…»: пикер даты → set-date scheduled
 	| { kind: "pick-defer" } // «Отложить: дата…»: пикер даты → defer
 	| { kind: "pick-location" } // «Добавить/Изменить место…»: prompt текста → set-location
+	| { kind: "edit-metadata"; focus?: EstimateField } // one atomic duration/intensity/scope modal
+	| { kind: "clear-metadata"; field: EstimateField }
+	| { kind: "open-ai-run" }
 	| { kind: "pick-column" } // «Переместить в колонку…»: доски × колонки → moveCard в конец
 	| { kind: "pick-project" } // «В проект…»: пикер проектов → move-line
 	| { kind: "make-template" } // «Сделать шаблоном…»: move-line в gtd-recurring файл
@@ -86,6 +99,9 @@ export interface MenuModelInput {
 	hasProjects: boolean;
 	hasCards: boolean;
 	hasTemplates: boolean;
+	/** Optional narrow metadata port. It owns scope/provenance persistence. */
+	hasMetadata: boolean;
+	hasRelatedAiRun: boolean;
 }
 
 function intentItem(
@@ -224,6 +240,74 @@ export function buildMenuModel(input: MenuModelInput): MenuNode[] {
 		icon: "map-pin",
 		action: { kind: "pick-location" },
 	});
+
+	// --- duration/intensity/scope: all field edits route through ONE modal and
+	// ONE PatchTaskMetadata write. Individual entry points only set initial focus. ---
+	if (input.hasMetadata) {
+		items.push(
+			{
+				id: "edit-duration",
+				section: "metadata",
+				title: task.durationMinutes === null ? "Set duration…" : "Edit duration…",
+				icon: "timer",
+				action: { kind: "edit-metadata", focus: "duration" },
+			},
+			{
+				id: "edit-cognitive-intensity",
+				section: "metadata",
+				title: "Edit cognitive intensity…",
+				icon: "brain",
+				action: { kind: "edit-metadata", focus: "cognitive" },
+			},
+			{
+				id: "edit-emotional-intensity",
+				section: "metadata",
+				title: "Edit emotional intensity…",
+				icon: "heart",
+				action: { kind: "edit-metadata", focus: "emotional" },
+			},
+			{
+				id: "edit-physical-intensity",
+				section: "metadata",
+				title: "Edit physical intensity…",
+				icon: "dumbbell",
+				action: { kind: "edit-metadata", focus: "physical" },
+			},
+			{
+				id: "change-scope",
+				section: "metadata",
+				title: task.scopeId === null ? "Set scope…" : "Change scope…",
+				icon: "compass",
+				action: { kind: "edit-metadata", focus: "scope" },
+			},
+		);
+		for (const [field, value, title] of [
+			["duration", task.durationMinutes, "Clear duration"],
+			["cognitive", task.cognitiveIntensity, "Clear cognitive intensity"],
+			["emotional", task.emotionalIntensity, "Clear emotional intensity"],
+			["physical", task.physicalIntensity, "Clear physical intensity"],
+			["scope", task.scopeId, "Clear scope"],
+		] as const) {
+			if (value !== null) {
+				items.push({
+					id: `clear-${field}`,
+					section: "metadata",
+					title,
+					icon: "x",
+					action: { kind: "clear-metadata", field },
+				});
+			}
+		}
+	}
+	if (input.hasRelatedAiRun) {
+		items.push({
+			id: "open-ai-run",
+			section: "ai",
+			title: "Open related AI run",
+			icon: "messages-square",
+			action: { kind: "open-ai-run" },
+		});
+	}
 
 	// --- перемещение: только при живых портах (нет сервиса — нет пункта) ---
 	if (input.hasBoards) {

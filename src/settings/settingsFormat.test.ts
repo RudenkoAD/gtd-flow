@@ -7,11 +7,9 @@ import { DEFAULT_SETTINGS } from "./Settings";
 import {
 	commitSubName,
 	formatDeferPresets,
-	formatNamespaces,
 	formatPathList,
 	parseDeferPresets,
 	parseIntInRange,
-	parseNamespaces,
 	parsePathList,
 	planSubNameCommit,
 	reorderCalendarPlacement,
@@ -73,50 +71,6 @@ describe("parseDeferPresets / formatDeferPresets", () => {
 			presets: DEFAULT_SETTINGS.deferPresets,
 			invalid: [],
 		});
-	});
-});
-
-describe("parseNamespaces / formatNamespaces", () => {
-	it("разбирает «Имя: Папка», trim и CRLF, нормализует хвостовой /", () => {
-		const { namespaces, invalid } = parseNamespaces(
-			"Работа: Areas/Work\r\n  Личное : Personal/ \n",
-		);
-		expect(invalid).toEqual([]);
-		expect(namespaces).toEqual([
-			{ name: "Работа", root: "Areas/Work" },
-			{ name: "Личное", root: "Personal" },
-		]);
-	});
-
-	it("разделитель — первое «:»: путь может быть любым (двоеточий не содержит)", () => {
-		const { namespaces, invalid } = parseNamespaces("Work: a/b/c");
-		expect(invalid).toEqual([]);
-		expect(namespaces).toEqual([{ name: "Work", root: "a/b/c" }]);
-	});
-
-	it("нет «:», пустое имя/корень, дубль имени → invalid; валидные сохраняются", () => {
-		const { namespaces, invalid } = parseNamespaces(
-			"Работа: Work\nбез двоеточия\n: Orphan\nПусто: \nРабота: Second\nЛичное: Personal",
-		);
-		expect(namespaces).toEqual([
-			{ name: "Работа", root: "Work" },
-			{ name: "Личное", root: "Personal" },
-		]);
-		expect(invalid).toEqual(["без двоеточия", ": Orphan", "Пусто:", "Работа: Second"]);
-	});
-
-	it("корневой путь («/») к пространству не годится → invalid", () => {
-		const { namespaces, invalid } = parseNamespaces("Всё: /");
-		expect(namespaces).toEqual([]);
-		expect(invalid).toEqual(["Всё: /"]);
-	});
-
-	it("round-trip", () => {
-		const defs = [
-			{ name: "Работа", root: "Areas/Work" },
-			{ name: "Личное", root: "Areas/Personal" },
-		];
-		expect(parseNamespaces(formatNamespaces(defs))).toEqual({ namespaces: defs, invalid: [] });
 	});
 });
 

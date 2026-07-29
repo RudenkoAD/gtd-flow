@@ -14,7 +14,18 @@
  * - description: текст без токенов полей, схлопнутые пробелы, trim; теги ОСТАЮТСЯ
  *   в description и дополнительно собираются в tags[] (с '#', без дублей).
  */
-import type { ContainerKind, DateOffset, IsoDate, Priority, Task } from "../model/Task";
+import {
+	isDurationMinutes,
+	isIntensityLevel,
+	type ContainerKind,
+	type DateOffset,
+	type DurationMinutes,
+	type IntensityLevel,
+	type IsoDate,
+	type Priority,
+	type Task,
+} from "../model/Task";
+import { isScopeId } from "../scope/scope";
 import { EMOJI_TO_PRIORITY, type DateFieldName } from "./emoji";
 import {
 	extractTags,
@@ -32,10 +43,6 @@ export interface ParseContext {
 	heading: string | null;
 	container: ContainerKind;
 	projectActive: boolean;
-	/** Сырой frontmatter gtd-namespace файла (override пространства). Опционально:
-	 *  отсутствие ⇒ Task.nsOverride = null. Индексатор прокидывает сюда
-	 *  snap.context.nsOverride; синтетические парсы (write-back) его не задают. */
-	nsOverride?: string | null;
 }
 
 export type DatePayload =
@@ -124,6 +131,21 @@ export function parseExcludedDates(payload: string): IsoDate[] {
 	return out;
 }
 
+/** `⏱ 90m` → 90. Canonical unit is minutes; decimals and other suffixes are invalid. */
+export function parseDurationPayload(payload: string): DurationMinutes | null {
+	const match = /^(\d+)m$/u.exec(payload);
+	if (match === null) return null;
+	const minutes = Number(match[1]);
+	return isDurationMinutes(minutes) ? minutes : null;
+}
+
+/** `🧠`/`💓`/`💪` payload. Keep this lexical gate strict so `1.0` never reads as `1`. */
+export function parseIntensityPayload(payload: string): IntensityLevel | null {
+	if (!/^[0-5]$/u.test(payload)) return null;
+	const intensity = Number(payload);
+	return isIntensityLevel(intensity) ? intensity : null;
+}
+
 /** U+FE0F не участвует в таблицах эмодзи — срезаем перед поиском приоритета. */
 function stripVariationSelector(emoji: string): string {
 	let out = "";
@@ -168,6 +190,11 @@ export function parseTaskLine(rawLine: string, ctx: ParseContext): Task | null {
 	let dependsOn: string[] = [];
 	let excludedDates: IsoDate[] = [];
 	let location: string | null = null;
+	let durationMinutes: DurationMinutes | null = null;
+	let cognitiveIntensity: IntensityLevel | null = null;
+	let emotionalIntensity: IntensityLevel | null = null;
+	let physicalIntensity: IntensityLevel | null = null;
+	let scopeId: string | null = null;
 	let priority: Priority = "none";
 	const textParts: string[] = [];
 	const tags: string[] = [];
@@ -214,6 +241,26 @@ export function parseTaskLine(rawLine: string, ctx: ParseContext): Task | null {
 				// 📍 — свободный текст места; пустой (после trim) payload = нет поля
 				const loc = seg.payload.trim();
 				location = loc === "" ? null : loc;
+				break;
+			}
+			case "duration": {
+				durationMinutes = parseDurationPayload(seg.payload);
+				break;
+			}
+			case "cognitiveIntensity": {
+				cognitiveIntensity = parseIntensityPayload(seg.payload);
+				break;
+			}
+			case "emotionalIntensity": {
+				emotionalIntensity = parseIntensityPayload(seg.payload);
+				break;
+			}
+			case "physicalIntensity": {
+				physicalIntensity = parseIntensityPayload(seg.payload);
+				break;
+			}
+			case "scope": {
+				scopeId = isScopeId(seg.payload) ? seg.payload : null;
 				break;
 			}
 			default: {
@@ -266,9 +313,13 @@ export function parseTaskLine(rawLine: string, ctx: ParseContext): Task | null {
 		dependsOn,
 		excludedDates,
 		location,
+		durationMinutes,
+		cognitiveIntensity,
+		emotionalIntensity,
+		physicalIntensity,
+		scopeId,
 		tags,
 		container: ctx.container,
 		projectActive: ctx.projectActive,
-		nsOverride: ctx.nsOverride ?? null,
 	};
 }

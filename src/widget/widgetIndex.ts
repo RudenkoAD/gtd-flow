@@ -44,6 +44,9 @@ export async function buildWidgetIndex(
 ): Promise<WidgetIndex> {
 	const snapshots: FileSnapshot[] = [];
 	for (const path of Object.keys(files)) {
+		// Scope catalog and any other auxiliary files can be supplied alongside
+		// Markdown. They are not task containers and must not enter the index.
+		if (!path.toLowerCase().endsWith(".md")) continue;
 		const content = files[path];
 		try {
 			if (typeof content !== "string") {

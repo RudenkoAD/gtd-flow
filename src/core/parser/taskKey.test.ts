@@ -31,6 +31,9 @@ describe("normalizeDescription", () => {
 	it("вырезает поля и из фрагмента текста", () => {
 		expect(normalizeDescription("Call 🆔 x9")).toBe("Call");
 	});
+	it("metadata fields do not participate in the content key", () => {
+		expect(normalizeDescription("Call ⏱ 90m 🧠 4 💓 2 💪 0 🧭 work")).toBe("Call");
+	});
 	it("совпадает с Task.description после парса", () => {
 		const line = "- [ ]   Fix   pump 🛫 2026-07-01 #home";
 		const t = parseTaskLine(line, {

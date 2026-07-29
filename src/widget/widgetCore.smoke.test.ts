@@ -28,7 +28,7 @@ async function bundle(): Promise<string> {
 interface WidgetApi {
 	computeWidgetData(input: unknown): Promise<string>;
 	buildCaptureLine(text: string, location?: string | null, todayIso?: string | null): string;
-	captureTargetPath(dataJson: string | null, namespace?: string | null): string;
+	captureTargetPath(dataJson: string | null): string;
 	buildEditedLine(rawLine: string, edits: unknown): string;
 	parseNlDate(
 		text: string,
@@ -70,10 +70,13 @@ describe("widget-core bundle в QuickJS-подобном контексте", ()
 					"- [ ] Встреча 📅 2026-07-20 10:00\n" +
 					"- [ ] Планёрка 🔁 every day at 09:00\n",
 			},
-			dataJson: null,
+			dataJson: JSON.stringify({
+				inboxFile: "GTD/Входящие.md",
+				eventsFile: "GTD/События.md",
+			}),
 			todayIso: "2026-07-20",
 			nowMinutes: 8 * 60 + 30,
-			inboxNamespace: null,
+			inboxScope: null,
 			agendaDays: 3,
 		});
 		const data = JSON.parse(json) as {
@@ -82,12 +85,11 @@ describe("widget-core bundle в QuickJS-подобном контексте", ()
 				generatedAt: string;
 			};
 			agenda: { days: { date: string; items: { title: string }[] }[] };
-			inbox: { items: { title: string; namespace: string }[] };
+			inbox: { items: { title: string }[] };
 			errors: string[];
 		};
 		expect(data.errors).toEqual([]);
 		expect(data.inbox.items.map((i) => i.title)).toEqual(["задача из виджета"]);
-		expect(data.inbox.items[0]!.namespace).toBe("Общее");
 		expect(data.today.items.map((i) => i.title)).toEqual(["Планёрка", "Встреча"]);
 		expect(data.today.items.find((i) => i.title === "Встреча")!.itemKind).toBe("single-event");
 		expect(data.today.generatedAt).toBe("2026-07-20T08:30");
@@ -103,7 +105,7 @@ describe("widget-core bundle в QuickJS-подобном контексте", ()
 
 		// синхронные экспорты тоже работают в этом контексте
 		expect(api.buildCaptureLine("купить хлеб")).toBe("- [ ] купить хлеб");
-		expect(api.captureTargetPath(null, null)).toBe("GTD/Входящие.md");
+		expect(api.captureTargetPath(null)).toBe("GTD/Inbox.md");
 
 		// NLP-даты работают из бандла: и напрямую, и через buildCaptureLine(todayIso)
 		expect(api.parseNlDate("завтра позвонить", "2026-07-20")).toEqual({

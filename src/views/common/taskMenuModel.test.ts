@@ -30,6 +30,8 @@ function input(over: Partial<MenuModelInput> & { task?: Task } = {}): MenuModelI
 		hasProjects: false,
 		hasCards: false,
 		hasTemplates: false,
+		hasMetadata: false,
+		hasRelatedAiRun: false,
 		...over,
 	};
 }
@@ -97,6 +99,51 @@ describe("buildMenuModel: секции от портов", () => {
 		expect(got).toContain("move-column");
 		expect(got).not.toContain("move-project");
 		expect(got).not.toContain("move-template");
+	});
+});
+
+describe("buildMenuModel: estimate and scope metadata", () => {
+	it("adds each manual metadata entry point and only clears populated fields", () => {
+		const task = makeTask({
+			filePath: "Inbox.md",
+			durationMinutes: 90,
+			cognitiveIntensity: 3,
+			emotionalIntensity: null,
+			physicalIntensity: 0,
+			scopeId: "work",
+		});
+		const items = buildMenuModel(
+			input({
+				task,
+				hasMetadata: true,
+				hasRelatedAiRun: true,
+			}),
+		);
+		const got = ids(items);
+		expect(got).toEqual(
+			expect.arrayContaining([
+				"edit-duration",
+				"edit-cognitive-intensity",
+				"edit-emotional-intensity",
+				"edit-physical-intensity",
+				"change-scope",
+				"clear-duration",
+				"clear-cognitive",
+				"clear-physical",
+				"clear-scope",
+				"open-ai-run",
+			]),
+		);
+		expect(got).not.toContain("clear-emotional");
+		expect(byId(items, "edit-duration").action).toEqual({
+			kind: "edit-metadata",
+			focus: "duration",
+		});
+		expect(byId(items, "clear-scope").action).toEqual({
+			kind: "clear-metadata",
+			field: "scope",
+		});
+		expect(got).not.toContain("unlock-reprocess");
 	});
 });
 

@@ -105,6 +105,19 @@ describe("tokenizeTaskLine: сегменты", () => {
 		expect(t.segments[t.segments.length - 1]).toEqual({ kind: "text", text: " rest" });
 	});
 
+	it("estimate and scope fields are single-token fields and round-trip losslessly", () => {
+		const line = "- [ ] T ⏱ 90m 🧠 4 💓 2 💪 0 🧭 work ^block";
+		const tokenized = tokenizeTaskLine(line)!;
+		expect(fields(tokenized.segments).map((field) => [field.field, field.payload])).toEqual([
+			["duration", "90m"],
+			["cognitiveIntensity", "4"],
+			["emotionalIntensity", "2"],
+			["physicalIntensity", "0"],
+			["scope", "work"],
+		]);
+		expect(serializeTokens(tokenized)).toBe(line);
+	});
+
 	it("дата-токен останавливается на запятой (пунктуация не портит дату)", () => {
 		const t = tokenizeTaskLine("- [ ] Pay 📅 2026-08-01, then relax")!;
 		expect(fields(t.segments)[0]!.payload).toBe("2026-08-01");

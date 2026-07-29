@@ -1,26 +1,15 @@
 <script lang="ts">
 	import { Notice, type App } from "obsidian";
-	import { derived, get, type Readable } from "svelte/store";
+	import { get, type Readable } from "svelte/store";
 	import type { IsoDate, Task } from "../../core/model/Task";
-	import {
-		ALL_NS,
-		eventVisibleInNamespace,
-		NS_CONVENTION,
-		nsCommonTarget,
-		nsTargetPath,
-		type NamespaceDef,
-		type NamespaceFilter,
-	} from "../../core/namespace/namespace";
 	import type { IntentDispatcher } from "../../services/WritebackService";
 	import type { GtdFlowSettings, QuickAddKind } from "../../settings/Settings";
 	import { calendarRangeStore } from "../../stores/derived/queryStore";
 	import type { TaskStore } from "../../stores/taskStore";
 	import { addDaysIso } from "../common/dates";
 	import { confirm } from "../common/ConfirmModal";
-	import NamespaceSwitcher from "../common/NamespaceSwitcher.svelte";
-	import { namespaceLabel } from "../common/namespaceSwitcher";
 	import { reportAsync } from "../common/runAction";
-	import { captureTargetInNamespace, ensureCaptureFileNs } from "../common/taskActions";
+	import { ensureCaptureFile } from "../common/taskActions";
 	import type { TaskMenuPorts } from "../common/taskMenu";
 	import type { DndPort, OccurrenceDrag } from "../dnd/types";
 	import DayCell from "./DayCell.svelte";
@@ -33,7 +22,6 @@
 		agendaLabel,
 		appendLine,
 		dropDateField,
-		eventTargetForNamespace,
 		expandEventOccurrences,
 		monthGrid,
 		monthTitle,
@@ -81,9 +69,6 @@
 		vault,
 		menuPorts = null,
 		dayStatus = null,
-		activeNamespace,
-		namespaces: _namespaces,
-		setActiveNamespace,
 		persisted,
 		persist,
 		quickAddKind: initialQuickAddKind = "task",
@@ -98,17 +83,10 @@
 		dnd: DndPort | null;
 		/** Порты паритета без drag (меню/пикеры/карточка), ТЗ §8 слой 3. */
 		menuPorts?: TaskMenuPorts | null;
-		/** Быстрый ввод пишет в цель захвата активного пространства (структурный порт VaultAdapter). */
+		/** Quick capture writes to the configured unified inbox. */
 		vault: CalendarWritePort;
 		/** Порт статусов дней (покраска календаря) или null. */
 		dayStatus?: DayStatusPort | null;
-		/** Реактивное ЛОКАЛЬНОЕ активное пространство вида (per-tab). У календаря может
-		 *  быть ALL_NS («Все») — агрегат всех пространств (см. GtdView/CalendarView). */
-		activeNamespace: Readable<string>;
-		/** Снимок списка пространств (settings.namespaces). */
-		namespaces: readonly NamespaceDef[];
-		/** Смена ЛОКАЛЬНОГО пространства этого вида (persist в viewState). */
-		setActiveNamespace: (name: string) => void;
 		/** Состояние из workspace-раскладки; приходит ПОСЛЕ монтирования. */
 		persisted: Readable<CalendarPersistedState>;
 		persist: (s: CalendarPersistedState) => void;
@@ -134,21 +112,6 @@
 		const id = window.setInterval(() => (nowMin = minutesOfDay(new Date())), 60_000);
 		return () => window.clearInterval(id);
 	});
-
-	const liveNamespaces = $derived.by(() => {
-		void $settingsRevision;
-		return settings.namespaces;
-	});
-	// Фильтр пространства: реактивный derive из активного namespace + список корней.
-	// Задачи/события календаря режутся по нему; смена активного пере-рендерит вид
-	// подпиской (эпоху индекса не бампает, см. память проекта).
-	// svelte-ignore state_referenced_locally
-	const namespace$: Readable<NamespaceFilter> = derived(activeNamespace, (a) => ({
-		active: a,
-		defs: liveNamespaces,
-	}));
-	/** Метка активного пространства для шапки — только когда пространства настроены. */
-	const nsLabel = $derived(liveNamespaces.length === 0 ? null : namespaceLabel($activeNamespace));
 
 	let mode = $state<CalendarMode>("month");
 	// svelte-ignore state_referenced_locally
@@ -190,16 +153,12 @@
 	let rangeTasks = $state<Task[]>([]);
 	$effect(() => {
 		void $settingsRevision;
-		// namespace$ — стабильная ссылка (не реактивная зависимость $effect): стор
-		// пересоздаётся лишь на смену диапазона, смену пространства он ловит своей
-		// внутренней подпиской (ось nsKey мемо-ключа).
 		const store = calendarRangeStore(
 			taskStore,
 			range.from,
 			range.to,
 			settings.calendarPlacement,
 			settings.debounceMs.queryRecompute,
-			namespace$,
 			settingsRevision,
 		);
 		return store.subscribe((v) => {
@@ -207,7 +166,7 @@
 		});
 	});
 
-	// Просроченные: события АКТИВНОГО пространства с датой < today; пересоздание на смене дня.
+	// Просроченные: глобальные события с датой < today; пересоздание на смене дня.
 	let overdueRaw = $state<Task[]>([]);
 	$effect(() => {
 		void $settingsRevision;
@@ -217,7 +176,6 @@
 			addDaysIso($today, -1),
 			settings.calendarPlacement,
 			settings.debounceMs.queryRecompute,
-			namespace$,
 			settingsRevision,
 		);
 		return store.subscribe((v) => {
@@ -225,34 +183,15 @@
 		});
 	});
 
-	// Серии-события (container events) — из индекса, реактивно по epoch И по смене
-	// локального пространства. В calendar-range QueryEngine их не отдаёт: рендерим
-	// ОТДЕЛЬНО как виртуальные вхождения (expandEventOccurrences). Видимость события —
-	// eventVisibleInNamespace: серии активного ns ∪ «общие» события (DEFAULT_NS видны
-	// в ЛЮБОМ календаре); ALL_NS («Все») — все. Задач это НЕ касается (обычный
-	// inNamespace режет их по пространству) — общие задачи в чужой календарь не текут.
+	// Event series are discovered globally and rendered as virtual occurrences.
 	let eventSeries = $state<Task[]>([]);
 	$effect(() => {
-		const recompute = (filter: NamespaceFilter): void => {
-			const out: Task[] = [];
-			for (const t of taskStore.index().all())
-				if (
-					t.container === "events" &&
-					eventVisibleInNamespace(t.filePath, t.nsOverride ?? null, filter)
-				)
-					out.push(t);
-			eventSeries = out;
+		const recompute = (): void => {
+			eventSeries = [...taskStore.index().all()].filter(
+				(task) => task.container === "events",
+			);
 		};
-		let filter = get(namespace$);
-		const unsubNs = namespace$.subscribe((f) => {
-			filter = f;
-			recompute(filter);
-		});
-		const unsubEpoch = taskStore.epoch.subscribe(() => recompute(filter));
-		return () => {
-			unsubNs();
-			unsubEpoch();
-		};
+		return taskStore.epoch.subscribe(recompute);
 	});
 	const eventsByDay = $derived(expandEventOccurrences(eventSeries, range.from, range.to));
 
@@ -397,9 +336,7 @@
 		else if (clearStart) new Notice(`Запланирована на ${date}, возвращена из отложенных`);
 	}
 
-	/** Быстрый ввод: `- [ ] <текст> 📅 <дата>[ HH:mm[-HH:mm]]` в первый файл захвата
-	 *  (gtd-inbox, фолбэк <commonRoot>/Входящие.md для «Общего»); цель — В МОМЕНТ ввода.
-	 *  timeEnd — из click-drag по слоту сетки (задаёт длительность события сразу). */
+	/** Quick capture always writes to the configured unified inbox. */
 	async function quickAdd(
 		date: IsoDate,
 		text: string,
@@ -409,48 +346,16 @@
 	): Promise<void> {
 		const line = quickAddLine(text, date, time, timeEnd, location);
 		if (line === null) return;
-		// цель захвата — В ЛОКАЛЬНОМ пространстве вида, В МОМЕНТ ввода: его первый
-		// gtd-inbox файл, иначе конвенционные Входящие.md: <root>/ (именованное) или
-		// <commonRoot>/ («Общее» — nsCommonTarget подставляет корень «Общего»).
-		// В режиме «Все» (ALL_NS) конкретного пространства нет — пишем в ГЛОБАЛЬНЫЙ
-		// дефолт (settings.activeNamespace) и уведомляем, в какое пространство ушло.
-		const local = get(activeNamespace);
-		const allMode = local === ALL_NS;
-		const active = allMode ? settings.activeNamespace : local;
-		const fallback = nsCommonTarget(
-			active,
-			liveNamespaces,
-			NS_CONVENTION.inbox,
-			settings.commonRoot,
-		);
-		const target = captureTargetInNamespace(
-			taskStore.index().all(),
-			active,
-			liveNamespaces,
-			fallback,
-		);
-		if (target === "") {
-			new Notice("GTD Flow: не задан файл входящих (пустая «Корневая папка Общего»)");
-			return;
-		}
-		// файл входящих создаётся и помечается gtd-inbox: true (+ gtd-namespace для
-		// файла-исключения вне корня пространства) СТРОГО до записи строки
-		if (!(await ensureCaptureFileNs(vault, target, active, liveNamespaces))) {
+		const target = settings.inboxFile;
+		if (!(await ensureCaptureFile(vault, target))) {
 			new Notice(`GTD Flow: не удалось подготовить файл входящих ${target}`);
 			return;
 		}
 		const ok = await vault.processFile(target, (content) => appendLine(content, line));
 		if (!ok) new Notice(`GTD Flow: не удалось записать в ${target}`);
-		else if (allMode) new Notice(`Добавлено в пространство «${namespaceLabel(active)}»`);
 	}
 
-	/** Инлайн-создание СОБЫТИЯ из поля ввода (сегмент «Событие»): одноразовое событие
-	 *  `- [ ] <текст> 📅 <дата>[ HH:mm[-HH:mm]]` в файле событий ЛОКАЛЬНОГО пространства
-	 *  вида — В МОМЕНТ ввода. Цель: <root>/События.md (именованное), settings.eventsFile
-	 *  («Общее»), <commonRoot>/События.md (вкладка «Все» — ALL_NS; конкретного
-	 *  пространства нет, пишем в «дом» «Общего»). Файл создаётся с frontmatter
-	 *  gtd-events:true, если его нет. time/timeEnd — из слота/протяжки тайм-сетки
-	 *  (в месячной сетке и полосе «Весь день» — null: событие без времени). */
+	/** Inline events are created in the configured global events file. */
 	async function quickAddEvent(
 		date: IsoDate,
 		text: string,
@@ -459,12 +364,7 @@
 		location: string | null = null,
 	): Promise<void> {
 		if (text.trim() === "") return;
-		const eventsFile = eventTargetForNamespace(
-			get(activeNamespace),
-			liveNamespaces,
-			settings.eventsFile,
-			settings.commonRoot,
-		);
+		const eventsFile = settings.eventsFile;
 		const res = await createSingleEvent({
 			vault,
 			eventsFile,
@@ -511,17 +411,7 @@
 	/** ПКМ по пустому месту → «Повторяющееся событие…»: модал → createEventSeries.
 	 *  time — из слота тайм-сетки (prefill), null для DayCell (месяц/неделя/агенда). */
 	function createEvent(date: IsoDate, time: string | null): void {
-		// цель серии — файл событий ЛОКАЛЬНОГО пространства вида: <root>/События.md
-		// (именованное) или settings.eventsFile («Общее»); в режиме «Все» (ALL_NS)
-		// конкретного пространства нет — создаём в ГЛОБАЛЬНОМ дефолте. Берём в момент ПКМ.
-		const local = get(activeNamespace);
-		const active = local === ALL_NS ? settings.activeNamespace : local;
-		const eventsFile = nsTargetPath(
-			active,
-			liveNamespaces,
-			NS_CONVENTION.events,
-			settings.eventsFile,
-		);
+		const eventsFile = settings.eventsFile;
 		new EventSeriesModal(
 			app,
 			{ name: "", rule: "", time: time ?? "", location: "" },
@@ -552,7 +442,7 @@
 			<button onclick={goToday}>Сегодня</button>
 			<button aria-label="Вперёд" onclick={goNext}>›</button>
 		</div>
-		<span class="gtd-cal-title">{title}{nsLabel !== null ? ` · ${nsLabel}` : ""}</span>
+		<span class="gtd-cal-title">{title}</span>
 		{#if overdue.length > 0}
 			<button
 				class="gtd-cal-overdue"
@@ -569,13 +459,6 @@
 				>
 			{/each}
 		</div>
-		<!-- allowAll — вкладка «Все» (агрегат всех пространств), только у календаря -->
-		<NamespaceSwitcher
-			active={activeNamespace}
-			namespaces={liveNamespaces}
-			onSelect={setActiveNamespace}
-			allowAll={true}
-		/>
 	</div>
 
 	{#if mode === "agenda"}

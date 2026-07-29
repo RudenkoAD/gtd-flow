@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_NS, type NamespaceDef } from "../core/namespace/namespace";
 import type { ExternalCalendarSub } from "../settings/Settings";
 import {
 	mirrorPath,
@@ -46,7 +45,6 @@ function sub(over: Partial<ExternalCalendarSub> = {}): ExternalCalendarSub {
 		id: "s1",
 		name: "Календарь",
 		url: "https://example/basic.ics",
-		namespace: DEFAULT_NS,
 		lastSyncAt: null,
 		lastError: null,
 		...over,
@@ -56,8 +54,7 @@ function sub(over: Partial<ExternalCalendarSub> = {}): ExternalCalendarSub {
 interface Harness {
 	fetchImpl: (url: string) => Promise<string>;
 	subs: ExternalCalendarSub[];
-	defs: NamespaceDef[];
-	commonRoot: string;
+	inboxFile: string;
 	feedTimeoutMs?: number;
 	warnings: string[];
 }
@@ -68,8 +65,7 @@ function makeService(over: Partial<Harness> = {}) {
 	const h: Harness = {
 		fetchImpl: async () => ICS_ONE_EVENT,
 		subs: [sub()],
-		defs: [],
-		commonRoot: "GTD",
+		inboxFile: "GTD/Inbox.md",
 		warnings: [],
 		...over,
 	};
@@ -78,8 +74,7 @@ function makeService(over: Partial<Harness> = {}) {
 		vault,
 		clock: { now: () => new Date(2026, 6, 15) }, // фикс: окно и даты детерминированы
 		subscriptions: () => h.subs,
-		namespaces: () => h.defs,
-		commonRoot: () => h.commonRoot,
+		inboxFile: () => h.inboxFile,
 		intervalMin: () => 5,
 		feedTimeoutMs: () => h.feedTimeoutMs ?? 30_000,
 		onResult: (id, result) => {
@@ -178,12 +173,11 @@ describe("SyncService — статус и устойчивость", () => {
 });
 
 describe("mirrorPath / safeMirrorFileName", () => {
-	it("«Общее» → <commonRoot>/External/<имя>-<slug>.md; именованное → <root>/External/<имя>-<slug>.md", () => {
-		const defs: NamespaceDef[] = [{ name: "Работа", root: "Areas/Work" }];
-		expect(mirrorPath(sub({ namespace: DEFAULT_NS, name: "Личный" }), defs, "GTD")).toBe(
+	it("uses the parent of the unified inbox", () => {
+		expect(mirrorPath(sub({ name: "Личный" }), "GTD/Inbox.md")).toBe(
 			`GTD/External/Личный-${subIdSlug("s1")}.md`,
 		);
-		expect(mirrorPath(sub({ namespace: "Работа", name: "Рабочий" }), defs, "GTD")).toBe(
+		expect(mirrorPath(sub({ name: "Рабочий" }), "Areas/Work/Inbox.md")).toBe(
 			`Areas/Work/External/Рабочий-${subIdSlug("s1")}.md`,
 		);
 	});
@@ -412,7 +406,7 @@ describe("SyncService — deadlines and mirror lifecycle hardening", () => {
 		const oldPath = `GTD/External/Relocate-${subIdSlug(s.id)}.md`;
 		expect(vault.files.get(oldPath)).toContain('gtd-external-id: "move-root"');
 
-		h.commonRoot = "Elsewhere";
+		h.inboxFile = "Elsewhere/Inbox.md";
 		svc.configurationChanged();
 		await svc.reconcileMirrors();
 		await svc.syncAll();

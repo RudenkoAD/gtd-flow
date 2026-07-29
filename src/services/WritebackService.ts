@@ -119,6 +119,7 @@ const KEYED_LINE_TYPES = new Set<Intent["type"]>([
 	"set-status",
 	"set-priority",
 	"set-location",
+	"patch-task-metadata",
 	"move-column",
 	"defer",
 	"set-id",
@@ -131,6 +132,7 @@ const KEYED_LINE_TYPES = new Set<Intent["type"]>([
 const STRUCTURAL_TYPES = new Set<Intent["type"]>([
 	"set-date",
 	"set-priority",
+	"patch-task-metadata",
 	"move-column",
 	"defer",
 	// set-text меняет описание, а значит и content-key задачи: без 🆔 задача

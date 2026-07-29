@@ -3,21 +3,24 @@
  * saveSettings. Числовые поля: валидное значение пишется сразу, мусор
  * не пишется вовсе и откатывается к последнему сохранённому на blur.
  */
-import { PluginSettingTab, Setting, type App } from "obsidian";
+import { Modal, Notice, PluginSettingTab, Setting, type App } from "obsidian";
 import type GtdFlowPlugin from "../main";
-import { DEFAULT_NS } from "../core/namespace/namespace";
+import {
+	AI_FEEDBACK_INSPECTION_LIMIT,
+	type AiFeedbackInspection,
+	type AiFeedbackInspectionEvent,
+} from "../ai/integration/AiPluginServices";
 import type { CalendarField, ExternalCalendarSub } from "./Settings";
 import {
 	CALENDAR_FIELDS,
 	commitSubName,
 	formatDeferPresets,
-	formatNamespaces,
 	parseDeferPresets,
 	parseIntInRange,
-	parseNamespaces,
 	reorderCalendarPlacement,
 } from "./settingsFormat";
 import { reportAsync } from "../views/common/runAction";
+import { confirm } from "../views/common/ConfirmModal";
 
 const CALENDAR_FIELD_LABEL: Record<CalendarField, string> = {
 	due: "Срок (📅 due)",
@@ -48,7 +51,8 @@ export class GtdSettingsTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 		this.sectionInbox(containerEl);
-		this.sectionNamespaces(containerEl);
+		this.sectionScopes(containerEl);
+		this.sectionAi(containerEl);
 		this.sectionProjects(containerEl);
 		this.sectionCalendar(containerEl);
 		this.sectionExternal(containerEl);
@@ -57,6 +61,257 @@ export class GtdSettingsTab extends PluginSettingTab {
 		this.sectionCards(containerEl);
 		this.sectionBoards(containerEl);
 		this.sectionMisc(containerEl);
+	}
+
+	// ── Scopes ──────────────────────────────────────────────────────────────
+
+	private sectionScopes(el: HTMLElement): void {
+		new Setting(el).setName("Scopes").setHeading();
+		const scopes = [...this.plugin.scopes.current().scopes].sort(
+			(left, right) => left.order - right.order || left.name.localeCompare(right.name),
+		);
+		if (scopes.length === 0) {
+			el.createDiv({
+				cls: "setting-item-description",
+				text: "Создайте хотя бы один scope: AI обязан выбрать ровно один активный scope для обработанной задачи.",
+			});
+		}
+		for (const [index, scope] of scopes.entries()) {
+			const row = new Setting(el)
+				.setName(scope.name)
+				.setDesc(
+					scope.archived ? `ID: ${scope.id} · архивирован` : `ID: ${scope.id} · активен`,
+				);
+			row.addText((text) => {
+				text.setValue(scope.name);
+				commitOnBlur(text.inputEl, async () => {
+					const name = text.getValue().trim();
+					if (name === "" || name === scope.name) {
+						text.setValue(scope.name);
+						return;
+					}
+					await this.plugin.scopes.rename(scope.id, name);
+					this.display();
+				});
+			});
+			row.addButton((button) =>
+				button
+					.setButtonText("↑")
+					.setTooltip("Выше")
+					.setDisabled(index === 0)
+					.onClick(() =>
+						this.reportAction("scope не перемещён", async () => {
+							const ids = scopes.map((item) => item.id);
+							[ids[index - 1], ids[index]] = [ids[index]!, ids[index - 1]!];
+							await this.plugin.scopes.reorder(ids);
+							this.display();
+						}),
+					),
+			);
+			row.addButton((button) =>
+				button
+					.setButtonText("↓")
+					.setTooltip("Ниже")
+					.setDisabled(index === scopes.length - 1)
+					.onClick(() =>
+						this.reportAction("scope не перемещён", async () => {
+							const ids = scopes.map((item) => item.id);
+							[ids[index], ids[index + 1]] = [ids[index + 1]!, ids[index]!];
+							await this.plugin.scopes.reorder(ids);
+							this.display();
+						}),
+					),
+			);
+			row.addButton((button) =>
+				button.setButtonText(scope.archived ? "Вернуть" : "Архивировать").onClick(() =>
+					this.reportAction("статус scope не изменён", async () => {
+						await this.plugin.scopes.setArchived(scope.id, !scope.archived);
+						this.display();
+					}),
+				),
+			);
+			row.addButton((button) =>
+				button
+					.setButtonText("Удалить")
+					.setWarning()
+					.onClick(() =>
+						this.reportAction("scope не удалён", async () => {
+							if (
+								!(await confirm(
+									this.app,
+									"Удалить scope?",
+									`Scope «${scope.name}» можно удалить только если ни одна задача на него не ссылается.`,
+									"Удалить",
+								))
+							)
+								return;
+							await this.plugin.scopes.delete(scope.id);
+							this.display();
+						}),
+					),
+			);
+		}
+
+		let newScopeName = "";
+		new Setting(el)
+			.setName("Новый scope")
+			.setDesc("Имя можно менять позже; стабильный ID задачи при этом не переписывается.")
+			.addText((text) => {
+				text.setPlaceholder("Например, Work");
+				text.onChange((value) => {
+					newScopeName = value;
+				});
+			})
+			.addButton((button) =>
+				button
+					.setButtonText("Создать")
+					.setCta()
+					.onClick(() =>
+						this.reportAction("scope не создан", async () => {
+							await this.plugin.scopes.create(newScopeName);
+							this.display();
+						}),
+					),
+			);
+	}
+
+	// ── AI and estimates ────────────────────────────────────────────────────
+
+	private sectionAi(el: HTMLElement): void {
+		new Setting(el).setName("AI и оценки").setHeading();
+
+		new Setting(el)
+			.setName("Включить AI")
+			.setDesc(
+				"Сетевые запросы выполняются только по явной команде или сообщению в GTD AI. Автоматической обработки изменений нет.",
+			)
+			.addToggle((toggle) => {
+				toggle.setValue(this.plugin.settings.ai.enabled);
+				toggle.onChange((value) =>
+					this.reportChange(async () => {
+						this.plugin.settings.ai.enabled = value;
+						await this.save();
+					}),
+				);
+			});
+
+		new Setting(el)
+			.setName("Политика приватности OpenRouter")
+			.setDesc(
+				"По умолчанию маршрутизация следует политике вашего аккаунта OpenRouter. Необязательный строгий ZDR работает fail-closed и может оставить бесплатный маршрут без совместимой модели.",
+			)
+			.addDropdown((dropdown) => {
+				dropdown.addOption("account-policy", "Политика аккаунта OpenRouter");
+				dropdown.addOption("require-zdr", "Требовать Zero Data Retention");
+				dropdown.setValue(this.plugin.settings.ai.privacyPolicy);
+				dropdown.onChange((value) =>
+					this.reportChange(async () => {
+						if (value !== "account-policy" && value !== "require-zdr") return;
+						this.plugin.settings.ai.privacyPolicy = value;
+						await this.save();
+					}),
+				);
+			});
+
+		new Setting(el)
+			.setName("Хранение OAuth-ключа")
+			.setDesc(
+				"В MVP доступен только безопасный memory-only режим: ключ не попадает в vault/data.json, но после перезапуска нужно подключиться снова.",
+			)
+			.addDropdown((dropdown) => {
+				dropdown.addOption("memory-only", "Только в памяти процесса");
+				dropdown.setValue(this.plugin.settings.ai.credentialStorage);
+				dropdown.onChange((value) =>
+					this.reportChange(async () => {
+						if (value !== "memory-only") return;
+						this.plugin.settings.ai.credentialStorage = value;
+						await this.save();
+					}),
+				);
+			});
+
+		new Setting(el)
+			.setName("Формат длительности")
+			.setDesc(
+				"Минимум — 5 минут. До 24 часов используются шаги по 5 минут; 24 часа и больше принимаются только целыми днями и показываются как 1d, 2d и т. д.",
+			);
+
+		new Setting(el)
+			.setName("OpenRouter")
+			.setDesc("OAuth использует PKCE/S256 и временный callback на 127.0.0.1.")
+			.addButton((button) =>
+				button
+					.setButtonText("Открыть GTD AI")
+					.setCta()
+					.onClick(() =>
+						this.reportAction("вид GTD AI не открыт", async () => {
+							await this.plugin.activateView("ai");
+						}),
+					),
+			)
+			.addButton((button) =>
+				button.setButtonText("Подключить").onClick(() =>
+					this.reportAction("OpenRouter не подключён", async () => {
+						await this.plugin.aiViewPort.connect();
+						this.display();
+					}),
+				),
+			)
+			.addButton((button) =>
+				button.setButtonText("Отключить").onClick(() =>
+					this.reportAction("OpenRouter не отключён", async () => {
+						await this.plugin.aiViewPort.disconnect();
+						this.display();
+					}),
+				),
+			);
+
+		const history = new Setting(el).setName("История обучения").setDesc("Загрузка…");
+		void this.plugin.ai.feedbackSummary().then(
+			(summary) =>
+				history.setDesc(
+					`Синхронизированных событий: ${summary.events}; повреждённых событий: ${summary.invalidRecords}. Outbox: ожидают обработки — ${summary.pendingOutbox}, конфликтов — ${summary.conflictedOutbox}, повреждённых — ${summary.invalidOutboxRecords}. Экспорт содержит записи outbox для ручной диагностики.`,
+				),
+			() => history.setDesc("Историю сейчас прочитать не удалось."),
+		);
+		history
+			.addButton((button) =>
+				button.setButtonText("Просмотреть").onClick(() =>
+					this.reportAction("история не открыта", async () => {
+						const inspection = await this.plugin.ai.feedbackInspection();
+						new AiLearningHistoryModal(this.app, inspection).open();
+					}),
+				),
+			)
+			.addButton((button) =>
+				button.setButtonText("Экспорт").onClick(() =>
+					this.reportAction("история не экспортирована", async () => {
+						const path = await this.plugin.exportAiLearningHistory();
+						new Notice(`GTD Flow: история экспортирована в ${path}`);
+					}),
+				),
+			)
+			.addButton((button) =>
+				button
+					.setButtonText("Очистить")
+					.setWarning()
+					.onClick(() =>
+						this.reportAction("история не очищена", async () => {
+							if (
+								!(await confirm(
+									this.app,
+									"Очистить историю обучения?",
+									"Будут удалены feedback-файлы и незавершённые записи outbox. Текущие значения в Markdown и разговоры останутся; поля с конфликтами сохранят безопасную user-lock отметку.",
+									"Очистить",
+								))
+							)
+								return;
+							const count = await this.plugin.ai.clearFeedbackConfirmed();
+							new Notice(`GTD Flow: удалено событий обучения: ${count}`);
+							this.display();
+						}),
+					),
+			);
 	}
 
 	private save(): Promise<void> {
@@ -69,6 +324,25 @@ export class GtdSettingsTab extends PluginSettingTab {
 
 	private sectionInbox(el: HTMLElement): void {
 		new Setting(el).setName("Входящие").setHeading();
+
+		new Setting(el)
+			.setName("Файл входящих")
+			.setDesc(
+				"Единственный Markdown-файл для быстрого ввода, регулярных задач и возврата отложенных.",
+			)
+			.addText((text) => {
+				text.setPlaceholder("GTD/Inbox.md");
+				text.setValue(this.plugin.settings.inboxFile);
+				text.onChange((value) =>
+					this.reportChange(async () => {
+						const path = value.trim();
+						if (path === "") return;
+						this.plugin.settings.inboxFile = path;
+						this.plugin.sync.configurationChanged();
+						await this.save();
+					}),
+				);
+			});
 
 		new Setting(el)
 			.setName("Входящие: включать задачи из обычных заметок")
@@ -87,81 +361,6 @@ export class GtdSettingsTab extends PluginSettingTab {
 					}),
 				);
 			});
-	}
-
-	// ── Пространства ──────────────────────────────────────────────────────────
-
-	private sectionNamespaces(el: HTMLElement): void {
-		new Setting(el).setName("Пространства GTD").setHeading();
-
-		new Setting(el)
-			.setName("Корневая папка «Общего»")
-			.setDesc(
-				"Дом для файлов, СОЗДАВАЕМЫХ в пространстве «Общее» (быстрый ввод, доски, проекты и " +
-					"пр. — по конвенции от этой папки, ровно как именованное пространство создаёт от " +
-					"своего корня): например захват «Общего» уходит в «<папка>/Входящие.md». Это папка " +
-					"ДЛЯ СОЗДАНИЯ, а не признак принадлежности — любой файл ВНЕ корней пространств " +
-					"относится к «Общему» независимо от того, где лежит. По умолчанию «GTD».",
-			)
-			.addText((text) => {
-				text.setPlaceholder("GTD");
-				text.setValue(this.plugin.settings.commonRoot);
-				text.onChange((value) =>
-					this.reportChange(async () => {
-						this.plugin.settings.commonRoot = value.trim();
-						this.plugin.sync.configurationChanged();
-						await this.save();
-					}),
-				);
-			});
-
-		const setting = new Setting(el)
-			.setName("Список пространств")
-			.setDesc(
-				"Несколько независимых GTD в одном хранилище: «Имя: корневая/папка», по одной " +
-					"на строку. Пример: «Работа: Areas/Work». Файл принадлежит пространству с самым " +
-					"длинным совпавшим корнем; всё вне корней — встроенное пространство «Общее». " +
-					"Frontmatter «gtd-namespace: Имя» перебивает папку (для файла-исключения вне своей " +
-					"папки). Пусто (по умолчанию) — пространств нет, поведение и интерфейс прежние. " +
-					"Активное пространство переключается селектором в шапках видов или командой " +
-					"«Переключить пространство GTD».",
-			);
-		// Живая валидация: нераспознанные строки не сохраняются и перечисляются тут.
-		const errorEl = el.createDiv({ cls: "setting-item-description mod-warning" });
-		setting.addTextArea((text) => {
-			text.inputEl.rows = 4;
-			text.setPlaceholder("Работа: Areas/Work\nЛичное: Areas/Personal");
-			text.setValue(formatNamespaces(this.plugin.settings.namespaces));
-			text.onChange((raw) =>
-				this.reportChange(async () => {
-					const { namespaces, invalid } = parseNamespaces(raw);
-					errorEl.setText(
-						invalid.length > 0
-							? `Не распознано (формат «Имя: Папка», имя уникально): ${invalid.join("; ")}`
-							: "",
-					);
-					// мутация НА МЕСТЕ (splice), не подмена ссылки: смонтированные виды
-					// держат ссылку на этот массив в props — подмена оставила бы им
-					// застывший снапшот списка (ревью)
-					this.plugin.settings.namespaces.splice(
-						0,
-						this.plugin.settings.namespaces.length,
-						...namespaces,
-					);
-					// Namespace roots form external-calendar mirror paths too.  Fence any
-					// old fetch and coalesce typing into one migrate + refresh pass.
-					this.plugin.sync.configurationChanged();
-					// активное пространство могло указывать на удалённое/переименованное — нормализуем
-					// через setActiveNamespace: откатит к «Общему» и пере-рендерит виды своим store
-					// (смена настроек эпоху индекса не бампает). Он же персистит настройки.
-					this.plugin.setActiveNamespace(this.plugin.settings.activeNamespace);
-					// имя могло не смениться (setActiveNamespace тогда молчит) — форс-толчок,
-					// чтобы открытые виды перечитали обновлённый список пространств
-					this.plugin.pokeNamespaceViews();
-					await this.save();
-				}),
-			);
-		});
 	}
 
 	// ── Проекты ─────────────────────────────────────────────────────────────
@@ -262,9 +461,8 @@ export class GtdSettingsTab extends PluginSettingTab {
 			.setName("Файл статусов дней")
 			.setDesc(
 				"Файл для покраски дней календаря (frontmatter gtd-day-status: true). Создаётся при " +
-					"первой покраске. Статусы дней ОБЩИЕ для всех пространств. Если оставить путь " +
-					"по умолчанию, файл создаётся в «Корневой папке Общего» и следует за её сменой; " +
-					"свой путь задаётся осознанно и за папкой не следует.",
+					"первой покраске. Статусы дней общие для всего хранилища; файл всегда остаётся " +
+					"по указанному здесь пути.",
 			)
 			.addText((text) => {
 				text.setPlaceholder("GTD/DayStatus.md");
@@ -287,7 +485,7 @@ export class GtdSettingsTab extends PluginSettingTab {
 			.setName("Подписки на iCal-ленты (ICS)")
 			.setDesc(
 				"Секретный адрес Google Calendar, published-ссылка Outlook или любой .ics-URL " +
-					"материализуются в файлы-зеркала «<корень пространства>/External/<имя>.md» и " +
+					"материализуются рядом с единым inbox в «External/<имя>-<id>.md» и " +
 					"появляются в календаре/агенде/виджетах как обычные события. Зеркала — только для " +
 					"чтения (перезаписываются синхронизацией); окно развёртки: 14 дней назад и 92 вперёд.",
 			);
@@ -335,7 +533,6 @@ export class GtdSettingsTab extends PluginSettingTab {
 								id: genSubId(),
 								name: "Новый календарь",
 								url: "",
-								namespace: DEFAULT_NS,
 								lastSyncAt: null,
 								lastError: null,
 							});
@@ -346,7 +543,7 @@ export class GtdSettingsTab extends PluginSettingTab {
 			);
 	}
 
-	/** Одна подписка: имя + пространство + статус + кнопки (строка 1), адрес ленты
+	/** One subscription: name, status, and controls; feed URL is on the next row.
 	 *  с предупреждением о секретности (строка 2). */
 	private renderExternalSub(el: HTMLElement, sub: ExternalCalendarSub): void {
 		const row = new Setting(el)
@@ -377,24 +574,6 @@ export class GtdSettingsTab extends PluginSettingTab {
 				if (renamed) this.display();
 				else t.setValue(sub.name); // нормализовать отображение (trim), фокус свободен
 			});
-		});
-
-		row.addDropdown((dd) => {
-			dd.addOption(DEFAULT_NS, "Общее");
-			for (const ns of this.plugin.settings.namespaces) dd.addOption(ns.name, ns.name);
-			// персистнутое пространство могло исчезнуть из списка — откат к «Общему»
-			const known =
-				sub.namespace === DEFAULT_NS ||
-				this.plugin.settings.namespaces.some((n) => n.name === sub.namespace);
-			dd.setValue(known ? sub.namespace : DEFAULT_NS);
-			dd.onChange((v) =>
-				this.reportChange(async () => {
-					if (v === sub.namespace) return;
-					sub.namespace = v;
-					this.plugin.sync.configurationChanged();
-					await this.save();
-				}),
-			);
 		});
 
 		row.addExtraButton((b) =>
@@ -504,24 +683,6 @@ export class GtdSettingsTab extends PluginSettingTab {
 
 	private sectionRecurring(el: HTMLElement): void {
 		new Setting(el).setName("Регулярные").setHeading();
-
-		new Setting(el)
-			.setName("Файл для новых копий")
-			.setDesc(
-				"Куда добавляются вхождения регулярных задач при наступлении срока — это цель для " +
-					"«Общего»; шаблон именованного пространства спавнит в его «<корень>/Входящие.md». " +
-					"За «Корневой папкой Общего» этот путь НЕ следует — при её смене поправьте здесь вручную.",
-			)
-			.addText((text) => {
-				text.setPlaceholder("GTD/Inbox.md");
-				text.setValue(this.plugin.settings.recurring.spawnTarget);
-				text.onChange((value) =>
-					this.reportChange(async () => {
-						this.plugin.settings.recurring.spawnTarget = value.trim();
-						await this.save();
-					}),
-				);
-			});
 
 		new Setting(el)
 			.setName("Догон пропущенных")
@@ -668,7 +829,7 @@ export class GtdSettingsTab extends PluginSettingTab {
 				"Куда «всплывает» задача, когда наступает её дата старта. " +
 					"«В исходное место» — остаётся в своём файле и снова проходит запрос входящих. " +
 					"«Во входящие» (по умолчанию) — снимается 🛫, снимаются теги доски, а строка " +
-					"переносится в файл входящих своего пространства, чтобы задача точно попала во «Входящие».",
+					"переносится в единый настроенный файл входящих.",
 			)
 			.addDropdown((dd) => {
 				dd.addOption("origin", "В исходное место");
@@ -778,4 +939,64 @@ function formatSyncStatus(sub: ExternalCalendarSub): string {
 	const d = new Date(sub.lastSyncAt);
 	const p = (n: number): string => String(n).padStart(2, "0");
 	return `обновлено ${p(d.getHours())}:${p(d.getMinutes())} ${p(d.getDate())}.${p(d.getMonth() + 1)}`;
+}
+
+/**
+ * Read-only, bounded view over the service-sanitized learning history. The
+ * modal never reads synced files itself and never receives task/question text,
+ * paths, provider metadata, run/session identifiers, or credentials.
+ */
+export class AiLearningHistoryModal extends Modal {
+	constructor(
+		app: App,
+		private readonly inspection: AiFeedbackInspection,
+	) {
+		super(app);
+	}
+
+	onOpen(): void {
+		this.titleEl.setText("История обучения AI");
+		this.contentEl.empty();
+		const events = this.inspection.events.slice(0, AI_FEEDBACK_INSPECTION_LIMIT);
+		this.contentEl.createEl("p", {
+			text:
+				`Показано последних событий: ${events.length} из ${this.inspection.totalEvents}. ` +
+				`Пропущено более старых: ${this.inspection.omittedEvents}; повреждённых записей: ${this.inspection.invalidRecords}.`,
+		});
+		this.contentEl.createEl("p", {
+			cls: "setting-item-description",
+			text: "Текст задач и вопросов, пути, сведения о провайдере и данные авторизации здесь намеренно не показываются.",
+		});
+		if (events.length === 0) {
+			this.contentEl.createEl("p", { text: "Событий обучения пока нет." });
+			return;
+		}
+		for (const event of events) this.renderEvent(event);
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
+	}
+
+	private renderEvent(event: AiFeedbackInspectionEvent): void {
+		const details = this.contentEl.createEl("details");
+		details.createEl("summary", {
+			text: `${event.createdAt} · ${event.kind} · ${event.taskId}`,
+		});
+		details.createEl("p", { text: `Событие: ${event.id}` });
+		details.createEl("p", { text: event.detail });
+		details.createEl("p", { text: "Текущее владение полями этой задачи:" });
+		const provenance = details.createEl("ul");
+		for (const field of event.provenance.slice(0, 5)) {
+			const prediction =
+				field.lastPredictionEventId === null
+					? ""
+					: `; последнее предсказание ${field.lastPredictionEventId}`;
+			provenance.createEl("li", {
+				text:
+					`${field.field}: ${field.owner}, ${field.locked ? "заблокировано" : "разблокировано"}` +
+					`; обновлено ${field.updatedAt}${prediction}`,
+			});
+		}
+	}
 }

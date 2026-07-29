@@ -27,16 +27,11 @@ export async function removeVault(root: string): Promise<void> {
 	await fs.rm(root, { recursive: true, force: true });
 }
 
-/** data.json плагина: два пространства (Работа/Жизнь), активное — Жизнь. */
+/** Unified-inbox data.json used by standalone MCP tests. */
 const DATA_JSON = JSON.stringify({
-	commonRoot: "GTD",
+	inboxFile: "GTD/Inbox.md",
 	eventsFile: "GTD/Events.md",
 	autoInjectId: true,
-	namespaces: [
-		{ name: "Работа", root: "Работа" },
-		{ name: "Жизнь", root: "Жизнь" },
-	],
-	activeNamespace: "Жизнь",
 });
 
 /**
@@ -55,19 +50,26 @@ gtd-inbox: true
 - [ ] Задача с айди 🆔 aaa111
 - [ ] Купить молоко 📅 2026-07-20
 `,
+	".gtd-flow/config/scopes.json": JSON.stringify({
+		schemaVersion: 1,
+		scopes: [
+			{ id: "work", name: "Работа", order: 0, archived: false },
+			{ id: "life", name: "Жизнь", order: 1, archived: false },
+		],
+	}),
 
 	"Жизнь/Входящие.md": `---
 gtd-inbox: true
 ---
-- [ ] Позвонить маме
-- [ ] Записаться к врачу 🛫 2026-08-01
+- [ ] Позвонить маме 🧭 life
+- [ ] Записаться к врачу 🛫 2026-08-01 🧭 life
 `,
 
 	"Жизнь/Проекты/Ремонт.md": `---
 gtd-project: true
 name: Ремонт кухни
 ---
-- [ ] Выбрать плитку 🆔 proj01
+- [ ] Выбрать плитку 🆔 proj01 🧭 life
 - [x] Замерить стены 🆔 proj02 ✅ 2026-07-10
 `,
 
@@ -80,8 +82,8 @@ columns:
   - {id: doing, name: В работе, match: "#kanban/sprint/doing"}
   - {id: done, name: Готово, match: "#kanban/sprint/done"}
 ---
-- [ ] Задача A #kanban/sprint/todo 🆔 card01
-- [ ] Задача B #kanban/sprint/doing 🆔 card02
+- [ ] Задача A #kanban/sprint/todo 🆔 card01 🧭 work
+- [ ] Задача B #kanban/sprint/doing 🆔 card02 🧭 work
 `,
 
 	"Жизнь/События.md": `---

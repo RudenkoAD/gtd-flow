@@ -241,6 +241,21 @@ describe("resolveLineTransform — однострочные intents", () => {
 		).toBe("- [ ] Созвон");
 	});
 
+	it("patch-task-metadata: omitted is unchanged and null clears atomically", () => {
+		const out = resolveLineTransform(
+			{
+				type: "patch-task-metadata",
+				key: "k",
+				durationMinutes: 90,
+				cognitiveIntensity: 4,
+				emotionalIntensity: null,
+				// physicalIntensity and scopeId are intentionally omitted
+			},
+			"- [ ] T ⏱ 60m 🧠 1 💓 2 💪 3 🧭 work ^block",
+		);
+		expect(out).toBe("- [ ] T ⏱ 90m 🧠 4 💪 3 🧭 work ^block");
+	});
+
 	it("defer: пишет 🛫", () => {
 		const out = resolveLineTransform(
 			{ type: "defer", key: "k", until: "2026-08-01" },

@@ -9,6 +9,7 @@ import { ProjectView } from "./project/ProjectView";
 import { ProjectsOverviewView } from "./projects/ProjectsOverviewView";
 import { RecurringView } from "./recurring/RecurringView";
 import { TicklerView } from "./tickler/TicklerView";
+import { AIView } from "./ai/AIView";
 
 /** Фабрика для registerView: реализованные виды — свои классы, остальные — заглушка. */
 export function createGtdView(leaf: WorkspaceLeaf, plugin: GtdFlowPlugin, meta: ViewMeta): GtdView {
@@ -21,6 +22,8 @@ export function createGtdView(leaf: WorkspaceLeaf, plugin: GtdFlowPlugin, meta: 
 			return new CalendarView(leaf, plugin, meta);
 		case "tickler":
 			return new TicklerView(leaf, plugin, meta);
+		case "ai":
+			return new AIView(leaf, plugin, meta);
 		case "recurring":
 			return new RecurringView(leaf, plugin, meta);
 		case "projects":

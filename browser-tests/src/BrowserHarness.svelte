@@ -1,11 +1,14 @@
 <script lang="ts">
+	import { onMount } from "svelte";
 	import type { App, Plugin } from "obsidian";
 	import VirtualList from "../../src/views/common/VirtualList.svelte";
 	import DayCell from "../../src/views/calendar/DayCell.svelte";
+	import AI from "../../src/views/ai/AI.svelte";
 	import { DndService } from "../../src/views/dnd/DndService";
 	import type { DragPayload } from "../../src/views/dnd/types";
 	import { createDefaultSettings } from "../../src/settings/Settings";
 	import type { IntentDispatcher } from "../../src/services/WritebackService";
+	import { createBrowserAiFixture } from "./aiBrowserFixture";
 
 	type FixtureRow = { id: string; label: string; height: number };
 
@@ -33,6 +36,48 @@
 		sourceViewType: "browser-harness",
 	};
 	let rejectedDropTarget = $state<HTMLElement | null>(null);
+	const ai = createBrowserAiFixture();
+	let aiRevision = $state(0);
+	let aiViewRevision = $state(0);
+	let aiStarted = $state(false);
+	const aiState = $derived.by(() => {
+		void aiRevision;
+		return ai.snapshot();
+	});
+
+	onMount(() => {
+		const unsubscribe = ai.subscribe(() => aiRevision++);
+		void ai.start().then(() => {
+			aiStarted = true;
+		});
+		return unsubscribe;
+	});
+
+	async function processAiInbox(): Promise<void> {
+		await ai.processInbox();
+		aiRevision++;
+		aiViewRevision++;
+	}
+
+	async function correctAiDuration(): Promise<void> {
+		await ai.correctDuration();
+		aiRevision++;
+		// Manual ownership changes invalidate pending AI follow-ups as well as
+		// the writeback snapshot, so remount the visible AI state for this gate.
+		aiViewRevision++;
+	}
+
+	async function rateLimitAi(): Promise<void> {
+		await ai.rateLimit();
+		aiRevision++;
+		aiViewRevision++;
+	}
+
+	async function retryAi(): Promise<void> {
+		await ai.retry();
+		aiRevision++;
+		aiViewRevision++;
+	}
 
 	function swapLeadingRows(): void {
 		rows = [rows[1]!, rows[0]!, ...rows.slice(2)];
@@ -59,7 +104,7 @@
 	});
 </script>
 
-<main>
+<div class="browser-harness">
 	<h1>GTD Flow mounted component gate</h1>
 
 	<section aria-labelledby="virtual-list-heading" data-testid="virtual-list-fixture">
@@ -126,7 +171,69 @@
 			Rejected drop target
 		</div>
 	</section>
-</main>
+
+	<section aria-labelledby="ai-heading" data-testid="ai-fixture">
+		<h2 id="ai-heading">Embedded AI</h2>
+		<div class="ai-runtime-controls" aria-label="Integrated inbox processing">
+			<button type="button" onclick={processAiInbox} disabled={!aiStarted}>
+				Process inbox with AI
+			</button>
+			<button type="button" onclick={correctAiDuration} disabled={aiState.duration === null}>
+				Correct duration to 120 minutes
+			</button>
+			<button type="button" onclick={rateLimitAi} disabled={!aiStarted}>
+				Trigger rate-limited run
+			</button>
+			<button type="button" onclick={retryAi} disabled={!aiStarted}>
+				Retry rate-limited run
+			</button>
+			<p role="status" data-testid="ai-runtime-status">{aiState.status}</p>
+			<dl class="ai-runtime-task" aria-label="Atomic task writeback">
+				<div>
+					<dt>Duration</dt>
+					<dd>{aiState.duration ?? "unprocessed"}</dd>
+				</div>
+				<div>
+					<dt>Cognitive</dt>
+					<dd>{aiState.cognitive ?? "unprocessed"}</dd>
+				</div>
+				<div>
+					<dt>Emotional</dt>
+					<dd>{aiState.emotional ?? "unprocessed"}</dd>
+				</div>
+				<div>
+					<dt>Physical</dt>
+					<dd>{aiState.physical ?? "unprocessed"}</dd>
+				</div>
+				<div>
+					<dt>Scope</dt>
+					<dd>{aiState.scope ?? "unprocessed"}</dd>
+				</div>
+				<div>
+					<dt>Last runtime fields</dt>
+					<dd>{aiState.lastFields ?? "none"}</dd>
+				</div>
+				<div>
+					<dt>Created tasks</dt>
+					<dd>{aiState.createdTasks}</dd>
+				</div>
+				<div>
+					<dt>Task deleted</dt>
+					<dd>{aiState.deleted ? "yes" : "no"}</dd>
+				</div>
+			</dl>
+		</div>
+		<div class="ai-frame">
+			{#if aiStarted}
+				{#key aiViewRevision}
+					<AI port={ai.port} />
+				{/key}
+			{:else}
+				<p>Starting integrated AI runtime…</p>
+			{/if}
+		</div>
+	</section>
+</div>
 
 <style>
 	:global(*) {
@@ -148,7 +255,7 @@
 		--interactive-accent: #0369a1;
 		--font-ui-smaller: 0.875rem;
 	}
-	main {
+	.browser-harness {
 		display: grid;
 		gap: 2rem;
 		max-width: 48rem;
@@ -163,6 +270,10 @@
 		height: 17.5rem;
 		margin-top: 0.75rem;
 		border: 1px solid #94a3b8;
+		overflow: hidden;
+	}
+	.virtual-list-frame :global(.gtd-vlist) {
+		height: 100%;
 	}
 	.fixture-row {
 		display: grid;
@@ -182,5 +293,9 @@
 		margin-top: 0.75rem;
 		padding: 1rem;
 		border: 1px dashed #0369a1;
+	}
+	.ai-frame {
+		min-height: 40rem;
+		border: 1px solid #94a3b8;
 	}
 </style>

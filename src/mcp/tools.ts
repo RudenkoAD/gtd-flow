@@ -9,6 +9,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { isDurationMinutes } from "../core/model/Task";
 import { localTodayIso } from "../services/snapshotHelpers";
 import { loadSettings } from "./config";
 import { FsVault } from "./fsVault";
@@ -24,6 +25,14 @@ import {
 	updateTask,
 } from "./handlers";
 import { openSession, type GtdSession } from "./session";
+
+const DurationMinutesSchema = z
+	.number()
+	.int()
+	.refine(
+		isDurationMinutes,
+		"Use five-minute increments below 24h and whole-day increments from 24h",
+	);
 
 export interface ServerContext {
 	vaultRoot: string;
@@ -64,7 +73,7 @@ export function registerTools(server: McpServer, ctx: ServerContext): void {
 		{
 			title: "GTD overview",
 			description:
-				"Call FIRST to orient in the user's GTD system: lists namespaces (spaces) with their folder roots and per-space counts of inbox / tickler (deferred) / boards / projects / events. Use it to learn which spaces exist before filtering other tools by namespace.",
+				"Call FIRST to orient in the user's GTD system: returns global inbox/tickler/board/project/event counts and the synced scope catalog. Scope is a task field; namespace path filtering is not part of this breaking contract.",
 			inputSchema: {},
 		},
 		() => runTool(ctx, (s) => gtdOverview(s)),
@@ -75,14 +84,9 @@ export function registerTools(server: McpServer, ctx: ServerContext): void {
 		{
 			title: "List tasks",
 			description:
-				"Read tasks from the GTD system. Call when the user asks what's in their inbox/tickler, what's on a board or in a project, or to find a task before editing it. Filter by namespace and view ('inbox' unprocessed, 'tickler' deferred by 🛫, 'board', 'project', or 'all'). Pass board/project name to scope to one. Returns each task's id (🆔 or content-key — pass it back to update_task/delete_task), description, status, dates, tags, priority, file:line, and namespace.",
+				"Read tasks from the GTD system. Call when the user asks what's in their inbox/tickler, what's on a board or in a project, or to find a task before editing it. Filter by stable scope ID and view ('inbox' unprocessed, 'tickler' deferred by 🛫, 'board', 'project', or 'all'). Returns each task's id (🆔 or content-key — pass it back to update_task/delete_task), description, status, dates, tags, priority, file:line, duration_minutes, cognitive_intensity, emotional_intensity, physical_intensity, and scope.",
 			inputSchema: {
-				namespace: z
-					.string()
-					.optional()
-					.describe(
-						"Space name (e.g. 'Работа'), 'Общее' for the common space, or 'all'. Omit for the active space.",
-					),
+				scope: z.string().optional().describe("Stable scope ID to filter by."),
 				view: z
 					.enum(["inbox", "tickler", "board", "project", "all"])
 					.optional()
@@ -106,15 +110,20 @@ export function registerTools(server: McpServer, ctx: ServerContext): void {
 		{
 			title: "Add task to inbox",
 			description:
-				"Capture a new task into the Inbox of a namespace. Call when the user wants to jot down / add / capture a to-do. text may contain emoji fields (🔺 priority, #tags, etc.). Optional due/scheduled/start accept ISO dates with optional time ('2026-07-20' or '2026-07-20 14:30'). Writes to the space's gtd-inbox file (creating the conventional Входящие.md if none).",
+				"Capture a new task into the configured inbox. Call when the user wants to jot down / add / capture a to-do. Optional duration_minutes is total elapsed minutes: five-minute increments below 24h, then whole-day increments; three intensity values are 0..5; scope is a stable scope ID.",
 			inputSchema: {
 				text: z.string().describe("Task text (may include #tags and emoji fields)."),
-				namespace: z
-					.string()
+				duration_minutes: DurationMinutesSchema.nullable()
 					.optional()
-					.describe(
-						"Target space name or 'Общее'. Omit for the active space. 'all' is not allowed.",
-					),
+					.describe("Total elapsed duration in minutes, or null to leave it clear."),
+				cognitive_intensity: z.number().int().min(0).max(5).nullable().optional(),
+				emotional_intensity: z.number().int().min(0).max(5).nullable().optional(),
+				physical_intensity: z.number().int().min(0).max(5).nullable().optional(),
+				scope: z
+					.string()
+					.nullable()
+					.optional()
+					.describe("Active stable scope ID, or null."),
 				due: z.string().optional().describe("📅 due date, ISO, optional time."),
 				scheduled: z.string().optional().describe("⏳ scheduled date, ISO, optional time."),
 				start: z.string().optional().describe("🛫 start/defer date, ISO, optional time."),
@@ -128,7 +137,7 @@ export function registerTools(server: McpServer, ctx: ServerContext): void {
 		{
 			title: "Update task",
 			description:
-				"Edit an existing task by id (🆔 preferred; a content-key from list_tasks also works). Call to mark done/undone, rename, set or clear dates, set priority, or set location. Pass done, text, priority, location, and/or due/scheduled/start (an ISO string sets it, null clears it). Only the provided fields change.",
+				"Edit an existing task by id (🆔 preferred; a content-key from list_tasks also works). Call to mark done/undone, rename, set or clear dates, priority, location, duration_minutes, each intensity, or scope. Duration uses five-minute increments below 24h and whole-day increments from 24h; intensity is 0..5; null clears the supplied field.",
 			inputSchema: {
 				id: z.string().describe("Task 🆔 or content-key (from list_tasks)."),
 				done: z.boolean().optional().describe("true marks done (✅ today), false reopens."),
@@ -157,6 +166,15 @@ export function registerTools(server: McpServer, ctx: ServerContext): void {
 					.nullable()
 					.optional()
 					.describe("📍 location (free text) or null/empty string to clear."),
+				duration_minutes: DurationMinutesSchema.nullable().optional(),
+				cognitive_intensity: z.number().int().min(0).max(5).nullable().optional(),
+				emotional_intensity: z.number().int().min(0).max(5).nullable().optional(),
+				physical_intensity: z.number().int().min(0).max(5).nullable().optional(),
+				scope: z
+					.string()
+					.nullable()
+					.optional()
+					.describe("Active stable scope ID, or null."),
 			},
 		},
 		(args) => runTool(ctx, (s) => updateTask(s, args)),
@@ -203,12 +221,6 @@ export function registerTools(server: McpServer, ctx: ServerContext): void {
 			inputSchema: {
 				from: z.string().describe("Range start, ISO YYYY-MM-DD (inclusive)."),
 				to: z.string().describe("Range end, ISO YYYY-MM-DD (inclusive)."),
-				namespace: z
-					.string()
-					.optional()
-					.describe(
-						"Space name, 'Общее', or 'all'. Omit for the active space (common-space events are always visible).",
-					),
 			},
 		},
 		(args) => runTool(ctx, (s) => listEvents(s, args)),
@@ -219,15 +231,9 @@ export function registerTools(server: McpServer, ctx: ServerContext): void {
 		{
 			title: "Add calendar event",
 			description:
-				"Create a calendar event in a namespace's events file. Call when the user wants to schedule something. Provide EXACTLY ONE of date or rule — passing both is an error (date is for one-off events, rule for recurring). For a one-off event pass date (ISO) and optional time ('14:30' or '14:30-16:00'). For a recurring event pass rule in the grammar (e.g. 'every tuesday at 19:00', 'every 2 weeks on monday, wednesday', 'every month on the last day'). time may be given alongside rule: it is folded into the rule as ' at <time>' — but the rule must not already contain an 'at' clause (that is an error). Optional location (📍).",
+				"Create a calendar event in the configured events file. Call when the user wants to schedule something. Provide EXACTLY ONE of date or rule — passing both is an error (date is for one-off events, rule for recurring). For a one-off event pass date (ISO) and optional time ('2026-07-20 14:30' or '2026-07-20 14:30-16:00'). For a recurring event pass rule in the grammar (e.g. 'every tuesday at 19:00', 'every 2 weeks on monday, wednesday', 'every month on the last day'). Optional location (📍).",
 			inputSchema: {
 				name: z.string().describe("Event name."),
-				namespace: z
-					.string()
-					.optional()
-					.describe(
-						"Target space name or 'Общее'. Omit for the active space. 'all' is not allowed.",
-					),
 				date: z
 					.string()
 					.describe("One-off event date, ISO YYYY-MM-DD. Mutually exclusive with rule.")
@@ -255,13 +261,8 @@ export function registerTools(server: McpServer, ctx: ServerContext): void {
 		{
 			title: "List boards",
 			description:
-				"List kanban boards in a namespace with their columns and per-column card counts. Call to discover boards before move_card, or when the user asks what boards exist / how many cards are in each column.",
-			inputSchema: {
-				namespace: z
-					.string()
-					.optional()
-					.describe("Space name, 'Общее', or 'all'. Omit for the active space."),
-			},
+				"List all kanban boards with their columns and per-column card counts. Call to discover boards before move_card, or when the user asks what boards exist / how many cards are in each column.",
+			inputSchema: {},
 		},
 		(args) => runTool(ctx, (s) => listBoards(s, args)),
 	);

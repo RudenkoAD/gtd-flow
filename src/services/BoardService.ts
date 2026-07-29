@@ -19,8 +19,6 @@ import { applyOrder, patchOrder } from "../core/board/ordering";
 import type { MoveColumn, SetDate } from "../core/intents/Intent";
 import { isDeferred } from "../core/model/gtdState";
 import type { Task } from "../core/model/Task";
-import { inNamespace, type NamespaceFilter } from "../core/namespace/namespace";
-import { frontmatterNamespace } from "./snapshotHelpers";
 import type { IndexFeed } from "./types";
 import type { IntentDispatcher, IntentResult } from "./WritebackService";
 
@@ -44,15 +42,6 @@ export interface BoardServiceDeps {
 	 * slug имени перед этим суффиксом.
 	 */
 	genBoardIdSuffix?: () => string;
-	/**
-	 * Активное пространство + defs для фильтрации ПУБЛИЧНОГО discovery (пикеры и
-	 * список досок вида показывают только активное пространство, дизайн). Прозрачен
-	 * (defs пуст) ⇒ фильтра нет. Опционален: без него discovery глобальна (обратная
-	 * совместимость). ВАЖНО: уникальность board.id (createBoard) остаётся ГЛОБАЛЬНОЙ —
-	 * #kanban/<id> тег общий для хранилища, совпавший id слил бы карточки досок из
-	 * разных пространств; поэтому createBoard перечисляет доски БЕЗ этого фильтра.
-	 */
-	namespaceFilter?: () => NamespaceFilter;
 }
 
 export interface DiscoveredBoard {
@@ -146,24 +135,15 @@ export class BoardService {
 
 	// --- discovery ---
 
-	/**
-	 * Публичный discovery досок пространства. `filter` — явное пространство
-	 * вызывателя (пофайловый вид Kanban передаёт своё ЛОКАЛЬНОЕ; меню/пикеры —
-	 * пространство ЗАДАЧИ). Без него — фолбэк на инжектированный namespaceFilter()
-	 * (обратная совместимость старых вызовов). Прозрачен при пустом defs / ALL_NS.
-	 */
-	discoverBoards(filter?: NamespaceFilter): BoardDiscovery {
-		return this.enumerateBoards(filter ?? this.deps.namespaceFilter?.());
+	/** Discover every board in the vault; board identity is global. */
+	discoverBoards(): BoardDiscovery {
+		return this.enumerateBoards();
 	}
 
 	/**
-	 * Перечислить доски хранилища; при переданном непрозрачном nsFilter оставить
-	 * только доски активного пространства (по пути + frontmatter-override
-	 * gtd-namespace). Без фильтра — все доски (createBoard использует это для
-	 * ГЛОБАЛЬНОЙ уникальности board.id).
+	 * Enumerate every board in the vault (including empty container files).
 	 */
-	private enumerateBoards(nsFilter?: NamespaceFilter): BoardDiscovery {
-		const filtering = nsFilter !== undefined && nsFilter.defs.length > 0;
+	private enumerateBoards(): BoardDiscovery {
 		const paths = new Set<string>();
 		for (const t of this.deps.feed.getIndex().all()) {
 			if (t.container === "board") paths.add(t.filePath);
@@ -175,10 +155,6 @@ export class BoardService {
 		const errors: BoardDiscoveryError[] = [];
 		for (const path of [...paths].sort()) {
 			const fm = this.deps.readFrontmatter(path);
-			// пространство считаем по пути + override (fm может быть null в гонке —
-			// тогда override null, членство решает папка); чужие пространства — мимо,
-			// включая их ошибки (в активном пространстве их не показываем)
-			if (filtering && !inNamespace(path, frontmatterNamespace(fm), nsFilter)) continue;
 			if (fm === null) {
 				// гонка: файл только что удалён/переименован, а индекс ещё не догнал
 				errors.push({ path, error: "frontmatter unavailable" });

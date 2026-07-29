@@ -1,8 +1,8 @@
 /**
  * Сборка полного текста файла-зеркала внешнего календаря (§внешние календари).
  *
- * ЧИСТАЯ и ДЕТЕРМИНИРОВАННАЯ функция: (развёрнутые вхождения, имя/пространство
- * подписки) → байты файла. Ключевой инвариант — ИДЕМПОТЕНТНОСТЬ: одна и та же
+ * ЧИСТАЯ и ДЕТЕРМИНИРОВАННАЯ функция: (развёрнутые вхождения, имя и стабильный
+ * ID подписки) → байты файла. Ключевой инвариант — ИДЕМПОТЕНТНОСТЬ: одна и та же
  * лента, развёрнутая в одинаковое окно, даёт БАЙТ-В-БАЙТ одинаковый файл на любом
  * устройстве (при совпадающей таймзоне). Достигается тем, что:
  *  • 🆔 вхождения — детерминированный короткий хэш от (UID + recurrenceKey +
@@ -19,19 +19,12 @@
 import { setValueField } from "../core/parser/serializeTaskLine";
 import type { MirrorOccurrence } from "./icsParse";
 
-/** Параметры файла-зеркала: имя подписки + (опц.) именованное пространство. */
+/** Parameters for one generated mirror file. */
 export interface MirrorFileOptions {
 	/** Отображаемое имя подписки (в frontmatter и заголовке). */
 	name: string;
-	/** Stable subscription identity.  SyncService always provides it so a mirror
-	 * can be reconciled after its name, namespace, or root changes. */
+	/** Stable subscription identity. SyncService uses it for reconciliation. */
 	subscriptionId?: string | null;
-	/**
-	 * Имя ИМЕНОВАННОГО пространства подписки → frontmatter gtd-namespace (как у
-	 * файла-события вне своей папки). null/undefined/«Общее» — поле опускается
-	 * (файл лежит под commonRoot и относится к «Общему» по пути).
-	 */
-	namespace?: string | null;
 }
 
 /**
@@ -100,10 +93,6 @@ export function buildMirrorFile(
 	opts: MirrorFileOptions,
 ): string {
 	const name = opts.name.replace(/\s+/g, " ").trim();
-	const namedNs =
-		typeof opts.namespace === "string" && opts.namespace.trim() !== ""
-			? opts.namespace.trim()
-			: null;
 	const subscriptionId =
 		typeof opts.subscriptionId === "string" && opts.subscriptionId.trim() !== ""
 			? opts.subscriptionId.trim()
@@ -126,7 +115,6 @@ export function buildMirrorFile(
 		`gtd-external-name: ${yamlString(name)}`,
 	];
 	if (subscriptionId !== null) front.push(`gtd-external-id: ${yamlString(subscriptionId)}`);
-	if (namedNs !== null) front.push(`gtd-namespace: ${yamlString(namedNs)}`);
 	front.push("---");
 
 	const header = `%% Зеркало внешнего календаря «${name}». Правки затираются синхронизацией — не редактируйте вручную. %%`;

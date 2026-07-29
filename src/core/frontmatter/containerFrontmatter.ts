@@ -18,7 +18,6 @@ export const CONTAINER_FRONTMATTER_KEYS: ReadonlySet<string> = new Set([
 	"gtd-archive",
 	"gtd-inbox",
 	"gtd-external",
-	"gtd-namespace",
 	"status",
 ]);
 
@@ -27,8 +26,6 @@ export interface ContainerFrontmatter {
 	container: ContainerKind;
 	/** Present only for a project with an explicit effective status. */
 	projectStatus?: ProjectStatus;
-	/** Non-empty, trimmed `gtd-namespace`; absent when it is not a string. */
-	nsOverride?: string;
 	/** Present only for an external calendar mirror. */
 	external?: true;
 }
@@ -65,19 +62,17 @@ export function frontmatterBlock(content: string): FrontmatterBlock | "untermina
 }
 
 /**
- * Normalize the exact fields consumed by indexing.  Unsupported values never
- * become a positive container/namespace classification.  Legacy numeric card
+ * Normalize the exact fields consumed by indexing. Unsupported values never
+ * become a positive container classification. Legacy numeric card
  * ids remain supported, but booleans, arrays, and objects do not make cards.
  */
 export function projectContainerFrontmatter(
 	fm: Record<string, unknown> | null | undefined,
 ): ContainerFrontmatter {
 	const data = fm ?? {};
-	const nsOverride = normalizeNamespace(data["gtd-namespace"]);
 	const external = data["gtd-external"] === true ? { external: true as const } : {};
 	const withCommon = <T extends ContainerFrontmatter>(context: T): T => ({
 		...context,
-		...(nsOverride === null ? {} : { nsOverride }),
 		...external,
 	});
 
@@ -104,13 +99,6 @@ export function fileContextFromContainerFrontmatter(
 	frontmatter: ContainerFrontmatter,
 ): FileContext {
 	return { path, ...frontmatter };
-}
-
-/** Only a non-empty string can override the namespace inferred from a path. */
-function normalizeNamespace(raw: unknown): string | null {
-	if (typeof raw !== "string") return null;
-	const value = raw.trim();
-	return value === "" ? null : value;
 }
 
 /** A card id is an intentional string or finite legacy number, never a truthy object. */

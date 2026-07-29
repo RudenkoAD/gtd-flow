@@ -164,6 +164,7 @@ describe("AiPluginServices production composition", () => {
 		).toMatchObject({
 			provider: "openrouter",
 			model: SELECTED_MODEL,
+			createdAt: "2026-07-29T08:00:02.000Z",
 		});
 		const feedback = await first.services.history.readAll();
 		expect(feedback.invalidPaths).toEqual([]);

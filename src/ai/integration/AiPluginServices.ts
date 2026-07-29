@@ -143,6 +143,7 @@ export class AiPluginServices {
 		const provider = new OpenRouterProvider({
 			getApiKey: () => this.credentials.get(),
 			privacyPolicy: () => this.requireConfiguration(),
+			now: this.now,
 		});
 		const runtime = new AgentRuntime(provider);
 

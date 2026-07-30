@@ -137,9 +137,10 @@
       API-shim. Это smoke-gate упаковки, но не заменяет запуск в реальном Obsidian.
 - [ ] На desktop проверьте pop-out: внутри отдельного окна действия и drag работают;
       между окнами используйте контекстное меню карточки.
-- [ ] Убедитесь, что release `manifest.json` содержит `isDesktopOnly: true`.
-      Мобильная эмуляция и установка на iOS/Android не являются поддерживаемой
-      поверхностью этого релиза.
+- [ ] Убедитесь, что release `manifest.json` содержит `isDesktopOnly: false`, а
+      `npm run check:packaged-plugin` печатает `eager: none`: бандл обязан
+      загружаться без Node/Electron. На iOS/Android плагин должен открывать
+      входящие/календарь/повторы; недоступен только AI-слой.
 
 ## 9. Unified inbox, scopes and AI
 

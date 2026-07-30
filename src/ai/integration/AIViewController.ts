@@ -476,8 +476,23 @@ export class AIViewController implements AIViewPort {
 	}
 
 	private async emitSnapshot(): Promise<void> {
+		await this.recheckOfflineConnection();
 		const sessions = await this.options.sessions.list();
 		this.emit({ type: "snapshot", snapshot: await this.snapshotFrom(sessions) });
+	}
+
+	/**
+	 * «Офлайн» — предположение по ОДНОЙ сетевой ошибке, а не факт отключения.
+	 * Без пересчёта вид залипал в нём до переоткрытия вкладки: отправка
+	 * заблокирована (send требует connection === "connected"), а единственная
+	 * кнопка в шапке — «Подключить», то есть полный PKCE-флоу с внешним
+	 * браузером. Пропавший на десять секунд Wi-Fi не должен этого стоить.
+	 */
+	private async recheckOfflineConnection(): Promise<void> {
+		if (this.connectionState !== "offline") return;
+		this.connectionState = (await this.options.connection.isConnected())
+			? "connected"
+			: "disconnected";
 	}
 
 	private async snapshotFrom(loaded: LoadedSession[]): Promise<AIViewSnapshot> {

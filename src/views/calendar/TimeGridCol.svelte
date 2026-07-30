@@ -275,6 +275,9 @@
 	 * dragging its block: ←/→ move day, ↑/↓ move by the 15-minute snap. */
 	function moveOccurrenceFromKeyboard(occ: EventOccurrence, key: string): void {
 		if (onMoveOccurrence === null || occ.time === null) return;
+		// Зеркало ICS доступно только на чтение: перенос ушёл бы прямо в файл
+		// зеркала (мимо WritebackService) и был бы затёрт ближайшим синком.
+		if (occ.task.external) return;
 		const action = occurrenceKeyboardAction(key);
 		if (action === null) return;
 		let toDate = date;

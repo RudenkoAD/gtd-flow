@@ -13,6 +13,7 @@ import {
 import type { CalendarField, ExternalCalendarSub } from "./Settings";
 import {
 	CALENDAR_FIELDS,
+	commitInboxFile,
 	commitSubName,
 	formatDeferPresets,
 	parseDeferPresets,
@@ -66,7 +67,7 @@ export class GtdSettingsTab extends PluginSettingTab {
 	// ── Scopes ──────────────────────────────────────────────────────────────
 
 	private sectionScopes(el: HTMLElement): void {
-		new Setting(el).setName("Scopes").setHeading();
+		new Setting(el).setName("Scope").setHeading();
 		const scopes = [...this.plugin.scopes.current().scopes].sort(
 			(left, right) => left.order - right.order || left.name.localeCompare(right.name),
 		);
@@ -336,15 +337,20 @@ export class GtdSettingsTab extends PluginSettingTab {
 			.addText((text) => {
 				text.setPlaceholder("GTD/Inbox.md");
 				text.setValue(this.plugin.settings.inboxFile);
-				text.onChange((value) =>
-					this.reportChange(async () => {
-						const path = value.trim();
-						if (path === "") return;
-						this.plugin.settings.inboxFile = path;
-						this.plugin.sync.configurationChanged();
-						await this.save();
-					}),
-				);
+				// Коммит по blur/Enter, НЕ на каждую букву (как имя и адрес подписки).
+				// От папки этого файла считается путь зеркал ICS, поэтому запись на
+				// каждый символ таскала зеркала по промежуточным путям (набор
+				// «GTD/Inbox.md» успевал создать зеркало в корне, отправить его в
+				// корзину и пересоздать) и на каждое поколение конфигурации
+				// перезапускала полный сетевой проход по всем лентам.
+				commitOnBlur(text.inputEl, async () => {
+					const changed = await commitInboxFile(this.plugin.settings, text.getValue(), {
+						reconcile: () => this.plugin.sync.configurationChanged(),
+						save: () => this.save(),
+					});
+					// нормализовать отображение (trim / откат пустого ввода) — фокус свободен
+					if (!changed) text.setValue(this.plugin.settings.inboxFile);
+				});
 			});
 
 		new Setting(el)

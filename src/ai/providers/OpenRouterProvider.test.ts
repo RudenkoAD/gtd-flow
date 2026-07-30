@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentMessage } from "../core/messages";
 import { OpenRouterProvider } from "./OpenRouterProvider";
 
@@ -20,7 +20,43 @@ function completionResponse(content: string) {
 	);
 }
 
+function abortError(): DOMException {
+	return new DOMException("Aborted", "AbortError");
+}
+
+/** Соединение принято и молчит — рвётся только по сигналу, как настоящий fetch. */
+function hangUntilAbort(signal?: AbortSignal | null): Promise<Response> {
+	return new Promise<Response>((_resolve, reject) => {
+		if (signal?.aborted) {
+			reject(abortError());
+			return;
+		}
+		signal?.addEventListener("abort", () => reject(abortError()), { once: true });
+	});
+}
+
+/** SSE-поток отдаёт один валидный чанк и замирает, не закрываясь. */
+function stallingStream(signal?: AbortSignal | null): Response {
+	const encoder = new TextEncoder();
+	const chunk = JSON.stringify({
+		id: "response-1",
+		model: "free/actual-model",
+		choices: [{ delta: { content: "hi" } }],
+	});
+	const body = new ReadableStream<Uint8Array>({
+		start(controller) {
+			controller.enqueue(encoder.encode(`data: ${chunk}\n\n`));
+			signal?.addEventListener("abort", () => controller.error(abortError()), { once: true });
+		},
+	});
+	return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+}
+
 describe("OpenRouterProvider", () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
 	it("uses only openrouter/free and validates strict non-streaming JSON locally", async () => {
 		let body: Record<string, unknown> | null = null;
 		const provider = new OpenRouterProvider({
@@ -293,5 +329,77 @@ describe("OpenRouterProvider", () => {
 		});
 		expect(credentialReads).toBe(0);
 		expect(fetched).toBe(false);
+	});
+	// §fetch-brand-check: глобальный fetch в Chromium делает brand-check на this,
+	// поэтому дефолт обязан звать его от globalThis, а не как метод провайдера.
+	it("calls the default global fetch with a global receiver", async () => {
+		function brandCheckedFetch(this: unknown): Promise<Response> {
+			if (this !== globalThis) {
+				throw new TypeError("Failed to execute 'fetch' on 'Window': Illegal invocation");
+			}
+			return Promise.resolve(completionResponse("ok"));
+		}
+		vi.stubGlobal("fetch", brandCheckedFetch);
+
+		const provider = new OpenRouterProvider({
+			getApiKey: () => "local-secret",
+			privacyPolicy: "account-policy",
+		});
+
+		const result = await provider.complete({ messages: [message] });
+		expect(result.message.content).toBe("ok");
+	});
+
+	// §таймауты: зависшее соединение обязано оборваться само и вернуться как
+	// retryable provider-unavailable, иначе run навсегда остаётся в processing.
+	it("aborts a hung request by the request budget and reports it as retryable", async () => {
+		const provider = new OpenRouterProvider({
+			getApiKey: () => "local-secret",
+			privacyPolicy: "account-policy",
+			requestTimeoutMs: 10,
+			fetch: (_url, init) => hangUntilAbort(init?.signal),
+		});
+
+		await expect(provider.complete({ messages: [message] })).rejects.toMatchObject({
+			code: "provider-unavailable",
+			retryable: true,
+		});
+	});
+
+	it("aborts a stream that stalls between chunks", async () => {
+		const provider = new OpenRouterProvider({
+			getApiKey: () => "local-secret",
+			privacyPolicy: "account-policy",
+			requestTimeoutMs: 5_000,
+			streamIdleTimeoutMs: 10,
+			fetch: (_url, init) => Promise.resolve(stallingStream(init?.signal)),
+		});
+
+		const seen: string[] = [];
+		await expect(
+			(async () => {
+				for await (const event of provider.stream({ messages: [message] })) {
+					seen.push(event.type);
+				}
+			})(),
+		).rejects.toMatchObject({ code: "provider-unavailable", retryable: true });
+		expect(seen).toContain("response-started");
+	});
+
+	it("still reports a user cancellation as cancelled, not as a timeout", async () => {
+		const controller = new AbortController();
+		const provider = new OpenRouterProvider({
+			getApiKey: () => "local-secret",
+			privacyPolicy: "account-policy",
+			requestTimeoutMs: 5_000,
+			fetch: (_url, init) => {
+				setTimeout(() => controller.abort(), 0);
+				return hangUntilAbort(init?.signal);
+			},
+		});
+
+		await expect(
+			provider.complete({ messages: [message] }, { signal: controller.signal }),
+		).rejects.toMatchObject({ code: "cancelled", retryable: false });
 	});
 });

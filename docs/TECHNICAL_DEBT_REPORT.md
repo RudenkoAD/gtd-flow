@@ -11,8 +11,8 @@ MCP server, widget core, tests, build, release automation, and project documenta
 
 GTD Flow has a stronger foundation than most projects of this size: strict TypeScript,
 an explicit pure-core boundary, broad unit/property/service coverage, deterministic
-file-oriented behavior, and a successful build. The current suite passes **2,033 tests in
-75 files**.
+file-oriented behavior, and a successful build. At the audited commit the suite passed
+**2,033 tests in 75 files**.
 
 The project is nevertheless **not ready to expand its mutating workflows safely
 without a short reliability phase first**. Two confirmed defects can silently delete
@@ -62,20 +62,26 @@ lockfile now reports zero known npm advisories.
 | TD-10 | Resolved | Exact `svelte-check` reports zero errors/warnings across source and browser harness files. The compiler gate covers all 21 project components. Mounted Playwright tests exercise real `VirtualList`, `DayCell`, and `DndService` paths: keyboard quick-add and rejected cross-view drops, ARIA status announcements, variable-height tail reachability, keyed state, and axe with no disabled rules. |
 | TD-11 | Resolved | Virtualization is keyed and measured for variable-height rows, with an explicit threshold and a mounted tail/draft-preservation regression. Settings-aware query keys and latest-durable revision notifications keep mounted views coherent. |
 | TD-12 | Resolved | A centralized async action boundary reports failures; graph, board, settings, quick-add, subscription, DnD, and cross-view workflows now roll back, restore drafts, retain retryable state, or surface a user-visible Notice instead of silently diverging. Sync/async rejected-drop regressions and a mounted ARIA-live failure test cover the final DnD boundary. |
-| TD-13 | Resolved | `FsVault` uses a shared incremental metadata tree, bounded I/O, safe no-follow snapshots, SHA-256 revisions, mode-preserving exclusive replacement, and a 10,000-note regression. MCP and widget now share the same bounded container-frontmatter projection, delimiter semantics, namespace labels, and parity tests without bundling full YAML into QuickJS. |
+| TD-13 | Resolved | `FsVault` uses a shared incremental metadata tree, bounded I/O, safe no-follow snapshots, SHA-256 revisions, mode-preserving exclusive replacement, and a large-vault incremental-scan regression (3,000 notes by default; `GTD_PERF_NOTES=10000` restores the original 10,000-note fixture, which exceeded the Vitest budget on Windows). MCP and widget now share the same bounded container-frontmatter projection, delimiter semantics, namespace labels, and parity tests without bundling full YAML into QuickJS. |
 | TD-14 | Resolved | CI/release actions are SHA-pinned and least-privileged; version/tag contracts accept normal `npm version` tags; release publication consumes a verified immutable checksum bundle. Dependabot and a scheduled high-severity audit workflow are present. The 12 reported advisories were triaged and removed through compatible exact upgrades/overrides; the final audit reports zero vulnerabilities. |
 | TD-15 | Resolved | The purity gate now uses TypeScript AST/import-graph analysis over the documented layers and has fixtures for static, side-effect, and dynamic imports. |
 | TD-16 | Resolved | Version sources, MCP server info, Node `>=20.19.0`, Node 20.19/22 CI lanes, artifact presence, and bundle budgets are defined and checked. Compilation uses exact Obsidian `1.7.2` and Node 20 typings; the complete unified gate passes under an isolated Node `20.19.0` runtime. |
 | TD-17 | Resolved | Metadata keys are type-tagged; day-status writes are generation-guarded; path scope is segment-aware; graph counts scale through DAG bitsets; defaults are unaliased; and new board IDs use a readable slug plus a CSPRNG UUID with local reservation/revalidation as a retry guard. |
 | TD-18 | Resolved | Release/verification docs, private-package intent, artifact contracts, bundle budgets, checksum instructions, and manual Kanban expectations are synchronized. ESLint, Prettier, semantic Svelte, V8 coverage thresholds, and mounted Playwright/axe tests are mandatory parts of the unified local/CI/release gate. |
 
-### Current verification evidence
+### Verification evidence of this remediation pass
 
-| Check | Current result |
+Every measurement below was taken during the remediation pass on project version
+`0.12.0` and is preserved as dated evidence, not refreshed on later commits: the
+live numbers are whatever `npm run verify` prints today. The gate was measured on
+Linux; where a result is platform-specific it is called out in the row.
+
+| Check | Result of that pass |
 | --- | --- |
-| `npm run verify` | Passed on the local runtime: lint, format, compiler/semantic Svelte, coverage, browser/axe, builds, budgets, and release contract |
+| `npm run verify` | Passed on the Linux runtime used for the audit: lint, format, compiler/semantic Svelte, coverage, browser/axe, builds, budgets, and release contract |
+| Windows | Not covered by that run. The large-vault scan regression later needed about 31 s against the 30 s Vitest budget there, so the gate was red on the maintainer's machine until the benchmark was rescaled (see TD-13) |
 | Minimum Node runtime | The complete `npm run verify` gate passed under isolated Node `20.19.0` |
-| Vitest and coverage | 88 files / 2,151 tests; Vitest 4 AST-aware coverage: 90.70% statements, 85.27% branches, 91.25% functions, 93.28% lines |
+| Vitest and coverage | 88 files / 2,151 tests at that commit; Vitest 4 AST-aware coverage: 90.70% statements, 85.27% branches, 91.25% functions, 93.28% lines |
 | Core purity | Passed with the AST/import-graph checker |
 | Svelte gates | Compiler passed 21 components; `svelte-check` reported 0 errors and 0 warnings; only three dependency-owned `@xyflow/svelte` production-build warnings remain |
 | Mounted browser/accessibility | 3 Playwright tests passed against real project components/services in Chrome for Testing 151, including a rejected cross-view drop; axe ran with no disabled rules |
@@ -84,7 +90,7 @@ lockfile now reports zero known npm advisories.
 | Bundle budgets | `main.js` 1,137,980 / 1,300,000; `mcp-server.js` 1,619,890 / 2,000,000; `widget-core.js` 113,506 / 150,000 bytes |
 | Release contract | Passed for project version `0.12.0` and npm-style tag `v0.12.0` |
 | Release checksums | All six release payload files passed `sha256sum --check SHA256SUMS` |
-| Critical regressions | Include 100 concurrent real MCP writes, a 10,000-note incremental scan, 29 bounded ICS tests, and 71 board-service tests |
+| Critical regressions | Include 100 concurrent real MCP writes, a large-vault incremental scan (10,000 notes then, 3,000 by default now), 29 bounded ICS tests, and 71 board-service tests |
 
 ### Dependency advisory triage
 

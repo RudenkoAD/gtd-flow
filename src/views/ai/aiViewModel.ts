@@ -361,29 +361,30 @@ export class AIViewModel {
 	}
 }
 
+// Подписи вида — на русском, как весь остальной интерфейс плагина.
 export function connectionLabel(state: AIViewState): string {
-	if (state.connection === "connected") return "Connected";
-	if (state.connection === "connecting") return "Connecting…";
-	if (state.connection === "offline") return "Offline";
-	return "Disconnected";
+	if (state.connection === "connected") return "Подключено";
+	if (state.connection === "connecting") return "Подключение…";
+	if (state.connection === "offline") return "Нет сети";
+	return "Не подключено";
 }
 
 export function workLabel(state: AIViewState): string | null {
 	switch (state.work) {
 		case "streaming":
-			return "Responding…";
+			return "Отвечает…";
 		case "queued":
-			return "Queued — waiting for free capacity";
+			return "В очереди — ждём свободного места";
 		case "rate-limited":
 			return state.nextEligibleAt === null
-				? "Rate limited — waiting for free capacity"
-				: `Rate limited — retry after ${state.nextEligibleAt}`;
+				? "Лимит запросов — ждём свободного места"
+				: `Лимит запросов — повтор после ${state.nextEligibleAt}`;
 		case "retry-waiting":
 			return state.nextEligibleAt === null
-				? "Temporarily unavailable — waiting to retry"
-				: `Temporarily unavailable — retry after ${state.nextEligibleAt}`;
+				? "Временно недоступно — ждём повтора"
+				: `Временно недоступно — повтор после ${state.nextEligibleAt}`;
 		case "offline":
-			return "Offline — requests stay local until reconnected";
+			return "Нет сети — запросы остаются локальными до восстановления";
 		case "idle":
 			return null;
 	}
@@ -391,14 +392,14 @@ export function workLabel(state: AIViewState): string | null {
 
 export function errorLabel(error: AIViewError): string {
 	const labels: Record<AIViewErrorCode, string> = {
-		authentication: "Authentication required",
-		cancelled: "Response cancelled",
-		configuration: "Choose AI privacy and credential settings first",
-		"invalid-response": "Invalid provider response",
-		network: "Network unavailable",
-		"provider-unavailable": "Provider unavailable",
-		"rate-limited": "Rate limited",
-		unknown: "AI action failed",
+		authentication: "Требуется подключение к OpenRouter",
+		cancelled: "Ответ отменён",
+		configuration: "Сначала выберите настройки приватности и хранения ключа",
+		"invalid-response": "Некорректный ответ провайдера",
+		network: "Сеть недоступна",
+		"provider-unavailable": "Провайдер недоступен",
+		"rate-limited": "Лимит запросов",
+		unknown: "Не удалось выполнить действие AI",
 	};
 	return labels[error.code];
 }

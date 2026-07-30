@@ -12,6 +12,7 @@ import {
 	type NamespaceTaskCoverage,
 } from "../core/scope/namespaceMigration";
 import { createScopeCatalog } from "../core/scope/scope";
+import { createMemoryDataAdapter } from "../testing/memoryDataAdapter";
 import { discoverLegacyNamespaceInventory } from "./LegacyNamespaceDiscovery";
 import {
 	cloneSettingsSnapshot,
@@ -324,6 +325,8 @@ class ObsidianMemoryVault {
 	throwOnReadAfterProcessOnceFor: { path: string; readsBeforeThrow: number } | null = null;
 	private pendingReadFailure: { path: string; readsBeforeThrow: number } | null = null;
 	private readonly folders = new Set<string>();
+	/** Скрытые пути живут ТОЛЬКО здесь — как в настоящем Obsidian. */
+	readonly adapter = createMemoryDataAdapter(this.data, this.folders);
 
 	constructor(files: Readonly<Record<string, string>>) {
 		for (const [path, content] of Object.entries(files)) {
@@ -333,15 +336,19 @@ class ObsidianMemoryVault {
 	}
 
 	getFileByPath(path: string): MemoryFile | null {
-		return this.data.has(path) ? file(path) : null;
+		return !isHiddenPath(path) && this.data.has(path) ? file(path) : null;
 	}
 
 	getAbstractFileByPath(path: string): MemoryFile | { path: string } | null {
+		if (isHiddenPath(path)) return null;
 		return this.getFileByPath(path) ?? (this.folders.has(path) ? { path } : null);
 	}
 
 	getFiles(): MemoryFile[] {
-		return [...this.data.keys()].sort().map(file);
+		return [...this.data.keys()]
+			.filter((path) => !isHiddenPath(path))
+			.sort()
+			.map(file);
 	}
 
 	async cachedRead(target: MemoryFile): Promise<string> {
@@ -435,6 +442,10 @@ class ObsidianMemoryVault {
 			this.folders.add(parts.slice(0, length).join("/"));
 		}
 	}
+}
+
+function isHiddenPath(path: string): boolean {
+	return path.split("/").some((segment) => segment.startsWith("."));
 }
 
 class MemoryMigrationSettings implements NamespaceMigrationSettingsPort {

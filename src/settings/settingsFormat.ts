@@ -107,6 +107,32 @@ export function planSubNameCommit(oldName: string, input: string): SubNameCommit
 	return { value, renamed: value !== oldName.trim() };
 }
 
+// ── Входящие: коммит пути файла входящих по blur/Enter ─────────────────────
+
+/**
+ * Коммит поля «Файл входящих» (blur/Enter, а НЕ на каждую букву). Путь зеркал
+ * ICS считается ОТ папки этого файла (mirrorPath → underInboxParent), поэтому
+ * запись на каждый символ прогоняла зеркала по промежуточным путям: при наборе
+ * «GTD/Inbox.md» файл-зеркало успевал родиться в корне, уехать в корзину и
+ * пересоздаться, а каждое поколение конфигурации перезапускало ПОЛНЫЙ сетевой
+ * проход по всем лентам (runAllUntilCurrentConfiguration). Пустое значение —
+ * не изменение (пользователь стирает поле, чтобы набрать новое): держим прежний
+ * путь, как и раньше. Возвращает true, если путь реально изменился (вызыватель
+ * тогда дёргает reconcile и сохраняет).
+ */
+export async function commitInboxFile(
+	settings: { inboxFile: string },
+	input: string,
+	ports: { reconcile: () => void; save: () => Promise<void> },
+): Promise<boolean> {
+	const value = input.trim();
+	if (value === "" || value === settings.inboxFile) return false;
+	settings.inboxFile = value;
+	ports.reconcile();
+	await ports.save();
+	return true;
+}
+
 /**
  * Коммит имени подписки. При реальном переименовании: удалить зеркало СТАРОГО
  * имени РОВНО РАЗ (deleteMirror — до мутации, путь считается от старого имени),

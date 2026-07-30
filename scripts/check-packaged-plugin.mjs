@@ -15,8 +15,8 @@ const { manifest, packageJson } = contract;
 
 errors.push(...validateReleaseContract(contract, { artifacts: true }));
 
-if (manifest.isDesktopOnly !== true) {
-	errors.push("manifest.json must explicitly set isDesktopOnly: true");
+if (typeof manifest.isDesktopOnly !== "boolean") {
+	errors.push("manifest.json must explicitly set isDesktopOnly");
 }
 if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(manifest.id ?? "")) {
 	errors.push("manifest.json id must be a lowercase, hyphen-separated identifier");
@@ -54,9 +54,7 @@ if (!externals.has("obsidian")) {
 const desktopRuntimeExternals = [...externals].filter(
 	(name) => name === "electron" || nodeBuiltins.has(name),
 );
-if (desktopRuntimeExternals.length > 0 && manifest.isDesktopOnly !== true) {
-	errors.push("Node/Electron runtime imports require a desktop-only manifest");
-}
+const eagerDesktopLoads = [];
 
 const concreteSecretPatterns = [
 	/\bsk-[A-Za-z0-9_-]{16,}\b/u,
@@ -88,6 +86,12 @@ if (errors.length === 0) {
 		Module._cache[mainPath] = pluginModule;
 		Module._load = function loadWithObsidianShim(request, parent, isMain) {
 			if (request === "obsidian") return obsidianShim;
+			// Мобильный Obsidian не даёт ни electron, ни node-встроек. Загрузка
+			// бандла обязана обходиться без них — desktop-специфика допустима
+			// только за ленивым `await import()` внутри вызова.
+			if (request === "electron" || nodeBuiltins.has(request)) {
+				eagerDesktopLoads.push(request);
+			}
 			return originalLoad.call(this, request, parent, isMain);
 		};
 		pluginModule._compile(mainCode, mainPath);
@@ -102,6 +106,11 @@ if (errors.length === 0) {
 		Module._load = originalLoad;
 		delete Module._cache[mainPath];
 	}
+	if (manifest.isDesktopOnly !== true && eagerDesktopLoads.length > 0) {
+		errors.push(
+			`main.js loads desktop-only modules at import time: ${[...new Set(eagerDesktopLoads)].sort().join(", ")}`,
+		);
+	}
 }
 
 if (errors.length > 0) {
@@ -112,5 +121,6 @@ if (errors.length > 0) {
 }
 
 console.log(
-	`packaged plugin check OK (desktop externals: ${desktopRuntimeExternals.sort().join(", ") || "none"})`,
+	`packaged plugin check OK (desktop externals: ${desktopRuntimeExternals.sort().join(", ") || "none"};` +
+		` eager: ${[...new Set(eagerDesktopLoads)].sort().join(", ") || "none"})`,
 );

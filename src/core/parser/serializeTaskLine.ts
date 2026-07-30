@@ -35,10 +35,10 @@ import {
 import { parseDatePayload, parseExcludedDates, splitDateTimePayload } from "./parseTaskLine";
 import {
 	extractTags,
-	isLeadingLocation,
 	isTagChar,
 	isTimedDateField,
 	serializeTokens,
+	tokenizeSegments,
 	tokenizeTaskLine,
 	TIME_RE,
 	type FieldName,
@@ -508,41 +508,25 @@ function removeTagFromText(text: string, tag: string): string {
  * «- [ ] 📅 2026-01-01» — задача без описания.
  * Эмодзи полей внутри text — throw (как addTag): парсер прочитал бы их как поля,
  * а не как текст. Место задаётся отдельно (setValueField location / set-location).
- * ИСКЛЮЧЕНИЕ — ВЕДУЩИЙ 📍 в самом начале канона: токенизатор читает его как
- * ЗАГОЛОВОК описания, а не поле (защита «б»). Это единственный способ, которым
- * валидное описание содержит 📍 (напр. «📍 Важная встреча»), поэтому инлайн-правка
- * такой задачи/события не должна падать. «Ведущий ли 📍» решает тот же предикат
- * isLeadingLocation, что и токенизатор (правило leading-📍 не дублируется здесь
- * строкой) — семантика писателя и читателя совпадает по построению. Любой ДРУГОЙ
- * 📍 (не ведущий) стал бы полем места при чтении — отклоняем, как прочие эмодзи.
+ * ИСКЛЮЧЕНИЯ — ровно те, что токенизатор и так читает как текст: ВЕДУЩИЙ 📍
+ * («📍 Важная встреча» — заголовок, защита «б») и ⏱/🧠/💓/💪/🧭 без похожего на
+ * значение payload («Тренировка 💪 сегодня в зале»). Решает это сам токенизатор
+ * (tokenizeSegments по канону), а не дублирующее правило здесь: семантика
+ * писателя и читателя совпадает по построению. Любой ДРУГОЙ 📍 стал бы полем
+ * места при чтении, «💪 3» — полем нагрузки; такие тексты отклоняем.
  */
 export function setDescription(rawLine: string, text: string): string {
 	const canon = text.replace(/\s+/g, " ").trim();
-	const loc = VALUE_FIELD_EMOJI.location;
-	for (const e of ALL_FIELD_EMOJI) {
-		if (e === loc) {
-			// каждый 📍 нового текста должен быть ведущим (иначе стал бы полем места):
-			// проверяем позицию ТЕМ ЖЕ isLeadingLocation, что применяет токенизатор к
-			// канону, ставшему первым текст-сегментом (canon уже trim/схлопнут — как
-			// его увидит читатель). Не ведущий 📍 → throw.
-			for (
-				let idx = canon.indexOf(loc);
-				idx !== -1;
-				idx = canon.indexOf(loc, idx + loc.length)
-			) {
-				if (!isLeadingLocation(canon, idx)) {
-					throw new Error(
-						`serializeTaskLine: эмодзи поля в тексте описания: ${JSON.stringify(text)}`,
-					);
-				}
-			}
-			continue;
-		}
-		if (canon.includes(e)) {
-			throw new Error(
-				`serializeTaskLine: эмодзи поля в тексте описания: ${JSON.stringify(text)}`,
-			);
-		}
+	// Гейт один на все эмодзи полей: описание валидно ровно тогда, когда
+	// токенизатор не увидит в нём НИ ОДНОГО поля. Так позиционные и
+	// payload-зависимые правила читателя (ведущий 📍 — заголовок; ⏱/🧠/💓/💪/🧭
+	// без похожего на значение payload — обычный текст) не дублируются здесь
+	// строкой, а совпадают с ним по построению: «Тренировка 💪 сегодня в зале»
+	// проходит, «Купить 💪 3» — нет (при чтении стало бы полем).
+	if (tokenizeSegments(canon).some((seg) => seg.kind === "field")) {
+		throw new Error(
+			`serializeTaskLine: эмодзи поля в тексте описания: ${JSON.stringify(text)}`,
+		);
 	}
 	const t = mustTokenize(rawLine);
 	const fieldToks = t.segments.filter((s): s is FieldToken => s.kind === "field");

@@ -158,8 +158,9 @@ export function registerCommands(plugin: GtdFlowPlugin): void {
 }
 
 // ---------------------------------------------------------------------------
-// Быстрый ввод (паттерн quick-add календаря: append в первый gtd-inbox файл,
-// фолбэк <commonRoot>/Входящие.md для «Общего», <root>/Входящие.md для именованного)
+// Быстрый ввод (паттерн quick-add календаря): append СТРОГО в единый
+// settings.inboxFile. Пространств больше нет; путь для legacy-хранилищ выводит
+// миграция v1 → v2 (legacyInboxCandidates), а не конвенция по пространству.
 // ---------------------------------------------------------------------------
 
 class QuickCaptureModal extends Modal {

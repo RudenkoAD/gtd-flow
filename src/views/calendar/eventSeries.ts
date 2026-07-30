@@ -34,6 +34,24 @@ export type EventWriteResult = { ok: true } | { ok: false; reason: string };
  */
 export const EVENT_COMPLETION_REASON = "«every!» — только для задач, не для событий";
 
+/**
+ * Причина отказа для строки из файла-зеркала ICS (frontmatter `gtd-external`).
+ * Как и EVENT_COMPLETION_REASON — читаемый текст: летит в Notice напрямую.
+ */
+export const EVENT_EXTERNAL_REASON =
+	"внешнее событие: правку затрёт синхронизация (сделайте копию)";
+
+/**
+ * Правки вхождений/серий пишут через `vault.processFile` НАПРЯМУЮ, минуя
+ * WritebackService с его гейтом readOnlyFile. До сих пор зеркала спасал только
+ * состав меню (правки скрыты) и отключённый drag — то есть UI, а не защита:
+ * любая новая аффорданс (клавиатурный перенос 0.13.0) сразу открывала дыру.
+ * Проверку дублируем на входе каждой пишущей операции.
+ */
+function externalRefusal(task: Task): EventWriteResult | null {
+	return task.external ? { ok: false, reason: EVENT_EXTERNAL_REASON } : null;
+}
+
 // ---------------------------------------------------------------------------
 // Чистые преобразования строки серии
 // ---------------------------------------------------------------------------
@@ -357,6 +375,8 @@ export async function editEventSeries(deps: {
 	/** Опциональное место 📍 (пусто/null — снять поле). */
 	location?: string | null;
 }): Promise<EventWriteResult> {
+	const external = externalRefusal(deps.task);
+	if (external !== null) return external;
 	const parsedRule = parseRule(deps.ruleText);
 	if (isParseError(parsedRule)) return { ok: false, reason: "invalid-rule" };
 	// серии событий с «every!» запрещены — событие не «выполняется» (§every!)
@@ -415,6 +435,8 @@ export async function setEventLocation(deps: {
 	task: Task;
 	location: string | null;
 }): Promise<EventWriteResult> {
+	const external = externalRefusal(deps.task);
+	if (external !== null) return external;
 	const loc = (deps.location ?? "").trim();
 	let failure: string | null = "file-not-found";
 	try {
@@ -487,6 +509,8 @@ export async function excludeEventOccurrence(deps: {
 	task: Task;
 	date: IsoDate;
 }): Promise<EventWriteResult> {
+	const external = externalRefusal(deps.task);
+	if (external !== null) return external;
 	let failure: string | null = "file-not-found";
 	try {
 		await deps.vault.processFile(deps.task.filePath, (content) => {
@@ -533,6 +557,8 @@ export async function transferEventOccurrence(deps: {
 	/** Ленивый генератор 🆔 серии (тесты передают детерминированный). */
 	genId?: () => string;
 }): Promise<EventWriteResult> {
+	const external = externalRefusal(deps.task);
+	if (external !== null) return external;
 	const genId = deps.genId ?? defaultEventId;
 	let failure: string | null = "file-not-found";
 	try {

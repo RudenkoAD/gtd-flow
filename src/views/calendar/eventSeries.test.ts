@@ -10,6 +10,7 @@ import {
 	editEventLine,
 	editEventSeries,
 	EVENT_COMPLETION_REASON,
+	EVENT_EXTERNAL_REASON,
 	excludeEventOccurrence,
 	joinEventRule,
 	setEventLocation,
@@ -905,5 +906,99 @@ describe("setEventLocation — правка только 📍 (серия или
 		const res = await setEventLocation({ vault, task, location: "у 📅 стены" });
 		expect(res).toEqual({ ok: false, reason: "transform-failed" });
 		expect(vault.files.get("GTD/Events.md")).toBe("- [ ] X 📅 2026-07-21\n");
+	});
+});
+
+// Зеркала ICS правятся только синком. Пишущие функции этого модуля идут в файл
+// НАПРЯМУЮ (vault.processFile), мимо WritebackService и его гейта readOnlyFile,
+// поэтому проверка обязана быть и здесь: до неё зеркало спасал только состав
+// меню, и клавиатурный перенос вхождения (0.13.0) сразу открыл дыру.
+describe("зеркало ICS (external) — правки отклоняются на входе", () => {
+	function mirrorTask(rawLine: string): Task {
+		return { ...taskFrom(rawLine, "External/Работа-ffmadq.md", 0), external: true };
+	}
+
+	function mirrorVault(rawLine: string): FakeVault {
+		const vault = new FakeVault();
+		vault.files.set(
+			"External/Работа-ffmadq.md",
+			`${rawLine}
+`,
+		);
+		return vault;
+	}
+
+	it("transferEventOccurrence (single) не трогает файл зеркала", async () => {
+		const line = "- [ ] Синк команды 📅 2026-07-23 15:00-16:00 🆔 10u1cuj73z";
+		const vault = mirrorVault(line);
+
+		const res = await transferEventOccurrence({
+			vault,
+			task: mirrorTask(line),
+			kind: "single",
+			fromDate: "2026-07-23",
+			toDate: "2026-07-24",
+			time: "15:00",
+			timeEnd: "16:00",
+		});
+
+		expect(res).toEqual({ ok: false, reason: EVENT_EXTERNAL_REASON });
+		expect(vault.writes).toBe(0);
+		expect(vault.files.get("External/Работа-ffmadq.md")).toBe(`${line}
+`);
+	});
+
+	it("setEventLocation, excludeEventOccurrence и editEventSeries — тоже", async () => {
+		const line = "- [ ] Планёрка 🔁 every mon at 09:00 🆔 ext1";
+		const task = mirrorTask(line);
+
+		const locVault = mirrorVault(line);
+		await expect(
+			setEventLocation({ vault: locVault, task, location: "Другое место" }),
+		).resolves.toEqual({ ok: false, reason: EVENT_EXTERNAL_REASON });
+
+		const excludeVault = mirrorVault(line);
+		await expect(
+			excludeEventOccurrence({ vault: excludeVault, task, date: "2026-07-27" }),
+		).resolves.toEqual({ ok: false, reason: EVENT_EXTERNAL_REASON });
+
+		const editVault = mirrorVault(line);
+		await expect(
+			editEventSeries({
+				vault: editVault,
+				task,
+				name: "Своя планёрка",
+				ruleText: "every mon at 10:00",
+			}),
+		).resolves.toEqual({ ok: false, reason: EVENT_EXTERNAL_REASON });
+
+		for (const vault of [locVault, excludeVault, editVault]) {
+			expect(vault.writes).toBe(0);
+			expect(vault.files.get("External/Работа-ffmadq.md")).toBe(`${line}
+`);
+		}
+	});
+
+	it("обычная (не внешняя) строка по-прежнему правится", async () => {
+		const line = "- [ ] Своя встреча 📅 2026-07-23 15:00-16:00 🆔 own1";
+		const vault = new FakeVault();
+		vault.files.set(
+			"GTD/Events.md",
+			`${line}
+`,
+		);
+
+		const res = await transferEventOccurrence({
+			vault,
+			task: taskFrom(line, "GTD/Events.md", 0),
+			kind: "single",
+			fromDate: "2026-07-23",
+			toDate: "2026-07-24",
+			time: "15:00",
+			timeEnd: "16:00",
+		});
+
+		expect(res.ok).toBe(true);
+		expect(vault.writes).toBe(1);
 	});
 });

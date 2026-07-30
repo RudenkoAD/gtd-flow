@@ -34,23 +34,23 @@
 	const queueLabel = $derived.by(() => {
 		if (viewState.queue.state === "idle") return null;
 		if (viewState.queue.state === "processing") {
-			return `Processing inbox runs: ${viewState.queue.processingCount}`;
+			return `Обработка входящих: ${viewState.queue.processingCount}`;
 		}
 		const state =
 			viewState.queue.state === "rate-limited"
-				? "Waiting for free capacity"
+				? "Ждём свободного места"
 				: viewState.queue.state === "retry-waiting"
-					? "Waiting to retry"
-					: "Queued inbox runs";
+					? "Ждём повтора"
+					: "В очереди на обработку";
 		const error = viewState.queue.errorCode === null ? "" : ` (${viewState.queue.errorCode})`;
 		const retry =
 			viewState.queue.nextEligibleAt === null
 				? ""
-				: ` · retry after ${viewState.queue.nextEligibleAt}`;
+				: ` · повтор после ${viewState.queue.nextEligibleAt}`;
 		const active =
 			viewState.queue.processingCount === 0
 				? ""
-				: ` · active ${viewState.queue.processingCount}`;
+				: ` · в работе ${viewState.queue.processingCount}`;
 		return `${state}: ${viewState.queue.waitingCount}${active}${error}${retry}`;
 	});
 
@@ -102,7 +102,7 @@
 	}
 </script>
 
-<div class="gtd-ai" aria-label="GTD AI conversation">
+<div class="gtd-ai" aria-label="Диалог с GTD AI">
 	<header class="gtd-ai-header">
 		<div>
 			<h2>GTD AI</h2>
@@ -112,7 +112,10 @@
 		</div>
 		<div class="gtd-ai-header-actions">
 			{#if viewState.actualModel !== null}
-				<span class="gtd-ai-model" aria-label={`Actual model: ${viewState.actualModel}`}>
+				<span
+					class="gtd-ai-model"
+					aria-label={`Фактическая модель: ${viewState.actualModel}`}
+				>
 					{viewState.actualModel}
 				</span>
 			{/if}
@@ -122,57 +125,56 @@
 					onclick={() => void model.disconnect()}
 					disabled={port === null || viewState.connection === "connecting"}
 				>
-					Disconnect
+					Отключить
 				</button>
 			{:else}
 				<button type="button" onclick={() => void model.connect()} disabled={port === null}>
-					Connect
+					Подключить
 				</button>
 			{/if}
 		</div>
 	</header>
 
 	{#if viewState.error !== null}
-		<section class="gtd-ai-error" role="alert" aria-label="AI error">
+		<section class="gtd-ai-error" role="alert" aria-label="Ошибка AI">
 			<strong>{errorLabel(viewState.error)}</strong>
 			{#if viewState.error.retryable}
-				<span> This action can be retried.</span>
+				<span> Действие можно повторить.</span>
 			{/if}
 		</section>
 	{/if}
 
 	{#if queueLabel !== null}
-		<section class="gtd-ai-queue" aria-label="Waiting inbox processing runs">
+		<section class="gtd-ai-queue" aria-label="Обработка входящих в очереди">
 			<span role="status">{queueLabel}</span>
 			{#if viewState.queue.waitingCount > 0}
-				<span> Use the command palette to retry waiting AI jobs.</span>
+				<span> Повторить ожидающие задания можно из палитры команд.</span>
 			{/if}
 		</section>
 	{/if}
 
 	{#if port === null}
-		<section class="gtd-ai-setup" aria-label="AI service unavailable">
-			The AI service is not available in this plugin session yet. Connect it after AI services
-			are configured.
+		<section class="gtd-ai-setup" aria-label="AI недоступен">
+			AI-сервис в этом сеансе плагина недоступен. Подключите его после настройки AI.
 		</section>
 	{/if}
 
 	<div class="gtd-ai-layout">
-		<aside class="gtd-ai-sessions" aria-label="Conversation sessions">
+		<aside class="gtd-ai-sessions" aria-label="Сохранённые диалоги">
 			<div class="gtd-ai-section-heading">
-				<h3>Sessions</h3>
+				<h3>Диалоги</h3>
 				<button
 					type="button"
 					onclick={() => void model.createChat()}
 					disabled={port === null || viewState.work === "streaming"}
 				>
-					New chat
+					Новый диалог
 				</button>
 			</div>
 			{#if viewState.sessions.length === 0}
-				<p class="gtd-ai-empty">No conversations yet.</p>
+				<p class="gtd-ai-empty">Диалогов пока нет.</p>
 			{:else}
-				<nav aria-label="Saved conversations">
+				<nav aria-label="Список диалогов">
 					<ul class="gtd-ai-session-list">
 						{#each viewState.sessions as session (session.id)}
 							<li>
@@ -186,7 +188,11 @@
 									onclick={() => void model.selectSession(session.id)}
 								>
 									<span>{session.title}</span>
-									<small>{session.kind === "chat" ? "Chat" : "Inbox run"}</small>
+									<small
+										>{session.kind === "chat"
+											? "Диалог"
+											: "Обработка входящих"}</small
+									>
 								</button>
 							</li>
 						{/each}
@@ -195,12 +201,12 @@
 			{/if}
 		</aside>
 
-		<div class="gtd-ai-chat" role="region" aria-label="Conversation">
+		<div class="gtd-ai-chat" role="region" aria-label="Переписка">
 			<div class="gtd-ai-messages" aria-live="polite" aria-relevant="additions text">
 				{#if activeSession === null}
-					<p class="gtd-ai-empty">Start a new chat or select a saved session.</p>
+					<p class="gtd-ai-empty">Начните новый диалог или выберите сохранённый.</p>
 				{:else if viewState.messages.length === 0 && viewState.streaming === null}
-					<p class="gtd-ai-empty">Ask GTD AI about tasks, projects, or your vault.</p>
+					<p class="gtd-ai-empty">Спросите GTD AI о задачах, проектах или хранилище.</p>
 				{/if}
 				{#each viewState.messages as message (message.id)}
 					<article
@@ -208,20 +214,20 @@
 						class:user={message.role === "user"}
 					>
 						<header>
-							<strong>{message.role === "assistant" ? "GTD AI" : "You"}</strong>
+							<strong>{message.role === "assistant" ? "GTD AI" : "Вы"}</strong>
 							{#if message.actualModel !== null}
 								<span class="gtd-ai-message-model">{message.actualModel}</span>
 							{/if}
 						</header>
 						<div class="gtd-ai-message-content">{message.content}</div>
 						{#if message.taskLinks.length > 0}
-							<div class="gtd-ai-task-links" aria-label="Related tasks">
+							<div class="gtd-ai-task-links" aria-label="Связанные задачи">
 								{#each message.taskLinks as task (task.id)}
 									<button
 										type="button"
 										onclick={() => void model.openTask(task.id)}
 									>
-										Open task: {task.label}
+										Открыть задачу: {task.label}
 									</button>
 								{/each}
 							</div>
@@ -229,10 +235,7 @@
 					</article>
 				{/each}
 				{#if viewState.streaming !== null}
-					<article
-						class="assistant gtd-ai-streaming"
-						aria-label="Streaming assistant response"
-					>
+					<article class="assistant gtd-ai-streaming" aria-label="Ответ ассистента">
 						<header>
 							<strong>GTD AI</strong>
 							{#if viewState.streaming.actualModel !== null}
@@ -247,11 +250,11 @@
 			</div>
 
 			<form class="gtd-ai-composer" onsubmit={submitMessage}>
-				<label for="gtd-ai-composer">Message</label>
+				<label for="gtd-ai-composer">Сообщение</label>
 				<textarea
 					id="gtd-ai-composer"
 					rows="3"
-					placeholder="Ask GTD AI…"
+					placeholder="Спросите GTD AI…"
 					value={viewState.draft}
 					disabled={port === null ||
 						viewState.activeSessionId === null ||
@@ -259,11 +262,11 @@
 					oninput={setDraft}
 					onkeydown={composerKeydown}></textarea>
 				<div class="gtd-ai-composer-actions">
-					<span>Enter to send · Shift+Enter for a new line · Esc to stop</span>
+					<span>Enter — отправить · Shift+Enter — новая строка · Esc — остановить</span>
 					{#if canCancel}
-						<button type="button" onclick={() => void model.cancel()}>Stop</button>
+						<button type="button" onclick={() => void model.cancel()}>Стоп</button>
 					{/if}
-					<button type="submit" class="mod-cta" disabled={!canSend}>Send</button>
+					<button type="submit" class="mod-cta" disabled={!canSend}>Отправить</button>
 				</div>
 			</form>
 		</div>
@@ -271,7 +274,7 @@
 
 	{#if viewState.toolActivity.length > 0}
 		<section class="gtd-ai-panel" aria-labelledby="gtd-ai-tools-title">
-			<h3 id="gtd-ai-tools-title">Tool activity</h3>
+			<h3 id="gtd-ai-tools-title">Действия инструментов</h3>
 			<ol class="gtd-ai-timeline">
 				{#each viewState.toolActivity as activity (activity.id)}
 					<li data-state={activity.state}>
@@ -283,7 +286,7 @@
 								type="button"
 								onclick={() => void model.undoToolAction(activity.undoId!)}
 							>
-								Undo
+								Отменить
 							</button>
 						{/if}
 					</li>
@@ -294,7 +297,7 @@
 
 	{#if viewState.pendingApprovals.length > 0}
 		<section class="gtd-ai-panel" aria-labelledby="gtd-ai-approvals-title">
-			<h3 id="gtd-ai-approvals-title">Approval required</h3>
+			<h3 id="gtd-ai-approvals-title">Нужно подтверждение</h3>
 			{#each viewState.pendingApprovals as approval (approval.id)}
 				<article class="gtd-ai-approval">
 					<div>
@@ -303,10 +306,10 @@
 						<p>{approval.summary}</p>
 					</div>
 					{#if approval.taskLinks.length > 0}
-						<div class="gtd-ai-task-links" aria-label="Affected tasks">
+						<div class="gtd-ai-task-links" aria-label="Затронутые задачи">
 							{#each approval.taskLinks as task (task.id)}
 								<button type="button" onclick={() => void model.openTask(task.id)}>
-									Open task: {task.label}
+									Открыть задачу: {task.label}
 								</button>
 							{/each}
 						</div>
@@ -316,14 +319,14 @@
 							type="button"
 							onclick={() => void model.resolveApproval(approval.id, false)}
 						>
-							Reject
+							Отклонить
 						</button>
 						<button
 							type="button"
 							class="mod-warning"
 							onclick={() => void model.resolveApproval(approval.id, true)}
 						>
-							Approve
+							Разрешить
 						</button>
 					</div>
 				</article>
@@ -333,22 +336,22 @@
 
 	{#if viewState.pendingQuestions.length > 0}
 		<section class="gtd-ai-panel" aria-labelledby="gtd-ai-questions-title">
-			<h3 id="gtd-ai-questions-title">Inbox questions</h3>
+			<h3 id="gtd-ai-questions-title">Вопросы по входящим</h3>
 			<p>
-				Answers are saved locally. Use “Reprocess task at cursor with AI” when you are ready
-				to send them.
+				Ответы сохраняются локально. Когда будете готовы их отправить, вызовите
+				«Переобработать задачу под курсором с AI».
 			</p>
 			{#each viewState.pendingQuestions as question (question.id)}
 				<article class="gtd-ai-question">
 					<p>{question.text}</p>
 					<div class="gtd-ai-question-meta">
 						<button type="button" onclick={() => void model.openTask(question.task.id)}>
-							Open task: {question.task.label}
+							Открыть задачу: {question.task.label}
 						</button>
-						<span>Affects: {question.affectedFields.join(", ")}</span>
+						<span>Затрагивает: {question.affectedFields.join(", ")}</span>
 					</div>
 					<form onsubmit={(event) => submitQuestion(question.id, event)}>
-						<label for={`gtd-ai-question-${question.id}`}>Your answer</label>
+						<label for={`gtd-ai-question-${question.id}`}>Ваш ответ</label>
 						<input
 							id={`gtd-ai-question-${question.id}`}
 							type="text"
@@ -359,7 +362,7 @@
 							type="submit"
 							disabled={(questionAnswers[question.id] ?? "").trim().length === 0}
 						>
-							Answer
+							Ответить
 						</button>
 					</form>
 				</article>

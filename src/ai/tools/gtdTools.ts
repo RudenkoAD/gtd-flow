@@ -223,7 +223,8 @@ export function createGtdToolRegistry(ports: GtdToolPorts, createId?: () => stri
 
 	registry.register({
 		name: "list_tasks",
-		description: "List or search indexed GTD Flow tasks.",
+		description:
+			"List or search indexed GTD Flow tasks. Rows with external: true come from a read-only external-calendar mirror: writes to them are rejected, so offer a local copy instead of an edit.",
 		risk: "read",
 		parameters: objectSchema({
 			query: { anyOf: [{ type: "string" }, { type: "null" }] },
@@ -357,7 +358,8 @@ export function createGtdToolRegistry(ports: GtdToolPorts, createId?: () => stri
 	]);
 	registry.register({
 		name: "update_task",
-		description: "Edit one task through validated GTD Flow writeback. This is reversible.",
+		description:
+			"Edit one task through validated GTD Flow writeback. This is reversible. Tasks marked external: true are read-only mirrors of an external calendar and cannot be edited.",
 		risk: "reversible-write",
 		parameters: objectSchema(
 			{
@@ -600,11 +602,11 @@ export function createGtdToolRegistry(ports: GtdToolPorts, createId?: () => stri
 	registry.register({
 		name: "delete_file",
 		description:
-			"Delete one user-vault file after explicit approval. Plugin state and Obsidian configuration are inaccessible.",
+			"Move one user-vault file to the system trash after explicit approval. Plugin state and Obsidian configuration are inaccessible.",
 		risk: "destructive-or-bulk",
 		parameters: objectSchema({ path: { type: "string" } }),
 		schema: z.object({ path: VaultPathSchema }).strict(),
-		preview: ({ path }) => `Delete vault file ${path}`,
+		preview: ({ path }) => `Move vault file ${path} to the trash`,
 		execute: (input) => ports.deleteFile(input),
 	});
 

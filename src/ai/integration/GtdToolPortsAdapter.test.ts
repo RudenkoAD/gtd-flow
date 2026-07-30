@@ -411,14 +411,17 @@ describe("GtdToolPortsAdapter", () => {
 		expect(dispatch).toHaveBeenCalledTimes(3);
 	});
 
-	it("deletes only an existing non-reserved vault file", async () => {
+	// §корзина: одобрение в чате — согласие убрать файл, а не потерять его.
+	it("trashes only an existing non-reserved vault file", async () => {
 		const file = { path: "Attachments/archive.zip" };
 		const deleteFile = vi.fn(async () => undefined);
+		const trashFile = vi.fn(async () => undefined);
 		const adapter = new GtdToolPortsAdapter({
 			app: {
 				vault: {
 					getFileByPath: (path: string) => (path === file.path ? file : null),
 					delete: deleteFile,
+					trash: trashFile,
 				},
 			} as never,
 			vault: {} as never,
@@ -430,13 +433,15 @@ describe("GtdToolPortsAdapter", () => {
 		});
 
 		await expect(adapter.deleteFile({ path: file.path })).resolves.toEqual({
-			value: { path: file.path, deleted: true },
+			value: { path: file.path, deleted: true, trashed: true },
 		});
-		expect(deleteFile).toHaveBeenCalledWith(file, true);
+		expect(trashFile).toHaveBeenCalledWith(file, true);
+		// безвозвратное удаление мимо корзины запрещено: undo у инструмента нет
+		expect(deleteFile).not.toHaveBeenCalled();
 		await expect(adapter.deleteFile({ path: ".gtd-flow/ai/run.json" })).rejects.toThrow(
 			"vault-file-path-rejected",
 		);
-		expect(deleteFile).toHaveBeenCalledTimes(1);
+		expect(trashFile).toHaveBeenCalledTimes(1);
 	});
 
 	it("updates ordinary task fields atomically and restores them with guarded undo", async () => {

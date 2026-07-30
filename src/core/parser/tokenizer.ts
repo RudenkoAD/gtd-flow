@@ -23,6 +23,7 @@
  *   дословно возвращается в конце serializeTokens: иначе '$' не находил бы
  *   ^block-id, а вставка нового поля оказывалась бы ПОСЛЕ '\r' середи строки.
  */
+import { isScopeId } from "../scope/scope";
 import {
 	ALL_FIELD_EMOJI,
 	DATE_FIELD_EMOJI,
@@ -190,6 +191,33 @@ export function isLeadingLocation(rest: string, i: number): boolean {
 	return rest.slice(0, i).trim() === "";
 }
 
+/**
+ * Поля-оценки ⏱/🧠/💓/💪/🧭 добавлены в уже существующие пользовательские
+ * строки, где те же эмодзи давно живут как обычный текст («Тренировка 💪 сегодня
+ * в зале», «Купить 🧭 компас»). Поэтому у них ЛЕКСИЧЕСКИЙ гейт payload: токен,
+ * идущий следом, обязан выглядеть значением поля, иначе эмодзи остаётся текстом
+ * и описание не рвётся. Проверять «постфактум» в parseTaskLine поздно — токен
+ * уже вырезан из описания, а setDescription переставил бы слова в файле.
+ *
+ * Гейт намеренно лексический (форма), а не семантический: диапазоны и
+ * существование scope по-прежнему решает parseTaskLine. Форму scope-id берём
+ * у isScopeId, а не копией регулярки: копия молча разошлась бы с генератором
+ * id, и записанный 🧭 читался бы обратно как обычный текст.
+ */
+const ESTIMATE_PAYLOAD_GATE: Partial<Record<FieldName, (payload: string) => boolean>> = {
+	duration: (payload) => /^\d+m$/u.test(payload),
+	cognitiveIntensity: (payload) => /^[0-5]$/u.test(payload),
+	emotionalIntensity: (payload) => /^[0-5]$/u.test(payload),
+	physicalIntensity: (payload) => /^[0-5]$/u.test(payload),
+	scope: isScopeId,
+};
+
+/** Поля-оценки в САМОМ начале описания — заголовок, а не поле (защита «б» от 📍):
+ *  «- [ ] 💓 Кардио» не должно давать карточку с пустым названием. */
+function isGatedEstimateField(field: FieldName): boolean {
+	return Object.prototype.hasOwnProperty.call(ESTIMATE_PAYLOAD_GATE, field);
+}
+
 /** Payload дата-поля 📅/⏳/🛫: «дата[ HH:mm[-HH:mm]]». Валидное время
  *  захватывается В payload токена (а не в следующий текст-сегмент); невалидное —
  *  остаётся тексту: дата не ломается, хвост живёт в описании как раньше.
@@ -256,50 +284,56 @@ export function tokenizeSegments(rest: string, opts: TokenizeOptions = {}): Segm
 		// видит 📍 как границу payload соседних полей (напр. хвост 🔁).
 		if (
 			m === null ||
-			(m.field === "location" && (!parseLocation || isLeadingLocation(rest, i)))
+			(m.field === "location" && (!parseLocation || isLeadingLocation(rest, i))) ||
+			(isGatedEstimateField(m.field) && isLeadingLocation(rest, i))
 		) {
 			i++;
 			continue;
 		}
-		flushText(i);
-		i += m.emoji.length;
+		const emojiStart = i;
+		let cursor = i + m.emoji.length;
 		if (m.field === "priority") {
 			// приоритет — эмодзи без payload; пробел после него принадлежит тексту
+			flushText(emojiStart);
 			segs.push({ kind: "field", field: "priority", emoji: m.emoji, gap: "", payload: "" });
+			i = cursor;
 			textStart = i;
 			continue;
 		}
-		let g = i;
+		let g = cursor;
 		while (g < rest.length && isWs(rest.charAt(g))) g++;
-		const gap = rest.slice(i, g);
-		i = g;
+		const gap = rest.slice(cursor, g);
+		cursor = g;
 		let payloadEnd: number;
 		if (m.field === "recurrence") {
 			// 🔁: payload до следующего эмодзи поля или конца строки (может нести
 			// #теги/эмодзи-мусор — это часть правила); хвостовые пробелы отдаём
 			// следующему текстовому сегменту
-			let j = i;
+			let j = cursor;
 			while (j < rest.length && matchFieldEmoji(rest, j) === null) j++;
-			while (j > i && isWs(rest.charAt(j - 1))) j--;
+			while (j > cursor && isWs(rest.charAt(j - 1))) j--;
 			payloadEnd = j;
 		} else if (m.field === "location") {
 			// 📍: как 🔁, но payload обрывается ещё и перед первым #тегом (защита «а»)
-			payloadEnd = scanLocationPayload(rest, i);
+			payloadEnd = scanLocationPayload(rest, cursor);
 		} else if (m.field === "dependsOn" || m.field === "excludedDates") {
 			// ⛔ (id) и 🚫 (даты) — поля-списки через запятую: одинаковый скан
-			payloadEnd = scanCommaList(rest, i);
+			payloadEnd = scanCommaList(rest, cursor);
 		} else if (isTimedDateField(m.field)) {
-			payloadEnd = scanDateTimeToken(rest, i);
+			payloadEnd = scanDateTimeToken(rest, cursor);
 		} else {
-			payloadEnd = scanToken(rest, i);
+			payloadEnd = scanToken(rest, cursor);
 		}
-		segs.push({
-			kind: "field",
-			field: m.field,
-			emoji: m.emoji,
-			gap,
-			payload: rest.slice(i, payloadEnd),
-		});
+		const payload = rest.slice(cursor, payloadEnd);
+		const gate = ESTIMATE_PAYLOAD_GATE[m.field];
+		if (gate !== undefined && !gate(payload)) {
+			// payload не похож на значение поля-оценки → эмодзи остаётся обычным
+			// текстом: описание пользователя не режется и не переставляется.
+			i = emojiStart + m.emoji.length;
+			continue;
+		}
+		flushText(emojiStart);
+		segs.push({ kind: "field", field: m.field, emoji: m.emoji, gap, payload });
 		i = payloadEnd;
 		textStart = i;
 	}

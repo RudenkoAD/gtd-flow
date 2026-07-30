@@ -413,6 +413,41 @@ describe("AiPluginServices chat metadata provenance", () => {
 	});
 });
 
+describe("AiPluginServices ownership reconcile gating", () => {
+	function reconcileServices(enabled: boolean) {
+		const recoverPending = vi.fn().mockResolvedValue({ conflicts: [], invalidPaths: [] });
+		const readAll = vi.fn().mockResolvedValue({ events: [] });
+		const services = Object.create(AiPluginServices.prototype) as AiPluginServices;
+		Object.defineProperties(services, {
+			options: { value: { enabled: () => enabled, allTasks: () => [] } },
+			history: { value: { recoverPending, readAll } },
+			ownership: { value: { observe: vi.fn() } },
+			reconciliationTail: { value: Promise.resolve(), writable: true },
+		});
+		return { services, recoverPending, readAll };
+	}
+
+	// §сверка-по-требованию: при выключенном AI проход по всем задачам создавал
+	// по файлу на каждое непустое поле в `.gtd-flow/ai/feedback` при КАЖДОМ старте.
+	it("does not touch feedback history while AI is disabled", async () => {
+		const { services, recoverPending, readAll } = reconcileServices(false);
+
+		await expect(services.reconcileOwnership()).resolves.toBeUndefined();
+
+		expect(recoverPending).not.toHaveBeenCalled();
+		expect(readAll).not.toHaveBeenCalled();
+	});
+
+	it("still reconciles once AI is enabled", async () => {
+		const { services, recoverPending, readAll } = reconcileServices(true);
+
+		await services.reconcileOwnership();
+
+		expect(recoverPending).toHaveBeenCalledOnce();
+		expect(readAll).toHaveBeenCalledOnce();
+	});
+});
+
 function inspectionServices(history: {
 	readAll: ReturnType<typeof vi.fn>;
 	provenanceForTask: ReturnType<typeof vi.fn>;

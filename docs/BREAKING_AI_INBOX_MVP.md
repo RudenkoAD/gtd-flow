@@ -31,8 +31,9 @@ external widgets. `namespace` inputs and outputs are replaced by `scope`.
    `.gtd-flow/` and the local plugin settings directory if you want to preserve
    non-secret preferences. OAuth credentials do not transfer because they are
    intentionally memory-only.
-2. Upgrade the plugin on **Obsidian Desktop**. This release declares
-   `isDesktopOnly: true`; mobile is not a supported installation surface.
+2. Upgrade the plugin on **Obsidian Desktop**. The manifest declares
+   `isDesktopOnly: false`, so the plugin still installs on mobile, but the AI
+   layer needs a loopback OAuth callback and stays desktop-only.
 3. Set the single **Inbox file** and create at least one active scope.
 4. For a legacy namespace vault, run **«Мигрировать пространства в scope…»**:
    select migration coverage and a treatment for former Common tasks, map every

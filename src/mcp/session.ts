@@ -53,6 +53,8 @@ export interface GtdSession {
 	projectPaths: string[];
 	/** Synced scope definitions are read independently from Markdown indexing. */
 	scopeCatalog: ScopeCatalog;
+	/** Почему каталог пуст/урезан: не молчим о битой синхронизированной конфигурации. */
+	scopeCatalogWarnings: string[];
 }
 
 export interface SessionDeps {
@@ -80,7 +82,7 @@ export async function openSession(deps: SessionDeps): Promise<GtdSession> {
 		rememberIndex(cacheKey, cached);
 	}
 	const { feed, boardPaths, projectPaths, externalPaths } = built;
-	const scopeCatalog = await readScopeCatalog(vault);
+	const { catalog: scopeCatalog, warnings: scopeCatalogWarnings } = await readScopeCatalog(vault);
 
 	const writeback = new WritebackService({
 		write: vault,
@@ -138,17 +140,37 @@ export async function openSession(deps: SessionDeps): Promise<GtdSession> {
 		boardPaths,
 		projectPaths,
 		scopeCatalog,
+		scopeCatalogWarnings,
 	};
 }
 
-async function readScopeCatalog(vault: FsVault): Promise<ScopeCatalog> {
+/**
+ * Битый или незнакомой версии каталог раньше молча превращался в пустой: агент
+ * получал `scopes: []` и «unknown scope 'work'» на id, который реально стоит в
+ * строках. Плагин в этом случае показывает диагностику (ScopeCatalogService
+ * возвращает diagnostics) — MCP обязан отдавать её так же.
+ */
+async function readScopeCatalog(
+	vault: FsVault,
+): Promise<{ catalog: ScopeCatalog; warnings: string[] }> {
 	const raw = await vault.readFile(".gtd-flow/config/scopes.json");
-	if (raw === null) return createScopeCatalog();
+	if (raw === null) return { catalog: createScopeCatalog(), warnings: [] };
+	let decoded: unknown;
 	try {
-		return parseScopeCatalog(JSON.parse(raw)).catalog;
+		decoded = JSON.parse(raw);
 	} catch {
 		// Invalid synced configuration must not invent scope identities. Mutations
 		// that name a scope fail validation in handlers; read-only tasks stay visible.
-		return createScopeCatalog();
+		return {
+			catalog: createScopeCatalog(),
+			warnings: ["scope catalog is not valid JSON — scope names are unavailable"],
+		};
 	}
+	const parsed = parseScopeCatalog(decoded);
+	return {
+		catalog: parsed.catalog,
+		warnings: parsed.diagnostics.map(
+			(diagnostic) => `scope catalog: ${diagnostic.code}: ${diagnostic.message}`,
+		),
+	};
 }

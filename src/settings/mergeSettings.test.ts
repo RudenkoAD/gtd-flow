@@ -29,6 +29,106 @@ describe("mergeSettings", () => {
 		expect(merged.recurring.catchUpCap).toBe(30);
 	});
 
+	// Дефект: миграция брала recurring.spawnTarget (фабричное "GTD/Inbox.md" —
+	// цель копий регулярных), а захват 0.12 писал в <commonRoot>/Входящие.md.
+	// Пользователь на дефолтах получал inboxFile мимо своих накопленных захватов,
+	// и «Быстрый ввод» заводил ВТОРОЙ файл входящих.
+	describe("миграция v1 → v2: единый файл входящих", () => {
+		const LEGACY_DEFAULTS = {
+			commonRoot: "GTD",
+			namespaces: [{ name: "Работа", root: "Work" }],
+			recurring: { spawnTarget: "GTD/Inbox.md", catchUp: "all" },
+		};
+
+		it("без проверки хранилища берётся конвенционный <commonRoot>/Входящие.md", () => {
+			const { settings, migratedInboxFile } = mergeSettingsWithDiagnostics(
+				DEFAULT_SETTINGS,
+				LEGACY_DEFAULTS,
+			);
+			expect(settings.inboxFile).toBe("GTD/Входящие.md");
+			expect(migratedInboxFile).toBe("GTD/Входящие.md");
+		});
+
+		it("реально существующий файл захвата побеждает догадку по конвенции", () => {
+			const { settings } = mergeSettingsWithDiagnostics(DEFAULT_SETTINGS, LEGACY_DEFAULTS, {
+				legacyInboxExists: (path) => path === "GTD/Inbox.md",
+			});
+			expect(settings.inboxFile).toBe("GTD/Inbox.md");
+		});
+
+		it("Входящие.md приоритетнее spawnTarget, когда существуют оба", () => {
+			const { settings } = mergeSettingsWithDiagnostics(DEFAULT_SETTINGS, LEGACY_DEFAULTS, {
+				legacyInboxExists: (path) => path === "GTD/Входящие.md" || path === "GTD/Inbox.md",
+			});
+			expect(settings.inboxFile).toBe("GTD/Входящие.md");
+		});
+
+		it("ничего не существует — конвенционный кандидат, а не молчаливый дефолт", () => {
+			const { settings } = mergeSettingsWithDiagnostics(DEFAULT_SETTINGS, LEGACY_DEFAULTS, {
+				legacyInboxExists: () => false,
+			});
+			expect(settings.inboxFile).toBe("GTD/Входящие.md");
+		});
+
+		it("пустой commonRoot — файл в корне хранилища", () => {
+			const { settings } = mergeSettingsWithDiagnostics(DEFAULT_SETTINGS, {
+				commonRoot: "/",
+			});
+			expect(settings.inboxFile).toBe("Входящие.md");
+		});
+
+		it("уже мигрированный data.json (v2) ничего не выводит", () => {
+			const { settings, migratedInboxFile } = mergeSettingsWithDiagnostics(DEFAULT_SETTINGS, {
+				settingsVersion: SETTINGS_FORMAT_VERSION,
+				inboxFile: "Мои/Входящие.md",
+				commonRoot: "GTD",
+			});
+			expect(settings.inboxFile).toBe("Мои/Входящие.md");
+			expect(migratedInboxFile).toBeNull();
+		});
+
+		// Fail-closed потребители (MCP) обязаны отличать штатную миграцию формата
+		// от отката испорченного поля: разбор диагностики по тексту ронял их на
+		// каждом legacy data.json.
+		it("диагностика миграции помечена отдельно от диагностики отката", () => {
+			const { diagnostics, migrations } = mergeSettingsWithDiagnostics(DEFAULT_SETTINGS, {
+				...LEGACY_DEFAULTS,
+				ai: { privacyPolicy: "unconfigured", credentialStorage: "unconfigured" },
+				durationLongStyle: "days-hours",
+				firstDayOfWeek: "понедельник",
+			});
+			expect(migrations).toEqual([
+				`settings: migrated v0 → v${SETTINGS_FORMAT_VERSION}`,
+				"namespace settings retained only for migration planning",
+				"ai.privacyPolicy: migrated to account-policy",
+				"ai.credentialStorage: migrated to memory-only",
+				"durationLongStyle: migrated to whole-days",
+			]);
+			// Откат испорченного поля миграцией не считается ни при каких условиях.
+			expect(diagnostics).toContain("firstDayOfWeek: invalid; default used");
+			expect(migrations).not.toContain("firstDayOfWeek: invalid; default used");
+			expect(diagnostics).toEqual(expect.arrayContaining(migrations));
+		});
+
+		it("непонятная версия формата — не миграция, а откат", () => {
+			const { migrations, diagnostics } = mergeSettingsWithDiagnostics(DEFAULT_SETTINGS, {
+				settingsVersion: 999,
+			});
+			expect(migrations).toEqual([]);
+			expect(diagnostics).toEqual([
+				`settingsVersion: v999 is newer than supported v${SETTINGS_FORMAT_VERSION}`,
+			]);
+		});
+
+		it("legacy-полей нет вовсе — дефолт остаётся, выводить нечего", () => {
+			const { settings, migratedInboxFile } = mergeSettingsWithDiagnostics(DEFAULT_SETTINGS, {
+				onboarded: true,
+			});
+			expect(settings.inboxFile).toBe(DEFAULT_SETTINGS.inboxFile);
+			expect(migratedInboxFile).toBeNull();
+		});
+	});
+
 	it("частичный debounceMs: fileReindex не превращается в undefined (= 0 мс)", () => {
 		const merged = mergeSettings(DEFAULT_SETTINGS, { debounceMs: { queryRecompute: 10 } });
 		expect(merged.debounceMs.queryRecompute).toBe(10);
@@ -120,12 +220,13 @@ describe("mergeSettings", () => {
 
 	it("выпиленный inboxSources из старого data.json игнорируется молча (миграция)", () => {
 		// старый data.json итерации 1 нёс inboxSources; после выпила поля merge не должен
-		// падать, а старый commonRoot используется только для создания inboxFile.
+		// падать, а старый commonRoot используется только для создания inboxFile
+		// (конвенционные Входящие.md — реальная цель захвата тех версий).
 		const merged = mergeSettings(DEFAULT_SETTINGS, {
 			inboxSources: ["GTD/Inbox.md"],
 			commonRoot: "GTD",
 		});
-		expect(merged.inboxFile).toBe("GTD/Inbox.md");
+		expect(merged.inboxFile).toBe("GTD/Входящие.md");
 		// старое поле не мешает и остаётся в объекте безвредным довеском
 		expect((merged as unknown as Record<string, unknown>)["inboxSources"]).toEqual([
 			"GTD/Inbox.md",
@@ -167,7 +268,7 @@ describe("mergeSettings", () => {
 		expect(merged.promoteRetries).toEqual([
 			{ taskId: "task-1", source: "GTD/Board.md", target: "GTD/Inbox.md" },
 		]);
-		expect(merged.inboxFile).toBe("Work/Inbox.md");
+		expect(merged.inboxFile).toBe("Work/Входящие.md");
 		expect(merged.externalCalendars[0]?.url).toBe("webcal://calendar.example/team.ics");
 		expect(merged.calendarPlacement).toEqual(["start", "due", "scheduled"]);
 	});

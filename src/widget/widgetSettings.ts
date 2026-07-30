@@ -3,6 +3,7 @@
  * unified inbox and task scope IDs; they deliberately have no namespace model,
  * OAuth client, or AI runtime dependency.
  */
+import { legacyInboxCandidates } from "../core/scope/namespaceMigration";
 import { DEFAULT_SETTINGS, type CalendarField, type GtdFlowSettings } from "../settings/Settings";
 
 export interface LoadedSettings {
@@ -29,13 +30,17 @@ function mergeWidgetSettings(raw: unknown): GtdFlowSettings {
 		calendarPlacement: [...DEFAULT_SETTINGS.calendarPlacement],
 	};
 	if (!isRecord(raw)) return settings;
-	if (
-		typeof raw.inboxFile === "string" &&
-		raw.inboxFile.trim() !== "" &&
-		raw.inboxFile.length <= 1024 &&
-		!raw.inboxFile.includes("\u0000")
-	) {
+	if (isUsablePath(raw.inboxFile)) {
 		settings.inboxFile = raw.inboxFile.trim();
+	} else {
+		// data.json ещё не мигрирован (v1): плагин выводит единый файл входящих из
+		// настроек пространств, и виджет ОБЯЗАН выводить его так же — иначе захват
+		// с телефона уходит в файл, который плагин входящими уже НЕ считает
+		// (QueryEngine.isInInbox сверяет filePath с inboxFile), и задача пропадает.
+		// Первого кандидата достаточно: как только десктопный плагин загрузится, он
+		// запишет своё решение в data.json явным полем.
+		const legacy = legacyInboxCandidates(raw).find(isUsablePath);
+		if (legacy !== undefined) settings.inboxFile = legacy.trim();
 	}
 	if (typeof raw.inboxIncludePlain === "boolean")
 		settings.inboxIncludePlain = raw.inboxIncludePlain;
@@ -50,6 +55,19 @@ function mergeWidgetSettings(raw: unknown): GtdFlowSettings {
 	if (isCalendarPlacement(raw.calendarPlacement))
 		settings.calendarPlacement = [...raw.calendarPlacement];
 	return settings;
+}
+
+/** NUL — единственный запрещённый символ пути (как в pathString). */
+const NUL_RE = /\u0000/u;
+
+/** Те же границы, что у pathString(false) в mergeSettings плагина. */
+function isUsablePath(value: unknown): value is string {
+	return (
+		typeof value === "string" &&
+		value.trim() !== "" &&
+		value.length <= 1024 &&
+		!NUL_RE.test(value)
+	);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

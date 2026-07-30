@@ -1,5 +1,10 @@
-import { createServer, type Server } from "node:http";
+// Только ТИПЫ узловых модулей: `import type` стирается компилятором, поэтому
+// модуль остаётся мобильно-безопасным. Сам `node:http` подтягивается лениво,
+// внутри open() — иначе один верхнеуровневый import ронял бы весь плагин на
+// Android/iOS (ради этого manifest и уводили в isDesktopOnly).
+import type { createServer, Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import type { shell as ElectronShell } from "electron";
 import { AIError, cancelledError, classifyHttpError } from "../core/errors";
 import type { AIConnectionPort } from "../integration/AIViewController";
 import type { CredentialStorePort } from "./CredentialStorePort";
@@ -17,10 +22,37 @@ const EXCHANGE_ENDPOINT = "https://openrouter.ai/api/v1/auth/keys";
 
 export class DesktopOAuthBrowser implements OAuthBrowserPort {
 	async openExternal(url: string): Promise<void> {
-		const { shell } = await import("electron");
-		if (!shell) throw new Error("desktop-shell-unavailable");
+		let shell: typeof ElectronShell | undefined;
+		try {
+			({ shell } = await import("electron"));
+		} catch {
+			throw desktopOnlyError();
+		}
+		if (!shell) throw desktopOnlyError();
 		await shell.openExternal(url);
 	}
+}
+
+/**
+ * Ленивая загрузка `node:http`: на мобильном Obsidian модуля нет, и попытка
+ * подключить AI обязана падать понятной configuration-ошибкой, а не рушить
+ * загрузку плагина (весь остальной GTD Flow на телефоне работает).
+ */
+async function loadHttp(): Promise<{ createServer: typeof createServer }> {
+	try {
+		return await import("node:http");
+	} catch {
+		throw desktopOnlyError();
+	}
+}
+
+function desktopOnlyError(): AIError {
+	return new AIError({
+		code: "configuration",
+		retryable: false,
+		retryAfterMs: null,
+		statusCode: null,
+	});
 }
 
 /** Temporary loopback callback bound to 127.0.0.1 on an arbitrary free port. */
@@ -28,6 +60,7 @@ export class LoopbackOAuthCallback implements OAuthCallbackPort {
 	constructor(private readonly timeoutMs = 5 * 60_000) {}
 
 	async open(): Promise<OAuthCallbackSession> {
+		const { createServer } = await loadHttp();
 		let settle:
 			| {
 					resolve(value: { code: string; state: string }): void;
@@ -110,7 +143,12 @@ export class LoopbackOAuthCallback implements OAuthCallbackPort {
 }
 
 export class OpenRouterCodeExchange implements OAuthExchangePort {
-	constructor(private readonly fetchFn: typeof fetch = fetch) {}
+	// Дефолт — стрелка, а не голая ссылка на глобальный fetch: вызов `this.fetchFn(...)`
+	// подставил бы в this инстанс, а brand-check Chromium на этом падает
+	// («Illegal invocation») — обмен OAuth-кода превращался бы в ложную ошибку сети.
+	constructor(
+		private readonly fetchFn: typeof fetch = (input, init) => globalThis.fetch(input, init),
+	) {}
 
 	async exchangeAuthorizationCode(input: {
 		code: string;

@@ -493,6 +493,23 @@ describe("RecurrenceService: spawnNow", () => {
 		expect(port.files.get(INBOX)!.split("rev-prio-20260715")).toHaveLength(2);
 	});
 
+	it("spawn-now у шаблона «от выполнения» даёт НЕДАТИРОВАННУЮ копию (§FIX-1)", async () => {
+		// синтетический план spawn-now календарный (DAILY_RULE), поэтому вычистка
+		// фиксированных дат мигранта Tasks шла мимо — ручная копия рождалась с
+		// замороженной, уже просроченной 📅 и не совпадала с canonicalLine.
+		const { port, svc, sync } = makeHarness({ today: "2026-07-25" });
+		port.files.set(
+			REC,
+			"- [ ] Полить цветы 🔁 every 3 days when done 📅 2026-07-21 #дом 🆔 flowers\n",
+		);
+		sync();
+
+		expect(await svc.spawnNow("id:flowers")).toEqual({ ok: true });
+		expect(port.files.get(INBOX)).toBe(
+			"- [ ] Полить цветы #дом ➕ 2026-07-25 🧬 flowers 🆔 flowers-20260725\n",
+		);
+	});
+
 	it("не-шаблон и неизвестный ключ отклоняются", async () => {
 		const { port, svc, sync, feed } = makeHarness();
 		port.files.set(INBOX, "- [ ] обычная задача 🆔 plain1\n");

@@ -31,11 +31,16 @@ describe("task metadata badges", () => {
 			"💪 0",
 			"🧭 Work",
 		]);
-		expect(badges.find((badge) => badge.field === "cognitive")?.title).toMatch(
-			/Edited by you; locked/,
+		// UI русскоязычный: бейджи задач видит каждый пользователь, а не только
+		// тот, кто включил AI (§локализация нового слоя).
+		expect(badges.find((badge) => badge.field === "cognitive")?.title).toBe(
+			"Когнитивная нагрузка: 4/5 — сложные рассуждения. Изменено вами: AI не перезапишет.",
 		);
 		expect(badges.find((badge) => badge.field === "duration")?.title).toMatch(
-			/Suggested by AI; unlocked/,
+			/^Общая длительность: 1h 30m\. Предложено AI/u,
+		);
+		expect(badges.find((badge) => badge.field === "scope")?.title).toMatch(
+			/^Scope: Work \(work\)\./u,
 		);
 	});
 

@@ -156,6 +156,10 @@ function taskJson(t: Task): Record<string, unknown> {
 		out.start = t.start;
 		if (t.startTime !== null) out.startTime = t.startTime;
 	}
+	// Строка из зеркала внешнего календаря: запись по ней отклоняется
+	// (readOnlyFile), поэтому признак обязан быть виден ДО попытки правки —
+	// иначе агент узнаёт о read-only только по невнятной ошибке update_task.
+	if (t.external === true) out.external = true;
 	if (t.priority !== "none") out.priority = t.priority;
 	if (t.tags.length > 0) out.tags = t.tags;
 	if (t.location !== null) out.location = t.location;
@@ -188,16 +192,23 @@ interface MetadataPatch {
 	scopeId?: string | null;
 }
 
-/** Read filters may use archived scopes; writes must select an active one. */
+/**
+ * Read filters may use archived scopes, а также id, который стоит в строках
+ * задач, но отсутствует в каталоге (битый/недочитанный scopes.json). Иначе
+ * недоступная конфигурация делала бы невозможным даже чтение по 🧭 из самого
+ * Markdown. Записи это НЕ касается: assertActiveScope требует каталог.
+ */
 function assertKnownScope(session: GtdSession, scopeId: string): void {
-	if (!isScopeId(scopeId) || scopeById(session.scopeCatalog, scopeId) === null) {
-		throw new Error(`unknown scope '${scopeId}'`);
-	}
+	if (!isScopeId(scopeId)) throw new Error(`unknown scope '${scopeId}'`);
+	if (scopeById(session.scopeCatalog, scopeId) !== null) return;
+	if (session.allTasks.some((task) => task.scopeId === scopeId)) return;
+	throw new Error(`unknown scope '${scopeId}'`);
 }
 
 function assertActiveScope(session: GtdSession, scopeId: string): string {
-	assertKnownScope(session, scopeId);
-	if (scopeById(session.scopeCatalog, scopeId)?.archived) {
+	const scope = isScopeId(scopeId) ? scopeById(session.scopeCatalog, scopeId) : null;
+	if (scope === null) throw new Error(`unknown scope '${scopeId}'`);
+	if (scope.archived) {
 		throw new Error(`scope '${scopeId}' is archived and cannot be assigned`);
 	}
 	return scopeId;
@@ -281,6 +292,10 @@ export function gtdOverview(session: GtdSession): Record<string, unknown> {
 			task_count: session.allTasks.filter((task) => task.scopeId === scope.id).length,
 		})),
 		unscoped_task_count: session.allTasks.filter((task) => task.scopeId === null).length,
+		// пустой каталог из-за битого scopes.json больше не выглядит как «scope'ов нет»
+		...(session.scopeCatalogWarnings.length > 0
+			? { warnings: session.scopeCatalogWarnings }
+			: {}),
 	};
 }
 
@@ -657,6 +672,8 @@ export function listEvents(session: GtdSession, args: ListEventsArgs): Record<st
 		if (o.time !== null) row.time = o.time;
 		if (o.timeEnd !== null) row.timeEnd = o.timeEnd;
 		if (o.location !== null) row.location = o.location;
+		// зеркало внешнего календаря — только чтение (см. taskJson)
+		if (o.task.external === true) row.external = true;
 		if (o.task.taskId !== null) row.seriesId = o.task.taskId;
 		if (o.kind === "series") row.recurrence = o.task.recurrence;
 		return row;

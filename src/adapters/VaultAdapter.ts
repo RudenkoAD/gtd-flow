@@ -3,10 +3,83 @@
  * (якорение по 🆔/rawLine и т.п.) приходит в этапе 3; здесь только
  * атомарные примитивы поверх vault.process/processFrontMatter.
  */
-import type { App } from "obsidian";
+import type { App, DataAdapter } from "obsidian";
+
+/**
+ * Obsidian НЕ индексирует пути с ведущей точкой: `vault.getFileByPath(".gtd-flow/…")`
+ * всегда null, `vault.getFiles()` таких путей не отдаёт, а `vault.create` по уже
+ * существующему скрытому пути бросает ошибку. Поэтому весь слой `.gtd-flow/**`
+ * (каталог пространств, сессии/раны AI, журнал обучения, журналы миграции)
+ * обязан ходить через `vault.adapter` — ровно так плагины пишут в `.obsidian/`.
+ * Обычные заметки продолжают жить на TFile-API: там работают кэш и события.
+ */
+function isHiddenPath(path: string): boolean {
+	return path.split("/").some((segment) => segment.startsWith("."));
+}
 
 export class VaultAdapter {
+	/**
+	 * Хвост мутаций на каждый скрытый путь. У `vault.adapter` нет аналога
+	 * `vault.process`, поэтому read-modify-write (compareAndSet, «создать, если
+	 * нет») сериализуем сами — иначе два одновременных вызова затирали бы друг
+	 * друга внутри одного процесса.
+	 */
+	private readonly hiddenTails = new Map<string, Promise<unknown>>();
+
 	constructor(private readonly app: App) {}
+
+	private get adapter(): DataAdapter {
+		return this.app.vault.adapter;
+	}
+
+	private serializeHidden<T>(path: string, action: () => Promise<T>): Promise<T> {
+		const previous = this.hiddenTails.get(path) ?? Promise.resolve();
+		const next = previous.then(action);
+		const tail: Promise<void> = next
+			.catch(() => undefined)
+			.then(() => {
+				// последний в очереди убирает за собой: путей (событий обучения) много
+				if (this.hiddenTails.get(path) === tail) this.hiddenTails.delete(path);
+			});
+		this.hiddenTails.set(path, tail);
+		return next;
+	}
+
+	private async hiddenRead(path: string): Promise<string | null> {
+		try {
+			if (!(await this.adapter.exists(path))) return null;
+			return await this.adapter.read(path);
+		} catch {
+			// файл исчез между exists и read — для читателя это «нет файла»
+			return null;
+		}
+	}
+
+	/** `adapter.mkdir` создаёт ровно один уровень, поэтому идём сверху вниз. */
+	private async hiddenMkdirParents(path: string): Promise<void> {
+		const parts = path.split("/").slice(0, -1);
+		let current = "";
+		for (const part of parts) {
+			current = current === "" ? part : `${current}/${part}`;
+			if (await this.adapter.exists(current)) continue;
+			await this.adapter.mkdir(current).catch(() => undefined);
+		}
+	}
+
+	private async hiddenList(prefix: string): Promise<string[]> {
+		const stat = await this.adapter.stat(prefix).catch(() => null);
+		if (stat === null) return [];
+		if (stat.type === "file") return [prefix];
+		const found: string[] = [];
+		const walk = async (folder: string): Promise<void> => {
+			const listed = await this.adapter.list(folder).catch(() => null);
+			if (listed === null) return;
+			found.push(...listed.files);
+			for (const nested of listed.folders) await walk(nested);
+		};
+		await walk(prefix);
+		return found.sort();
+	}
 
 	/**
 	 * Атомарные read-modify-write. transform возвращает null ⇒ содержимое
@@ -42,6 +115,14 @@ export class VaultAdapter {
 
 	/** Создаёт пустой файл (и родительскую папку), если его ещё нет. */
 	async ensureFile(path: string): Promise<void> {
+		if (isHiddenPath(path)) {
+			await this.serializeHidden(path, async () => {
+				if (await this.adapter.exists(path)) return;
+				await this.hiddenMkdirParents(path);
+				await this.adapter.write(path, "");
+			});
+			return;
+		}
 		if (this.app.vault.getFileByPath(path) !== null) return;
 		const dir = path.split("/").slice(0, -1).join("/");
 		if (dir !== "" && this.app.vault.getAbstractFileByPath(dir) === null) {
@@ -61,6 +142,7 @@ export class VaultAdapter {
 
 	/** AtomicFilePort-compatible alias for synced `.gtd-flow` repositories. */
 	async read(path: string): Promise<string | null> {
+		if (isHiddenPath(path)) return this.hiddenRead(path);
 		const file = this.app.vault.getFileByPath(path);
 		if (file === null) return null;
 		return logicalCasContent(await this.app.vault.read(file));
@@ -73,6 +155,13 @@ export class VaultAdapter {
 	 * complete new text, never an intermediate serialization.
 	 */
 	async writeAtomic(path: string, content: string): Promise<void> {
+		if (isHiddenPath(path)) {
+			await this.serializeHidden(path, async () => {
+				await this.hiddenMkdirParents(path);
+				await this.adapter.write(path, content);
+			});
+			return;
+		}
 		await this.ensureFile(path);
 		const file = this.app.vault.getFileByPath(path);
 		if (file === null) throw new Error(`vault-file-create-failed:${path}`);
@@ -90,6 +179,21 @@ export class VaultAdapter {
 		expected: string | null,
 		next: string | null,
 	): Promise<boolean> {
+		if (isHiddenPath(path)) {
+			// у adapter есть прямой remove, поэтому вся пляска с надгробием
+			// (обход отсутствия условного unlink в Vault API) здесь не нужна
+			return this.serializeHidden(path, async () => {
+				const current = await this.hiddenRead(path);
+				if (current !== expected) return false;
+				if (next === null) {
+					if (current !== null) await this.adapter.remove(path);
+					return true;
+				}
+				await this.hiddenMkdirParents(path);
+				await this.adapter.write(path, next);
+				return true;
+			});
+		}
 		const existing = this.app.vault.getFileByPath(path);
 		if (expected === null) {
 			if (existing !== null) return false;
@@ -169,6 +273,16 @@ export class VaultAdapter {
 	 * implemented as read-then-replace.
 	 */
 	async writeNew(path: string, content: string): Promise<void> {
+		if (isHiddenPath(path)) {
+			await this.serializeHidden(path, async () => {
+				if (await this.adapter.exists(path)) {
+					throw new Error(`vault-file-exists:${path}`);
+				}
+				await this.hiddenMkdirParents(path);
+				await this.adapter.write(path, content);
+			});
+			return;
+		}
 		const dir = path.split("/").slice(0, -1).join("/");
 		if (dir !== "" && this.app.vault.getAbstractFileByPath(dir) === null) {
 			await this.app.vault.createFolder(dir).catch(() => undefined);
@@ -188,6 +302,12 @@ export class VaultAdapter {
 
 	/** Delete a vault file for an explicit rollback snapshot. */
 	async remove(path: string): Promise<void> {
+		if (isHiddenPath(path)) {
+			await this.serializeHidden(path, async () => {
+				if (await this.adapter.exists(path)) await this.adapter.remove(path);
+			});
+			return;
+		}
 		const file = this.app.vault.getFileByPath(path);
 		if (file !== null) await this.app.vault.delete(file, true);
 	}
@@ -195,6 +315,7 @@ export class VaultAdapter {
 	/** List vault-relative files below a prefix for synced-record repositories. */
 	async list(pathPrefix: string): Promise<string[]> {
 		const prefix = pathPrefix.replace(/^\/+|\/+$/gu, "");
+		if (isHiddenPath(prefix)) return this.hiddenList(prefix);
 		const boundary = prefix === "" ? "" : `${prefix}/`;
 		return this.app.vault
 			.getFiles()

@@ -1,12 +1,21 @@
-import type { App } from "obsidian";
 import type { FeedbackStorage } from "../../services/EstimateFeedbackService";
 import type { AtomicFilePort } from "../storage/AtomicFilePort";
 
+/**
+ * Порт, через который сервис обучения работает с `.gtd-flow/ai/**`.
+ *
+ * Раньше запись и удаление шли мимо порта — прямо в `app.vault.create/delete`,
+ * а Obsidian не индексирует скрытые (точечные) пути: `getAbstractFileByPath`
+ * всегда возвращал null, повторный create по существующему пути падал, а
+ * удаление молча ничего не делало. Теперь весь ввод-вывод идёт одной дорогой —
+ * через VaultAdapter, который для скрытых путей ходит в `vault.adapter`.
+ */
+export interface FeedbackFilePort extends AtomicFilePort {
+	remove(path: string): Promise<void>;
+}
+
 export class FeedbackStorageAdapter implements FeedbackStorage {
-	constructor(
-		private readonly app: App,
-		private readonly files: AtomicFilePort,
-	) {}
+	constructor(private readonly files: FeedbackFilePort) {}
 
 	list(path: string): Promise<string[]> {
 		return this.files.list(path);
@@ -16,33 +25,24 @@ export class FeedbackStorageAdapter implements FeedbackStorage {
 		return this.files.read(path);
 	}
 
-	async writeAtomic(path: string, content: string): Promise<void> {
-		await ensureParentFolders(this.app, path);
-		await this.files.writeAtomic(path, content);
+	writeAtomic(path: string, content: string): Promise<void> {
+		return this.files.writeAtomic(path, content);
 	}
 
 	async writeNew(path: string, content: string): Promise<void> {
-		if ((await this.files.read(path)) !== null) throw new Error("feedback-event-conflict");
-		await ensureParentFolders(this.app, path);
-		if (this.app.vault.getAbstractFileByPath(path) !== null) {
-			throw new Error("feedback-event-conflict");
+		try {
+			await this.files.writeNew(path, content);
+		} catch (error: unknown) {
+			// событие обучения неизменяемо: занятый путь — это конфликт,
+			// а не сбой записи (вызывающий переименует событие и повторит)
+			if (error instanceof Error && error.message.startsWith("vault-file-exists:")) {
+				throw new Error("feedback-event-conflict");
+			}
+			throw error;
 		}
-		await this.app.vault.create(path, content);
 	}
 
-	async delete(path: string): Promise<void> {
-		const file = this.app.vault.getFileByPath(path);
-		if (file !== null) await this.app.vault.delete(file);
-	}
-}
-
-async function ensureParentFolders(app: App, path: string): Promise<void> {
-	const parts = path.split("/").slice(0, -1);
-	let current = "";
-	for (const part of parts) {
-		current = current === "" ? part : `${current}/${part}`;
-		if (app.vault.getAbstractFileByPath(current) === null) {
-			await app.vault.createFolder(current).catch(() => undefined);
-		}
+	delete(path: string): Promise<void> {
+		return this.files.remove(path);
 	}
 }

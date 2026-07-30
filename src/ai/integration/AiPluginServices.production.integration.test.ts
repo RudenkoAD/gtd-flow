@@ -9,6 +9,7 @@ import type { ProjectService } from "../../services/ProjectService";
 import { ScopeCatalogService } from "../../services/ScopeCatalogService";
 import { WritebackService } from "../../services/WritebackService";
 import { FakeFeed } from "../../stores/testSupport";
+import { createMemoryDataAdapter } from "../../testing/memoryDataAdapter";
 import { AiPluginServices } from "./AiPluginServices";
 
 const INBOX = "GTD/Inbox.md";
@@ -254,6 +255,12 @@ interface MemoryFile {
 class ObsidianMemoryVault {
 	readonly data = new Map<string, string>();
 	private readonly folders = new Set<string>();
+	/**
+	 * Как настоящий Obsidian: скрытые (точечные) пути вне индекса Vault и
+	 * доступны только через adapter. Весь `.gtd-flow/**` проверяется здесь
+	 * именно по этой дороге.
+	 */
+	readonly adapter = createMemoryDataAdapter(this.data, this.folders);
 
 	constructor(files: Readonly<Record<string, string>>) {
 		for (const [path, content] of Object.entries(files)) {
@@ -263,15 +270,19 @@ class ObsidianMemoryVault {
 	}
 
 	getFileByPath(path: string): MemoryFile | null {
-		return this.data.has(path) ? memoryFile(path) : null;
+		return !isHiddenPath(path) && this.data.has(path) ? memoryFile(path) : null;
 	}
 
 	getAbstractFileByPath(path: string): MemoryFile | { path: string } | null {
+		if (isHiddenPath(path)) return null;
 		return this.getFileByPath(path) ?? (this.folders.has(path) ? { path } : null);
 	}
 
 	getFiles(): MemoryFile[] {
-		return [...this.data.keys()].sort().map(memoryFile);
+		return [...this.data.keys()]
+			.filter((path) => !isHiddenPath(path))
+			.sort()
+			.map(memoryFile);
 	}
 
 	getMarkdownFiles(): MemoryFile[] {
@@ -439,6 +450,10 @@ function requestHeader(headers: HeadersInit | undefined, name: string): string |
 
 function memoryFile(path: string): MemoryFile {
 	return { path, extension: path.split(".").pop() ?? "" };
+}
+
+function isHiddenPath(path: string): boolean {
+	return path.split("/").some((segment) => segment.startsWith("."));
 }
 
 function serializedVault(vault: ObsidianMemoryVault): string {

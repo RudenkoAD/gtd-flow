@@ -8,6 +8,7 @@
  * скана подвешивала MCP-процесс. Инвариант: одна проверка до чтения и одна
  * после (защита от подмены во время чтения), обе — асинхронные.
  */
+import type * as FsModule from "fs";
 import { promises as fs } from "fs";
 import { describe, expect, it, vi } from "vitest";
 import { makeVault, removeVault } from "./testVault";
@@ -16,7 +17,7 @@ import { FsVault } from "./fsVault";
 const syncRealpath = vi.hoisted(() => ({ calls: 0 }));
 
 vi.mock("fs", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("fs")>();
+	const actual = await importOriginal<typeof FsModule>();
 	const counted = ((target: string, options?: unknown) => {
 		syncRealpath.calls++;
 		return (actual.realpathSync as (t: string, o?: unknown) => string)(target, options);

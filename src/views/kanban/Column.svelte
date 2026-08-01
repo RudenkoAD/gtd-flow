@@ -93,9 +93,16 @@
 
 	function onCardPointerDown(e: PointerEvent, taskKey: string): void {
 		if (!cardDraggable || dnd === null || e.button !== 0) return;
-		// клики по контролам карточки (чекбокс, меню) — не начало drag
-		if (e.target instanceof Element && e.target.closest("input, button, a, select, textarea"))
+		// Элемент из pop-out принадлежит другому realm, поэтому instanceof Element
+		// здесь ненадёжен. Проверяем closest структурно и вызываем с его receiver.
+		const target = e.target;
+		const closest = target === null ? undefined : (target as { closest?: unknown }).closest;
+		if (
+			typeof closest === "function" &&
+			closest.call(target, "input, button, a, select, textarea") !== null
+		) {
 			return;
+		}
 		dnd.startDrag(
 			{ taskKey, sourceViewType: VIEW_TYPES.kanban },
 			e,

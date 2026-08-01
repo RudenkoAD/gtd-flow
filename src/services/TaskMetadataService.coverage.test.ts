@@ -38,7 +38,7 @@ function options(overrides: Partial<TaskMetadataServiceOptions> = {}): TaskMetad
 	return {
 		dispatcher: {
 			ensureTaskId: async () => ({ ok: true, taskId: "task-1" }),
-			dispatch: async () => ({ ok: true }),
+			dispatchMany: async () => ({ ok: true }),
 		} as never,
 		history: {
 			prepareMutation: async () => undefined,

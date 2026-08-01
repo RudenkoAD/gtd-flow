@@ -24,8 +24,9 @@ import { confirm } from "./ConfirmModal";
 import { openTaskInFile } from "./openTask";
 import { pickBoardColumn, pickDate, pickProject } from "./pickers";
 import { reportAsync } from "./runAction";
+import { TaskDetailsModal, type TaskDetailsModalOptions } from "./TaskDetailsModal";
 import { TextPromptModal } from "./TextPromptModal";
-import { TaskMetadataModal } from "./TaskMetadataModal";
+import type { TaskDetailsChanges } from "./taskDetails";
 import { patchForMetadataField } from "./taskMetadata";
 import type { TaskMetadataDisplayPort } from "./taskMetadataDisplay";
 import {
@@ -75,14 +76,20 @@ export interface TemplateMenuPort {
 
 /**
  * Narrow bridge from task views to scope/provenance services. The view does not
- * import AI storage or the plugin main class. applyManualPatch must persist the
- * feedback/lock after its one atomic Markdown metadata write; this is especially
- * important for id-less tasks whose write injects a stable ID.
+ * import AI storage or the plugin main class. applyManualPatch persists one
+ * metadata edit; applyManualUpdate is the required all-or-nothing path for the
+ * full details editor, including feedback/user-lock journaling.
  */
 export interface TaskMetadataPort extends TaskMetadataDisplayPort {
 	scopes(): ScopeCatalog;
 	provenanceForTask(taskId: string): Promise<TaskEstimateProvenance | null>;
 	applyManualPatch(task: Task, patch: EstimatePatch): Promise<IntentResult>;
+	/** Persist all ordinary and estimate edits as one coordinated update. */
+	applyManualUpdate(
+		task: Task,
+		ordinaryIntents: readonly (Intent & { key: string })[],
+		metadataPatch: EstimatePatch,
+	): Promise<IntentResult>;
 	openRelatedAiRun?(task: Task): Promise<IntentResult>;
 }
 
@@ -144,6 +151,64 @@ export interface TaskMenuCtx {
 	/** Пункт «Архивировать» — только из вида доски. */
 	inBoard?: boolean;
 	ports?: TaskMenuPorts | null;
+}
+
+type BatchCapableDispatcher = IntentDispatcher & {
+	dispatchMany?: (
+		intents: readonly (Intent & { key: string })[],
+	) => Promise<{ ok: true } | { ok: false; reason: string }>;
+};
+
+export const ATOMIC_TASK_UPDATE_UNAVAILABLE_REASON = "atomic-update-unavailable";
+
+/**
+ * Apply ordinary-only details changes without risking a partial update. A
+ * single intent is already atomic; two or more require dispatchMany.
+ */
+export async function dispatchTaskDetailsIntents(
+	dispatcher: IntentDispatcher,
+	intents: readonly (Intent & { key: string })[],
+): Promise<IntentResult> {
+	if (intents.length === 0) return { ok: true };
+	const batch = (dispatcher as BatchCapableDispatcher).dispatchMany;
+	if (typeof batch === "function") {
+		const result = await batch.call(dispatcher, intents);
+		return result.ok ? { ok: true } : { ok: false, reason: result.reason };
+	}
+	if (intents.length === 1) return dispatcher.dispatch(intents[0]!);
+	return { ok: false, reason: ATOMIC_TASK_UPDATE_UNAVAILABLE_REASON };
+}
+
+/** @internal Exported for the fail-closed integration contract tests. */
+export async function applyTaskDetailsChanges(
+	ctx: TaskMenuCtx,
+	changes: TaskDetailsChanges,
+): Promise<IntentResult> {
+	const metadata = ctx.ports?.metadata ?? null;
+	if (metadata !== null) {
+		return metadata.applyManualUpdate(ctx.task, changes.ordinaryIntents, changes.metadataPatch);
+	}
+
+	if (Object.keys(changes.metadataPatch).length > 0) {
+		return { ok: false, reason: "task-metadata-unavailable" };
+	}
+	return dispatchTaskDetailsIntents(ctx.dispatcher, changes.ordinaryIntents);
+}
+
+/** Open the shared task-information editor used by normal task cards. */
+export function openTaskDetailsModal(
+	ctx: TaskMenuCtx,
+	focus?: TaskDetailsModalOptions["focus"],
+): void {
+	const metadata = ctx.ports?.metadata ?? null;
+	new TaskDetailsModal(
+		ctx.app,
+		ctx.task,
+		ctx.today,
+		metadata?.scopes() ?? { schemaVersion: 1, scopes: [] },
+		(changes) => applyTaskDetailsChanges(ctx, changes),
+		{ focus, readOnly: ctx.task.external === true },
+	).open();
 }
 
 export function buildTaskMenu(ctx: TaskMenuCtx): Menu {
@@ -403,17 +468,7 @@ async function runMenuAction(ctx: TaskMenuCtx, action: MenuAction): Promise<void
 		case "edit-metadata": {
 			const metadata = ports?.metadata;
 			if (metadata === null || metadata === undefined) return;
-			new TaskMetadataModal(
-				ctx.app,
-				ctx.task,
-				metadata.scopes(),
-				(patch) =>
-					reportAsync("не удалось изменить метаданные задачи", async () => {
-						const result = await metadata.applyManualPatch(ctx.task, patch);
-						if (!result.ok) new Notice(`GTD Flow: ${result.reason}`);
-					}),
-				action.focus,
-			).open();
+			openTaskDetailsModal(ctx, action.focus);
 			return;
 		}
 

@@ -75,6 +75,70 @@ describe("EstimateMemoryService", () => {
 		});
 	});
 
+	it.each([
+		["duration", 30, 45, "estimate-corrected"],
+		["cognitive", 3, 4, "estimate-corrected"],
+		["scope", "work", "life", "scope-changed"],
+	] as const)(
+		"removes a cleared %s correction from training labels",
+		(field, before, value, kind) => {
+			const corrected: EstimateCorrectedEvent = {
+				schemaVersion: 1,
+				id: `correct-${field}`,
+				kind,
+				taskId: "task-1",
+				createdAt: "2026-07-28T00:01:00.000Z",
+				runId: null,
+				sessionId: null,
+				field,
+				previousValue: before,
+				value,
+			};
+			const cleared: EstimateCorrectedEvent = {
+				...corrected,
+				id: `clear-${field}`,
+				createdAt: "2026-07-28T00:02:00.000Z",
+				previousValue: value,
+				value: null,
+			};
+
+			expect(buildConfirmedExamples([suggestion, corrected, cleared])).toEqual([]);
+		},
+	);
+
+	it("clears one correlated label without discarding the other confirmed fields", () => {
+		const cognitiveCorrection: EstimateCorrectedEvent = {
+			...correction(45),
+			id: "correct-cognitive",
+			createdAt: "2026-07-28T00:02:00.000Z",
+			field: "cognitive",
+			previousValue: 3,
+			value: 4,
+		};
+		const cognitiveClear: EstimateCorrectedEvent = {
+			...cognitiveCorrection,
+			id: "clear-cognitive",
+			createdAt: "2026-07-28T00:03:00.000Z",
+			previousValue: 4,
+			value: null,
+		};
+
+		expect(
+			buildConfirmedExamples([
+				suggestion,
+				correction(45),
+				cognitiveCorrection,
+				cognitiveClear,
+			]),
+		).toEqual([
+			expect.objectContaining({
+				id: "prediction-1",
+				confirmedFields: ["duration"],
+				values: expect.objectContaining({ durationMinutes: 45, cognitiveIntensity: 0 }),
+			}),
+		]);
+	});
+
 	it("learns a corrected field-local chat suggestion without placeholder-field leakage", () => {
 		const chatSuggestion: EstimateFieldSuggestedEvent = {
 			schemaVersion: 1,

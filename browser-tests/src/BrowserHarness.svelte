@@ -4,10 +4,18 @@
 	import VirtualList from "../../src/views/common/VirtualList.svelte";
 	import DayCell from "../../src/views/calendar/DayCell.svelte";
 	import AI from "../../src/views/ai/AI.svelte";
+	import TaskCard from "../../src/views/common/TaskCard.svelte";
+	import Column from "../../src/views/kanban/Column.svelte";
+	import type { BoardDef } from "../../src/core/board/boardFile";
+	import type { BoardService } from "../../src/services/BoardService";
 	import { DndService } from "../../src/views/dnd/DndService";
-	import type { DragPayload } from "../../src/views/dnd/types";
+	import type { DndPort, DragPayload } from "../../src/views/dnd/types";
 	import { createDefaultSettings } from "../../src/settings/Settings";
 	import type { IntentDispatcher } from "../../src/services/WritebackService";
+	import { emptyTaskProvenance } from "../../src/core/estimates/provenance";
+	import { makeTask } from "../../src/stores/testSupport";
+	import type { TaskMetadataPort, TaskMenuPorts } from "../../src/views/common/taskMenu";
+	import type { BoardWritePort, ColumnVM } from "../../src/views/kanban/kanbanLogic";
 	import { createBrowserAiFixture } from "./aiBrowserFixture";
 
 	type FixtureRow = { id: string; label: string; height: number };
@@ -36,6 +44,109 @@
 		sourceViewType: "browser-harness",
 	};
 	let rejectedDropTarget = $state<HTMLElement | null>(null);
+	const detailsTask = makeTask({
+		key: "id:browser-task-1",
+		taskId: "browser-task-1",
+		filePath: "GTD/Inbox.md",
+		description: "Browser details task",
+		due: "2026-08-03",
+		priority: "medium",
+		location: "Desk",
+		durationMinutes: 90,
+		cognitiveIntensity: 3,
+		emotionalIntensity: 2,
+		physicalIntensity: 0,
+		scopeId: "work",
+	});
+	const detailsCatalog = {
+		schemaVersion: 1 as const,
+		scopes: [
+			{ id: "work", name: "Work", order: 0, archived: false },
+			{ id: "life", name: "Life", order: 1, archived: false },
+		],
+	};
+	let detailsUpdateCalls = $state(0);
+	let detailsLastUpdate = $state("none");
+	type DetailsSaveResult = { ok: true } | { ok: false; reason: string };
+	type DetailsSaveMode = "success" | "pending-scope-failure" | "feedback-warning";
+	const DETAILS_SAVE_RESOLVE_EVENT = "gtd-browser-resolve-task-details-save";
+	let detailsSaveMode: DetailsSaveMode = $state("success");
+	const detailsMetadata: TaskMetadataPort = {
+		scopes: () => detailsCatalog,
+		scopeName: (scopeId) =>
+			detailsCatalog.scopes.find((scope) => scope.id === scopeId)?.name ?? null,
+		durationLongStyle: () => "whole-days",
+		provenanceForTask: async (taskId) =>
+			emptyTaskProvenance(taskId, "2026-08-02T00:00:00.000Z"),
+		applyManualPatch: async () => ({ ok: true }),
+		applyManualUpdate: async (_task, ordinaryIntents, metadataPatch) => {
+			detailsUpdateCalls++;
+			detailsLastUpdate = JSON.stringify({
+				ordinaryTypes: ordinaryIntents.map((intent) => intent.type),
+				metadataPatch,
+			});
+			if (detailsSaveMode === "feedback-warning") {
+				detailsSaveMode = "success";
+				return { ok: false, reason: "metadata-saved-but-feedback-write-failed" };
+			}
+			if (detailsSaveMode === "pending-scope-failure") {
+				return new Promise<DetailsSaveResult>((resolve) => {
+					window.addEventListener(
+						DETAILS_SAVE_RESOLVE_EVENT,
+						() => resolve({ ok: false, reason: "scope-not-active" }),
+						{ once: true },
+					);
+				});
+			}
+			return { ok: true };
+		},
+	};
+	const detailsMenuPorts: TaskMenuPorts = {
+		metadata: detailsMetadata,
+		cards: {
+			cardPathOf: () => "GTD/Cards/browser-task-1.md",
+			progressOf: () => ({ done: 1, total: 2 }),
+			openOrCreate: async () => ({ ok: true, path: "GTD/Cards/browser-task-1.md" }),
+		},
+	};
+
+	function resolvePendingDetailsSave(): void {
+		detailsSaveMode = "success";
+		window.dispatchEvent(new Event(DETAILS_SAVE_RESOLVE_EVENT));
+	}
+	const detailsColumn: ColumnVM = {
+		id: "doing",
+		name: "Doing",
+		match: "#kanban/browser/doing",
+		count: 1,
+		tasks: [detailsTask],
+	};
+	const detailsBoardDef: BoardDef = {
+		id: "browser",
+		name: "Browser board",
+		groupBy: "tag",
+		columns: [{ id: "doing", name: "Doing", match: "#kanban/browser/doing" }],
+		skippedColumns: [],
+		order: { doing: ["browser-task-1"] },
+	};
+	const detailsBoards = {
+		moveCard: async () => ({ ok: true }),
+		moveCardFromTickler: async () => ({ ok: true }),
+		renameColumn: async () => ({ ok: true }),
+		moveColumn: async () => ({ ok: true }),
+		deleteColumn: async () => ({ ok: true }),
+	} as unknown as BoardService;
+	const detailsBoardVault: BoardWritePort = {
+		ensureFile: async () => {},
+		processFile: async () => true,
+	};
+	let detailsColumnDragStarts = $state(0);
+	const detailsColumnDnd: DndPort = {
+		registerDropTarget: () => () => {},
+		startDrag: () => {
+			detailsColumnDragStarts++;
+		},
+	};
 	const ai = createBrowserAiFixture();
 	let aiRevision = $state(0);
 	let aiViewRevision = $state(0);
@@ -170,6 +281,73 @@
 		>
 			Rejected drop target
 		</div>
+	</section>
+
+	<section aria-labelledby="task-details-heading" data-testid="task-details-fixture">
+		<h2 id="task-details-heading">Task details modal</h2>
+		<TaskCard
+			task={detailsTask}
+			{dispatcher}
+			{app}
+			{settings}
+			today="2026-08-02"
+			{dnd}
+			dragPayload={{ taskKey: detailsTask.key, sourceViewType: "browser-harness" }}
+			menuPorts={detailsMenuPorts}
+		/>
+		<p>
+			Apply calls:
+			<output aria-label="Task details apply calls" data-testid="task-details-apply-count"
+				>{detailsUpdateCalls}</output
+			>
+		</p>
+		<pre
+			aria-label="Last task details update"
+			data-testid="task-details-last-update">{detailsLastUpdate}</pre>
+		<button
+			type="button"
+			data-testid="task-details-pending-mode"
+			onclick={() => (detailsSaveMode = "pending-scope-failure")}
+		>
+			Use pending scope failure
+		</button>
+		<button
+			type="button"
+			data-testid="task-details-resolve-pending"
+			onclick={resolvePendingDetailsSave}
+		>
+			Resolve pending details save
+		</button>
+		<button
+			type="button"
+			data-testid="task-details-feedback-warning-mode"
+			onclick={() => (detailsSaveMode = "feedback-warning")}
+		>
+			Use feedback finalization warning
+		</button>
+	</section>
+
+	<section
+		aria-labelledby="kanban-popout-control-heading"
+		data-testid="kanban-popout-control-fixture"
+	>
+		<h2 id="kanban-popout-control-heading">Kanban pop-out controls</h2>
+		<Column
+			column={detailsColumn}
+			boardPath="GTD/Browser board.md"
+			def={detailsBoardDef}
+			boards={detailsBoards}
+			dnd={detailsColumnDnd}
+			{dispatcher}
+			{app}
+			{settings}
+			vault={detailsBoardVault}
+			today="2026-08-02"
+			menuPorts={detailsMenuPorts}
+		/>
+		<output aria-label="Kanban drag starts" data-testid="kanban-drag-start-count"
+			>{detailsColumnDragStarts}</output
+		>
 	</section>
 
 	<section aria-labelledby="ai-heading" data-testid="ai-fixture">

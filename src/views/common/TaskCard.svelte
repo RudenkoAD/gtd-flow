@@ -7,7 +7,7 @@
 	import type { GtdFlowSettings } from "../../settings/Settings";
 	import type { DndPort, DragPayload } from "../dnd/types";
 	import { reportAsync } from "./runAction";
-	import { buildTaskMenu, type TaskMenuPorts } from "./taskMenu";
+	import { buildTaskMenu, openTaskDetailsModal, type TaskMenuPorts } from "./taskMenu";
 	import {
 		PRIORITY_ICONS,
 		PRIORITY_LABELS,
@@ -57,11 +57,24 @@
 		dnd !== null && dragPayload !== undefined && !Platform.isPhone && !editing,
 	);
 
+	/**
+	 * Event targets from Obsidian pop-out windows belong to another JS realm, so
+	 * `target instanceof Element` is false even for a real element. Use the DOM
+	 * capability structurally and preserve its receiver when calling it.
+	 */
+	function closestFromTarget(target: EventTarget | null, selector: string): Element | null {
+		if (target === null) return null;
+		const closest = (target as { closest?: unknown }).closest;
+		if (typeof closest !== "function") return null;
+		return closest.call(target, selector) as Element | null;
+	}
+
 	function isControl(target: EventTarget | null): boolean {
-		return (
-			target instanceof Element &&
-			target.closest("input, button, a, select, textarea") !== null
-		);
+		return closestFromTarget(target, "input, button, a, select, textarea") !== null;
+	}
+
+	function isTaskTitle(target: EventTarget | null): boolean {
+		return closestFromTarget(target, ".gtd-task-desc") !== null;
 	}
 
 	function onCardPointerDown(e: PointerEvent): void {
@@ -199,10 +212,33 @@
 		});
 	}
 
-	// dblclick = инлайн-редактирование названия; открытие карточки осталось
-	// в меню («Открыть карточку»), на бейдже прогресса и на длинном тапе телефона
+	function openDetails(): void {
+		openTaskDetailsModal({
+			task,
+			app,
+			dispatcher,
+			settings,
+			today,
+			inTickler,
+			inBoard,
+			ports: menuPorts,
+		});
+	}
+
+	/**
+	 * A card-background click opens task details. The title deliberately remains a
+	 * separate target: one click does nothing and a double-click edits it inline.
+	 * DndService swallows the synthetic click after a completed drag.
+	 */
+	function onCardClick(e: MouseEvent): void {
+		if (editing || isControl(e.target) || isTaskTitle(e.target)) return;
+		openDetails();
+	}
+
+	// dblclick = inline title edit only. Details live on the surrounding card area
+	// and on the explicit keyboard-accessible button.
 	function onCardDblClick(e: MouseEvent): void {
-		if (editing || isControl(e.target)) return;
+		if (editing || isControl(e.target) || !isTaskTitle(e.target)) return;
 		startEdit();
 	}
 
@@ -236,7 +272,7 @@
 	}
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
+<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
 <div
 	class="gtd-task-card"
 	class:is-done={isDone}
@@ -247,6 +283,7 @@
 	onpointerup={cancelLongPress}
 	onpointercancel={cancelLongPress}
 	onpointerleave={cancelLongPress}
+	onclick={onCardClick}
 	ondblclick={onCardDblClick}
 >
 	<input
@@ -307,6 +344,14 @@
 			{progress.done}/{progress.total}
 		</button>
 	{/if}
+	<button
+		class="gtd-task-details"
+		title="Сведения о задаче"
+		aria-label="Открыть сведения и редактирование задачи"
+		onclick={openDetails}
+	>
+		ⓘ
+	</button>
 	<button class="gtd-task-more" aria-label="Меню задачи" onclick={openMenu}>⋯</button>
 </div>
 
@@ -401,6 +446,7 @@
 		color: var(--text-normal);
 		background: var(--background-modifier-hover);
 	}
+	.gtd-task-details,
 	.gtd-task-more {
 		flex: none;
 		border: none;
@@ -411,6 +457,7 @@
 		padding: 0 6px;
 		border-radius: var(--radius-s, 4px);
 	}
+	.gtd-task-details:hover,
 	.gtd-task-more:hover {
 		color: var(--text-normal);
 		background: var(--background-modifier-hover);

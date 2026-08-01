@@ -99,6 +99,177 @@ test.describe("mounted GTD Flow Svelte component gate", () => {
 		await expectNoAxeViolations(page, '[data-testid="dnd-error-fixture"]');
 	});
 
+	test("opens task details only from non-title affordances and saves one atomic update", async ({
+		page,
+	}) => {
+		const fixture = page.getByTestId("task-details-fixture");
+		const card = fixture.locator(".gtd-task-card");
+		const dialog = page.getByRole("dialog", { name: "Задача" });
+
+		const title = card.locator(".gtd-task-desc");
+		await title.click();
+		await expect(dialog).toHaveCount(0);
+
+		const foreignTargets = await fixture.evaluate((element) => {
+			const frame = document.createElement("iframe");
+			frame.hidden = true;
+			element.append(frame);
+			const foreignDocument = frame.contentDocument;
+			const titleRoot = element.querySelector(".gtd-task-desc");
+			const cardRoot = element.querySelector(".gtd-task-card");
+			if (foreignDocument === null || titleRoot === null || cardRoot === null) {
+				throw new Error("cross-realm task-card fixture is unavailable");
+			}
+
+			const foreignTitle = foreignDocument.createElement("span");
+			foreignTitle.dataset.testid = "foreign-title-target";
+			foreignTitle.textContent = " foreign title target";
+			titleRoot.append(foreignTitle);
+
+			const foreignControl = foreignDocument.createElement("button");
+			foreignControl.dataset.testid = "foreign-control-target";
+			foreignControl.type = "button";
+			foreignControl.textContent = "Foreign control target";
+			cardRoot.append(foreignControl);
+
+			return {
+				titleIsForeign: !(foreignTitle instanceof Element),
+				controlIsForeign: !(foreignControl instanceof Element),
+			};
+		});
+		expect(foreignTargets).toEqual({ titleIsForeign: true, controlIsForeign: true });
+		await fixture.getByTestId("foreign-title-target").click();
+		await fixture.getByTestId("foreign-control-target").click();
+		await expect(dialog).toHaveCount(0);
+
+		const kanbanFixture = page.getByTestId("kanban-popout-control-fixture");
+		const kanbanControlIsForeign = await kanbanFixture.evaluate((element) => {
+			const frame = document.createElement("iframe");
+			frame.hidden = true;
+			element.append(frame);
+			const foreignDocument = frame.contentDocument;
+			const taskCard = element.querySelector(".gtd-task-card");
+			if (foreignDocument === null || taskCard === null) {
+				throw new Error("cross-realm kanban fixture is unavailable");
+			}
+			const control = foreignDocument.createElement("button");
+			control.type = "button";
+			control.dataset.testid = "foreign-kanban-control";
+			control.textContent = "Foreign Kanban control";
+			taskCard.append(control);
+			return !(control instanceof Element);
+		});
+		expect(kanbanControlIsForeign).toBe(true);
+		await kanbanFixture.getByTestId("foreign-kanban-control").click();
+		await expect(kanbanFixture.getByTestId("kanban-drag-start-count")).toHaveText("0");
+		await expect(dialog).toHaveCount(0);
+
+		await title.dblclick();
+		const inlineTitle = title.locator("input.gtd-task-edit");
+		await expect(inlineTitle).toHaveValue("Browser details task");
+		await expect(dialog).toHaveCount(0);
+		await inlineTitle.press("Escape");
+		await expect(inlineTitle).toHaveCount(0);
+		await expect(title).toContainText("Browser details task");
+
+		await fixture.getByRole("checkbox", { name: "Выполнено" }).click();
+		await fixture.getByRole("button", { name: "Чеклист карточки: 1 из 2" }).click();
+		await fixture.getByRole("button", { name: "Меню задачи" }).click();
+		await expect(dialog).toHaveCount(0);
+
+		const box = await card.boundingBox();
+		expect(box).not.toBeNull();
+		if (box === null) throw new Error("task details card is not visible");
+		const dragStart = { x: box.x + 2, y: box.y + box.height - 2 };
+		await page.mouse.move(dragStart.x, dragStart.y);
+		await page.mouse.down();
+		await page.mouse.move(dragStart.x + 10, dragStart.y);
+		await page.mouse.up();
+		await expect(dialog).toHaveCount(0);
+
+		await card.click({ position: { x: 2, y: box.height - 2 } });
+		await expect(dialog).toBeVisible();
+		await dialog.getByRole("button", { name: "Отмена" }).click();
+		await expect(dialog).toHaveCount(0);
+
+		await card.locator(".gtd-task-metadata-badge").first().click();
+		await expect(dialog).toBeVisible();
+		await dialog.getByRole("button", { name: "Отмена" }).click();
+
+		const detailsButton = fixture.getByRole("button", {
+			name: "Открыть сведения и редактирование задачи",
+		});
+		await detailsButton.focus();
+		await detailsButton.press("Enter");
+		await expect(dialog).toBeVisible();
+		await expectNoAxeViolations(page, '[role="dialog"]');
+
+		await dialog.getByLabel("Название").fill("Edited browser details task");
+		await dialog.getByLabel("⏱ Длительность, минуты").fill("120");
+		await dialog.getByLabel("🧭 Scope").selectOption("life");
+		await dialog.getByRole("button", { name: "Сохранить" }).click();
+
+		await expect(dialog).toHaveCount(0);
+		await expect(fixture.getByTestId("task-details-apply-count")).toHaveText("1");
+		const recorded = JSON.parse(
+			(await fixture.getByTestId("task-details-last-update").textContent()) ?? "null",
+		) as unknown;
+		expect(recorded).toEqual({
+			ordinaryTypes: ["set-text"],
+			metadataPatch: { durationMinutes: 120, scopeId: "life" },
+		});
+	});
+
+	test("locks the task-details draft while saving and handles post-write feedback recovery", async ({
+		page,
+	}) => {
+		const fixture = page.getByTestId("task-details-fixture");
+		const dialog = page.getByRole("dialog", { name: "Задача" });
+		const detailsButton = fixture.getByRole("button", {
+			name: "Открыть сведения и редактирование задачи",
+		});
+
+		await fixture.getByTestId("task-details-pending-mode").click();
+		await detailsButton.click();
+		await dialog.getByLabel("Название").fill("Draft kept after failure");
+		await dialog.getByRole("button", { name: "Сохранить" }).click();
+
+		const formControls = dialog.locator("form input, form select, form button");
+		const controlCount = await formControls.count();
+		for (let index = 0; index < controlCount; index++) {
+			await expect(formControls.nth(index)).toBeDisabled();
+		}
+		await dialog.getByRole("button", { name: "Закрыть окно" }).click();
+		await expect(dialog).toBeVisible();
+		await expect(dialog.getByLabel("Название")).toHaveValue("Draft kept after failure");
+
+		await page.evaluate(() => {
+			window.dispatchEvent(new Event("gtd-browser-resolve-task-details-save"));
+		});
+		await expect(dialog.getByRole("alert")).toHaveText(
+			"Не удалось сохранить: Выбранный scope больше не активен. Выберите другой scope и повторите сохранение.",
+		);
+		await expect(dialog.getByLabel("Название")).toHaveValue("Draft kept after failure");
+		await expect(dialog.getByLabel("Название")).toBeEnabled();
+		await expect(dialog.getByRole("button", { name: "Отмена" })).toBeEnabled();
+
+		const dueTime = dialog.getByLabel("📅 Срок: время");
+		await dueTime.fill("09:00");
+		await dialog.getByLabel("📅 Срок", { exact: true }).fill("");
+		await expect(dueTime).toHaveValue("");
+		await expect(dialog.getByRole("alert")).toHaveCount(0);
+		await dialog.getByRole("button", { name: "Отмена" }).click();
+
+		await fixture.getByTestId("task-details-feedback-warning-mode").click();
+		await detailsButton.click();
+		await dialog.getByLabel("Название").fill("Saved despite feedback warning");
+		await dialog.getByRole("button", { name: "Сохранить" }).click();
+		await expect(dialog).toHaveCount(0);
+		await expect(page.locator("#gtd-browser-notices")).toHaveText(
+			"GTD Flow: задача сохранена, но истории обучения требуется восстановление.",
+		);
+	});
+
 	test("integrates inbox processing, linked-field reprocessing, and user locks through visible UI", async ({
 		page,
 	}) => {

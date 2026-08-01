@@ -4,14 +4,18 @@ import {
 	type EstimatePatch,
 	type TaskEstimateProvenance,
 } from "../core/estimates/provenance";
-import type { Task } from "../core/model/Task";
+import type { Intent } from "../core/intents/Intent";
+import { resolveLineTransform } from "../core/intents/resolveIntent";
 import type { LongDurationStyle } from "../core/estimates/format";
-import { activeScopes, type ScopeCatalog } from "../core/scope/scope";
+import type { Task } from "../core/model/Task";
+import { parseTaskLine } from "../core/parser/parseTaskLine";
+import { activeScopes, isActiveScopeId, type ScopeCatalog } from "../core/scope/scope";
 import type { InboxProcessor } from "../ai/processing/InboxProcessor";
 import type {
 	EstimateCorrectedEvent,
 	EstimateFeedbackService,
 	FeedbackFieldMutation,
+	EstimateTaskSnapshot,
 } from "./EstimateFeedbackService";
 import { feedbackTaskSnapshot } from "./EstimateFeedbackService";
 import type { IntentResult, WritebackService } from "./WritebackService";
@@ -61,9 +65,33 @@ export class TaskMetadataService {
 	}
 
 	async applyManualPatch(task: Task, patch: EstimatePatch): Promise<IntentResult> {
-		const anchored = await this.options.dispatcher.ensureTaskId(task.key);
-		if (!anchored.ok) return anchored;
+		return this.applyManualUpdate(task, [], patch);
+	}
+
+	async applyManualUpdate(
+		task: Task,
+		ordinaryIntents: readonly (Intent & { key: string })[],
+		patch: EstimatePatch,
+	): Promise<IntentResult> {
 		const fields = changedPatchFields(patch);
+		if (ordinaryIntents.length === 0 && fields.length === 0) return { ok: true };
+		if (
+			patch.scopeId !== undefined &&
+			patch.scopeId !== null &&
+			patch.scopeId !== task.scopeId &&
+			!isActiveScopeId(this.options.scopes(), patch.scopeId)
+		) {
+			return { ok: false, reason: "scope-not-active" };
+		}
+		const snapshot =
+			fields.length === 0
+				? undefined
+				: feedbackSnapshotAfterOrdinaryIntents(task, ordinaryIntents);
+		if (snapshot === null) return { ok: false, reason: "transform-failed" };
+
+		const anchored =
+			fields.length === 0 ? null : await this.options.dispatcher.ensureTaskId(task.key);
+		if (anchored !== null && !anchored.ok) return anchored;
 		const prepared: EstimateCorrectedEvent[] = [];
 		for (const field of fields) {
 			const previousValue = taskFieldValue(task, field);
@@ -77,14 +105,14 @@ export class TaskMetadataService {
 						: previousValue === null
 							? "estimate-manual"
 							: "estimate-corrected",
-				taskId: anchored.taskId,
+				taskId: anchored!.taskId,
 				createdAt: this.now().toISOString(),
 				runId: null,
 				sessionId: null,
 				field,
 				previousValue,
 				value,
-				taskSnapshot: feedbackTaskSnapshot(task),
+				taskSnapshot: snapshot,
 			};
 			const mutation: FeedbackFieldMutation = {
 				field,
@@ -106,12 +134,25 @@ export class TaskMetadataService {
 		const cancelExpected =
 			fields.length === 0
 				? undefined
-				: this.options.expectKnownPatch?.(anchored.taskId, expectedPatch);
-		const result = await this.options.dispatcher.dispatch({
-			type: "patch-task-metadata",
-			key: task.key,
-			...patch,
-		});
+				: this.options.expectKnownPatch?.(anchored!.taskId, expectedPatch);
+		const intents: Array<Intent & { key: string }> = [...ordinaryIntents];
+		if (fields.length > 0) {
+			intents.push({ type: "patch-task-metadata", key: task.key, ...patch });
+		}
+		let batch = await this.options.dispatcher.dispatchMany(intents);
+		if (
+			!batch.ok &&
+			batch.reason === "task-not-found" &&
+			task.taskId === null &&
+			anchored !== null &&
+			anchored.ok
+		) {
+			const stableKey = `id:${anchored.taskId}`;
+			batch = await this.options.dispatcher.dispatchMany(
+				intents.map((intent) => ({ ...intent, key: stableKey })),
+			);
+		}
+		const result: IntentResult = batch.ok ? { ok: true } : { ok: false, reason: batch.reason };
 		if (!result.ok) {
 			if (typeof cancelExpected === "function") cancelExpected();
 			await this.cancelPrepared(prepared);
@@ -202,6 +243,33 @@ export class TaskMetadataService {
 		if (!latest?.sessionId) return { ok: false, reason: "task-has-no-ai-run" };
 		await this.options.openSession(latest.sessionId);
 		return { ok: true };
+	}
+}
+
+function feedbackSnapshotAfterOrdinaryIntents(
+	task: Task,
+	ordinaryIntents: readonly (Intent & { key: string })[],
+): EstimateTaskSnapshot | null {
+	const textIntents = ordinaryIntents.filter((intent) => intent.type === "set-text");
+	if (textIntents.length === 0) return feedbackTaskSnapshot(task);
+	try {
+		let rawLine = task.rawLine;
+		for (const intent of textIntents) {
+			const next = resolveLineTransform(intent, rawLine);
+			if (next === null) return null;
+			rawLine = next;
+		}
+		const parsed = parseTaskLine(rawLine, {
+			filePath: task.filePath,
+			lineStart: task.lineStart,
+			parentLine: task.parentLine,
+			heading: task.heading,
+			container: task.container,
+			projectActive: task.projectActive,
+		});
+		return parsed === null ? null : feedbackTaskSnapshot(parsed);
+	} catch {
+		return null;
 	}
 }
 

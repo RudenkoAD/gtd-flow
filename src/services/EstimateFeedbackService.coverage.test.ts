@@ -206,13 +206,7 @@ describe("Estimate feedback parsing and recovery breadth", () => {
 						physicalIntensity: 2,
 						scopeId: "life",
 					}),
-					confirmedFields: expect.arrayContaining([
-						"duration",
-						"cognitive",
-						"emotional",
-						"physical",
-						"scope",
-					]),
+					confirmedFields: ["cognitive", "emotional", "physical", "scope"],
 				}),
 				expect.objectContaining({
 					id: "orphan-correction",

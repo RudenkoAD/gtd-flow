@@ -81,6 +81,15 @@ export function buildConfirmedExamples(
 		) {
 			const active =
 				activeByTask.get(event.taskId) ?? new Map<EstimateField, ReplayCandidate>();
+			if (event.value === null) {
+				const candidate = active.get(event.field);
+				if (candidate !== undefined) {
+					candidate.confirmedFields.delete(event.field);
+					clearCandidateValue(candidate.values, event.field);
+				}
+				active.delete(event.field);
+				continue;
+			}
 			let candidate = active.get(event.field);
 			if (candidate === undefined && event.taskSnapshot !== undefined) {
 				candidate = candidateFromStandaloneCorrection(event);
@@ -211,6 +220,26 @@ function applyCorrectedValue(
 			break;
 		case "scope":
 			if (typeof value === "string") values.scopeId = value;
+			break;
+	}
+}
+
+function clearCandidateValue(values: EstimateSuggestedEvent["values"], field: EstimateField): void {
+	switch (field) {
+		case "duration":
+			values.durationMinutes = null;
+			break;
+		case "cognitive":
+			values.cognitiveIntensity = 0;
+			break;
+		case "emotional":
+			values.emotionalIntensity = 0;
+			break;
+		case "physical":
+			values.physicalIntensity = 0;
+			break;
+		case "scope":
+			values.scopeId = "";
 			break;
 	}
 }

@@ -15,7 +15,8 @@
  *    optionally filters the unified inbox by a stable task scope ID.
  *    input.agendaDays?: number (0/нет = не считать; максимум 30) → секция agenda.days
  *    по дням от todayIso включительно (тот же состав/сортировка, что today.items).
- *    Элементы today/agenda обогащены rawLine/itemKind/recurrenceText (для шторки деталей).
+ *    Элементы today/agenda обогащены rawLine/itemKind/recurrenceText (для шторки деталей)
+ *    и флагом external (строка зеркала внешнего календаря — клиент обязан запретить правку).
  *  • buildCaptureLine(text, location?) → строка быстрого захвата '- [ ] …[ 📍 …]';
  *  • captureTargetPath(dataJson) → configured unified inbox path;
  *  • buildEditedLine(rawLine, edits) → JSON {ok:true,line} | {ok:false,error}: правка
@@ -87,6 +88,11 @@ export interface WidgetTodayItem {
 	rawLine: string;
 	/** Текст правила 🔁 для вхождения серии; null для одноразового события/задачи. */
 	recurrenceText: string | null;
+	/** Строка живёт в зеркале внешнего календаря (frontmatter gtd-external: true).
+	 *  READ-ONLY: правка ушла бы в зеркало и была бы затёрта следующей синхронизацией,
+	 *  поэтому клиент (Android-шторка) обязан блокировать запись — тот же гейт, что
+	 *  WritebackService.readOnlyFile на десктопе. */
+	external: boolean;
 	/** Duration/intensities/scope from the task line; no AI state or OAuth required. */
 	metadata: WidgetTaskMetadata;
 }
@@ -97,6 +103,8 @@ export interface WidgetInboxItem {
 	line: number;
 	id: string | null;
 	location: string | null;
+	/** Строка живёт в зеркале внешнего календаря — правка запрещена (см. WidgetTodayItem). */
+	external: boolean;
 	metadata: WidgetTaskMetadata;
 }
 
@@ -206,6 +214,7 @@ export async function computeWidgetData(input: WidgetInput): Promise<string> {
 					line: o.task.lineStart + 1,
 					rawLine: o.task.rawLine,
 					recurrenceText: o.kind === "series" ? o.task.recurrence : null,
+					external: o.task.external === true,
 					metadata: widgetTaskMetadata(o.task, scopeCatalog, settings.durationLongStyle),
 				});
 			}
@@ -227,6 +236,7 @@ export async function computeWidgetData(input: WidgetInput): Promise<string> {
 					line: t.lineStart + 1,
 					rawLine: t.rawLine,
 					recurrenceText: null,
+					external: t.external === true,
 					metadata: widgetTaskMetadata(t, scopeCatalog, settings.durationLongStyle),
 				});
 			}
@@ -271,6 +281,7 @@ export async function computeWidgetData(input: WidgetInput): Promise<string> {
 				line: t.lineStart + 1,
 				id: t.taskId,
 				location: t.location,
+				external: t.external === true,
 				metadata: widgetTaskMetadata(t, scopeCatalog, settings.durationLongStyle),
 			});
 		}

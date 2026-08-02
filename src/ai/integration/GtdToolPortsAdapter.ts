@@ -896,12 +896,18 @@ export class GtdToolPortsAdapter implements GtdToolPorts {
 		return { value: { taskId: input.taskId, deleted: true } };
 	}
 
+	/**
+	 * Удаление — В КОРЗИНУ. Одобрение в чате означает «согласен убрать файл», а
+	 * не «согласен потерять его безвозвратно»: у инструмента нет undo (в отличие
+	 * от moveTask/createTask), а остальной проект уже предпочитает vault.trash
+	 * (см. SyncService: «предпочтительно — в системную корзину»).
+	 */
 	async deleteFile(input: { path: string }): Promise<{ value: unknown }> {
 		if (!isVaultRelativePath(input.path)) throw new Error("vault-file-path-rejected");
 		const file = this.options.app.vault.getFileByPath(input.path);
 		if (file === null) throw new Error("vault-file-not-found");
-		await this.options.app.vault.delete(file, true);
-		return { value: { path: input.path, deleted: true } };
+		await this.options.app.vault.trash(file, true);
+		return { value: { path: input.path, deleted: true, trashed: true } };
 	}
 
 	async bulkUpdateTasks(
@@ -1353,6 +1359,9 @@ function publicTask(task: Task): Record<string, unknown> {
 		description: task.description,
 		filePath: task.filePath,
 		status: task.statusChar,
+		// зеркало внешнего календаря: любая запись будет отклонена, поэтому
+		// признак виден агенту заранее — он предложит копию, а не правку
+		...(task.external === true ? { external: true } : {}),
 		durationMinutes: task.durationMinutes,
 		cognitiveIntensity: task.cognitiveIntensity,
 		emotionalIntensity: task.emotionalIntensity,

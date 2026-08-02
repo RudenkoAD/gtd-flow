@@ -35,6 +35,42 @@ export function readLegacyNamespaceSettings(value: unknown): LegacyNamespaceSett
 	};
 }
 
+/** Имя файла захвата по конвенции пространств (до 0.13). */
+const LEGACY_INBOX_FILE_NAME = "Входящие.md";
+
+/**
+ * Кандидаты на единый файл входящих при миграции v1 → v2, в порядке предпочтения.
+ *
+ * До 0.13 быстрый ввод «Общего» дописывал строку в `<commonRoot>/Входящие.md`
+ * (конвенция пространств), а `recurring.spawnTarget` отвечал ТОЛЬКО за копии
+ * регулярных задач и имел фабричное значение `GTD/Inbox.md`. Единый inboxFile
+ * обязан встать на файл, где реально лежат неразобранные захваты: иначе сразу
+ * после обновления команда «Быстрый ввод во входящие» создаёт ВТОРОЙ файл, и
+ * вход тихо разъезжается на два, пока пользователь не догадается запустить
+ * мастер миграции пространств.
+ *
+ * Порядок фиксирован и не зависит от хранилища. Вызывающий с доступом к vault
+ * выбирает первый СУЩЕСТВУЮЩИЙ путь, чистый вызывающий (виджет-бандл, MCP) —
+ * первый из списка.
+ */
+export function legacyInboxCandidates(value: unknown): string[] {
+	const legacy = readLegacyNamespaceSettings(value);
+	const raw = isRecord(value) ? value : {};
+	const recurring = isRecord(raw["recurring"]) ? raw["recurring"] : {};
+	const spawnTarget = nonEmptyString(recurring["spawnTarget"]);
+	const root = legacy.commonRoot === null ? null : legacy.commonRoot.replace(/\/+$/u, "");
+	const inRoot = (name: string): string =>
+		root === null || root === "" ? name : `${root}/${name}`;
+	const candidates: string[] = [];
+	// 1. фактическая цель быстрого ввода 0.12 — там лежат захваты пользователя
+	if (root !== null) candidates.push(inRoot(LEGACY_INBOX_FILE_NAME));
+	// 2. цель копий регулярных задач (могла быть переопределена вручную)
+	if (spawnTarget !== null) candidates.push(spawnTarget);
+	// 3. историческая догадка прежней миграции
+	if (root !== null) candidates.push(inRoot("Inbox.md"));
+	return [...new Set(candidates)];
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -377,6 +413,16 @@ function validateMigrationInputs(
 			continue;
 		}
 		namespaceNames.add(namespace.name);
+		// Встроенное пространство «Общее» — обычная строка, и планировщик уводит
+		// такие задачи в политику commonTasks ВМЕСТО mapping.byNamespace. Значит,
+		// пользовательское пространство с этим же именем получило бы чужой scope
+		// (или ни одного) молча, вопреки обязательному сопоставлению. Требуем
+		// переименовать до миграции — тихое расхождение хуже явного отказа.
+		if (namespace.name === LEGACY_DEFAULT_NAMESPACE) {
+			errors.push(
+				`Legacy namespace '${namespace.name}' collides with the built-in Common namespace — rename it before migrating.`,
+			);
+		}
 		const scopeId = mapping.byNamespace[namespace.name];
 		if (scopeId === undefined) {
 			errors.push(`Legacy namespace '${namespace.name}' has no scope mapping.`);

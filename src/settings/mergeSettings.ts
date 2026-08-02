@@ -10,7 +10,7 @@
  * как бесконтрольные значения.
  */
 import { type ZodType, z } from "../schema/zod";
-import { readLegacyNamespaceSettings } from "../core/scope/namespaceMigration";
+import { legacyInboxCandidates } from "../core/scope/namespaceMigration";
 import { SETTINGS_FORMAT_VERSION, type GtdFlowSettings } from "./Settings";
 
 type JsonObject = Record<string, unknown>;
@@ -138,10 +138,50 @@ export const PersistedSettingsSchema = z
 	.partial()
 	.passthrough();
 
+/**
+ * Сборщик диагностики. Миграционные сообщения помечаются отдельно: штатный
+ * переход формата (v0/v1 → текущий) НЕ теряет ни одного значения, тогда как
+ * остальные диагностики означают откат испорченного поля к дефолту. Различие
+ * нужно fail-closed потребителям (MCP), которые обязаны падать на втором и не
+ * имеют права падать на первом.
+ */
+class SettingsDiagnostics {
+	readonly all: string[] = [];
+	readonly migrations: string[] = [];
+
+	/** Поле не прошло проверку и откатилось (recovery). */
+	push(message: string): void {
+		this.all.push(message);
+	}
+
+	/** Формат обновлён штатной миграцией; данные пользователя сохранены. */
+	migration(message: string): void {
+		this.all.push(message);
+		this.migrations.push(message);
+	}
+}
+
 export interface SettingsMergeResult {
 	settings: GtdFlowSettings;
 	/** Только имена полей/версии, никогда приватные значения (например ICS URL). */
 	diagnostics: string[];
+	/** Подмножество diagnostics, порождённое штатной миграцией формата. */
+	migrations: string[];
+	/**
+	 * Путь единого файла входящих, ВЫВЕДЕННЫЙ миграцией v1 → v2 (null — вывода не
+	 * было). Плагин показывает его пользователю однократно и сохраняет настройки,
+	 * чтобы решение стало durable и не пересчитывалось на каждой загрузке.
+	 */
+	migratedInboxFile: string | null;
+}
+
+export interface SettingsMergeOptions {
+	/**
+	 * Существует ли файл в хранилище. Плагин передаёт проверку по vault, чтобы
+	 * миграция v1 → v2 встала на РЕАЛЬНЫЙ файл захвата; чистые потребители
+	 * (MCP, виджет-бандл, тесты) не передают ничего и получают первый кандидат.
+	 */
+	legacyInboxExists?: (path: string) => boolean;
 }
 
 /**
@@ -156,16 +196,23 @@ export function mergeSettings(defaults: GtdFlowSettings, loaded: unknown): GtdFl
 export function mergeSettingsWithDiagnostics(
 	defaults: GtdFlowSettings,
 	loaded: unknown,
+	options?: SettingsMergeOptions,
 ): SettingsMergeResult {
-	const diagnostics: string[] = [];
+	const diagnostics = new SettingsDiagnostics();
 	const raw = asObject(loaded);
 	if (raw === null) {
 		if (loaded !== null && loaded !== undefined)
 			diagnostics.push("root: expected object; defaults used");
-		return { settings: freshDefaults(defaults), diagnostics };
+		return {
+			settings: freshDefaults(defaults),
+			diagnostics: diagnostics.all,
+			migrations: diagnostics.migrations,
+			migratedInboxFile: null,
+		};
 	}
 
-	const data = migrateToCurrent(raw, diagnostics);
+	const migration = { inboxFile: null as string | null };
+	const data = migrateToCurrent(raw, diagnostics, options, migration);
 	const settings = freshDefaults(defaults);
 	// Неизвестные top-level поля остаются на месте ради forward compatibility,
 	// однако опасные prototype-ключи никогда не копируются в живой объект.
@@ -256,13 +303,28 @@ export function mergeSettingsWithDiagnostics(
 		"recurring",
 		diagnostics,
 	);
-	return { settings, diagnostics };
+	// Выведенный путь актуален только если поле не откатилось при валидации.
+	const migratedInboxFile =
+		migration.inboxFile !== null && settings.inboxFile === migration.inboxFile
+			? migration.inboxFile
+			: null;
+	return {
+		settings,
+		diagnostics: diagnostics.all,
+		migrations: diagnostics.migrations,
+		migratedInboxFile,
+	};
 }
 
 /** Версия 0 — все текущие legacy data.json без settingsVersion. Пока миграция
  * структурно нейтральна; явная функция предотвращает возврат к неявным casts,
  * когда формат вырастет до v2. Новые сохранения получают v1. */
-function migrateToCurrent(raw: JsonObject, diagnostics: string[]): JsonObject {
+function migrateToCurrent(
+	raw: JsonObject,
+	diagnostics: SettingsDiagnostics,
+	options: SettingsMergeOptions | undefined,
+	migration: { inboxFile: string | null },
+): JsonObject {
 	const versionResult = z
 		.number()
 		.finite()
@@ -277,29 +339,35 @@ function migrateToCurrent(raw: JsonObject, diagnostics: string[]): JsonObject {
 		);
 	}
 	if (version < SETTINGS_FORMAT_VERSION)
-		diagnostics.push(`settings: migrated v${version} → v${SETTINGS_FORMAT_VERSION}`);
+		diagnostics.migration(`settings: migrated v${version} → v${SETTINGS_FORMAT_VERSION}`);
 	const migrated: JsonObject = { ...raw, settingsVersion: SETTINGS_FORMAT_VERSION };
 	if (version < 2 && migrated["inboxFile"] === undefined) {
-		const legacy = readLegacyNamespaceSettings(raw);
-		const legacySpawn = asObject(raw["recurring"])?.["spawnTarget"];
-		if (typeof legacySpawn === "string" && legacySpawn.trim() !== "") {
-			migrated["inboxFile"] = legacySpawn;
-		} else if (legacy.commonRoot !== null) {
-			const root = legacy.commonRoot.replace(/\/+$/u, "");
-			migrated["inboxFile"] = root === "" ? "Inbox.md" : `${root}/Inbox.md`;
+		// Единый inboxFile обязан встать на файл, где УЖЕ лежат захваты (см.
+		// legacyInboxCandidates): spawnTarget отвечал только за копии регулярных,
+		// и слепой выбор его фабричного "GTD/Inbox.md" разводил вход на два файла.
+		// Плагин передаёт проверку существования и берёт реальный файл; чистый
+		// вызывающий берёт первый кандидат — конвенционные <commonRoot>/Входящие.md.
+		const candidates = legacyInboxCandidates(raw);
+		const exists = options?.legacyInboxExists;
+		const chosen =
+			(exists === undefined ? undefined : candidates.find((path) => exists(path))) ??
+			candidates[0];
+		if (chosen !== undefined) {
+			migrated["inboxFile"] = chosen;
+			migration.inboxFile = chosen;
 		}
-		diagnostics.push("namespace settings retained only for migration planning");
+		diagnostics.migration("namespace settings retained only for migration planning");
 	}
 	const ai = asObject(migrated["ai"]);
 	if (ai !== null) {
 		const decidedAi = { ...ai };
 		if (decidedAi["privacyPolicy"] === "unconfigured") {
 			decidedAi["privacyPolicy"] = "account-policy";
-			diagnostics.push("ai.privacyPolicy: migrated to account-policy");
+			diagnostics.migration("ai.privacyPolicy: migrated to account-policy");
 		}
 		if (decidedAi["credentialStorage"] === "unconfigured") {
 			decidedAi["credentialStorage"] = "memory-only";
-			diagnostics.push("ai.credentialStorage: migrated to memory-only");
+			diagnostics.migration("ai.credentialStorage: migrated to memory-only");
 		}
 		migrated["ai"] = decidedAi;
 	}
@@ -309,7 +377,7 @@ function migrateToCurrent(raw: JsonObject, diagnostics: string[]): JsonObject {
 		migrated["durationLongStyle"] === "days-hours"
 	) {
 		migrated["durationLongStyle"] = "whole-days";
-		diagnostics.push("durationLongStyle: migrated to whole-days");
+		diagnostics.migration("durationLongStyle: migrated to whole-days");
 	}
 	return migrated;
 }
@@ -321,7 +389,7 @@ function mergeNested(
 	raw: unknown,
 	shape: Record<string, ZodType>,
 	field: string,
-	diagnostics: string[],
+	diagnostics: SettingsDiagnostics,
 ): void {
 	if (raw === undefined) return;
 	const record = asObject(raw);
@@ -347,7 +415,7 @@ function assignIfValid<T extends keyof GtdFlowSettings>(
 	field: T,
 	schema: ZodType,
 	raw: JsonObject,
-	diagnostics: string[],
+	diagnostics: SettingsDiagnostics,
 ): void {
 	if (!(field in raw)) return;
 	const parsed = schema.safeParse(raw[field]);

@@ -420,6 +420,36 @@ describe("AiPluginServices chat metadata provenance", () => {
 	});
 });
 
+describe("AiPluginServices ownership reconcile gating", () => {
+	function reconcileServices(enabled: boolean) {
+		const reconcileOwnership = vi.fn().mockResolvedValue(undefined);
+		const services = Object.create(AiPluginServices.prototype) as AiPluginServices;
+		Object.defineProperties(services, {
+			options: { value: { enabled: () => enabled } },
+			metadataServices: { value: { reconcileOwnership } },
+		});
+		return { services, reconcileOwnership };
+	}
+
+	// §сверка-по-требованию: при выключенном AI проход по всем задачам создавал
+	// по файлу на каждое непустое поле в `.gtd-flow/ai/feedback` при КАЖДОМ старте.
+	it("does not touch feedback history while AI is disabled", async () => {
+		const { services, reconcileOwnership } = reconcileServices(false);
+
+		await expect(services.reconcileOwnership()).resolves.toBeUndefined();
+
+		expect(reconcileOwnership).not.toHaveBeenCalled();
+	});
+
+	it("still reconciles once AI is enabled", async () => {
+		const { services, reconcileOwnership } = reconcileServices(true);
+
+		await services.reconcileOwnership();
+
+		expect(reconcileOwnership).toHaveBeenCalledOnce();
+	});
+});
+
 function inspectionServices(history: {
 	readAll: ReturnType<typeof vi.fn>;
 	provenanceForTasks: ReturnType<typeof vi.fn>;

@@ -722,10 +722,18 @@ export class RecurrenceService implements RecurrencePort {
 		if (index.resolveDep(childId).length > 0) return { ok: false, reason: "already-spawned" };
 
 		// синтетический план с DAILY_RULE и курсором today даёт ровно одно
-		// сегодняшнее вхождение — переиспользуем трансформацию шаблон→копия ядра
+		// сегодняшнее вхождение — переиспользуем трансформацию шаблон→копия ядра.
+		// DAILY_RULE календарное (from-completion-ветка сегодняшнюю копию не даст:
+		// она ждёт выполнения предыдущей), поэтому признак «копия недатированная»
+		// берём у НАСТОЯЩЕГО правила шаблона и передаём отдельным флагом — иначе
+		// ручная копия мигранта Tasks родилась бы с замороженной 📅 шаблона и
+		// никогда не совпала бы с canonicalLine (вечно «изменённая», без dedup).
+		const realRule = tpl.recurrence === null ? null : parseRule(tpl.recurrence);
+		const datelessCopy =
+			realRule !== null && !isParseError(realRule) && realRule.fromCompletion === true;
 		const synthetic: Task = { ...tpl, statusChar: " ", nextSpawn: today };
 		const plan = planSpawns({
-			templates: [{ task: synthetic, rule: DAILY_RULE }],
+			templates: [{ task: synthetic, rule: DAILY_RULE, datelessCopy }],
 			today,
 			catchUp: "latest",
 			catchUpCap: 1,

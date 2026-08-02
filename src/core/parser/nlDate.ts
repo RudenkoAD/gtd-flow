@@ -17,7 +17,9 @@
  * Грамматика (регистронезависимо, по целым словам) — см. README «Быстрый ввод
  * понимает даты». КОНСЕРВАТИВНОСТЬ: выражение распознаётся только в НАЧАЛЕ или
  * КОНЦЕ текста (в середине «спланировать завтра поездку» не трогаем); голое число
- * («15») датой не считается — нужен разделитель («15.08») или месяц («15 августа»);
+ * («15») датой не считается — нужен разделитель («15.08») или месяц («15 августа»),
+ * а у формы без года месяц пишется двумя цифрами, иначе «обновить до 1.2» и
+ * «купить сахара 2.5» съедали бы число как дату (см. matchDmy);
  * если после вырезания title пуст — возвращаем null (не съедаем весь текст).
  */
 import type { IsoDate } from "../model/Task";
@@ -155,7 +157,7 @@ function looksDateish(word: string): boolean {
 	if (PERIODS.has(word) || DAY_UNITS.has(word) || WEEK_UNITS.has(word)) return true;
 	if (word === "через") return true;
 	if (NEXT_MOD.has(word)) return true;
-	return DMY_RE.test(word); // 15.08 / 15.08.2026
+	return matchDmy(word) !== null; // 15.08 / 15.08.2026
 }
 
 // ---------------------------------------------------------------------------
@@ -163,6 +165,25 @@ function looksDateish(word: string): boolean {
 // ---------------------------------------------------------------------------
 
 const DMY_RE = /^(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?$/;
+
+/**
+ * «DD.MM[.ГГГГ]» с одной оговоркой: в форме БЕЗ года месяц обязан быть записан
+ * двумя цифрами («15.08», «5.08»). Иначе любое «N.M» на краю текста — десятичная
+ * дробь («купить сахара 2.5»), номер версии («обновить до 1.2»), пункт главы
+ * («прочитать главу 3.4»), сумма счёта («оплатить счёт 12.5») — считалось датой,
+ * и число ВЫРЕЗАЛОСЬ из названия: тихая потеря набранного текста, да ещё и с
+ * уездом даты в следующий год (nearestFutureDate). Год двусмысленность снимает
+ * сам («1.2.2026»), поэтому полной формы ограничение не касается. Тот же дух, что
+ * у правила «голое число без разделителя (15) датой не считается».
+ */
+function matchDmy(word: string): { day: number; month: number; year: number | null } | null {
+	const m = DMY_RE.exec(word);
+	if (m === null) return null;
+	const year = m[3] === undefined ? null : Number(m[3]);
+	if (year === null && m[2]!.length < 2) return null;
+	return { day: Number(m[1]), month: Number(m[2]), year };
+}
+
 const HHMM_RE = /^(\d{1,2}):(\d{2})$/;
 const NUM_RE = /^\d{1,4}$/;
 /** Обёрточная пунктуация, снимаемая по краям токена ТОЛЬКО для сопоставления. */
@@ -373,13 +394,11 @@ function matchDate(toks: Tok[], i: number, today: IsoDate): DateMatch | null {
 		return null;
 	}
 
-	// «DD.MM[.YYYY]» (15.08 / 15.08.2026)
-	const dmy = DMY_RE.exec(w0);
+	// «DD.MM[.YYYY]» (15.08 / 15.08.2026); «1.2»/«3.4»/«12.5» — не дата (см. matchDmy)
+	const dmy = matchDmy(w0);
 	if (dmy !== null) {
-		const day = Number(dmy[1]);
-		const month = Number(dmy[2]);
-		if (dmy[3] !== undefined) {
-			const year = Number(dmy[3]);
+		const { day, month, year } = dmy;
+		if (year !== null) {
 			if (month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth(year, month)) {
 				return { end: i + 1, date: fmtIso(year, month, day) };
 			}

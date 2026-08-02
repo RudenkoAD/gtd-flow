@@ -41,7 +41,11 @@ export interface IcsParseBudget {
 	 * caps parser object allocation even when the feed contains few VEVENTs.
 	 */
 	maxPhysicalLines: number;
-	/** Maximum unfolded UTF-16 code units in a single content line. */
+	/**
+	 * Maximum unfolded UTF-16 code units in a single content line.  This is the
+	 * meaningful per-property cap: a DESCRIPTION longer than this is refused,
+	 * everything shorter must survive folding (see the two limits below).
+	 */
 	maxUnfoldedLineChars: number;
 	/** Maximum folded physical lines that may continue one content line. */
 	maxFoldedLinesPerContentLine: number;
@@ -90,8 +94,15 @@ export const DEFAULT_ICS_PARSE_BUDGET: Readonly<IcsParseBudget> = {
 	maxResponseBytes: 5 * 1024 * 1024,
 	maxPhysicalLines: 60_000,
 	maxUnfoldedLineChars: 64 * 1024,
-	maxFoldedLinesPerContentLine: 128,
-	maxUnfoldingWorkChars: 512 * 1024,
+	// Свёрнутые строки и работа развёртки должны пропускать ЛЮБОЕ свойство длиной
+	// до maxUnfoldedLineChars — иначе они, а не заявленный потолок строки, молча
+	// становятся настоящим лимитом. При фолдинге по 73–75 символов 64 КБ дают ~900
+	// продолжений и ~29 млн скопированных символов по квадратичной оценке ниже.
+	// Прежние 128/512 КБ обрезали ОДНО свойство на ~8.7 КБ: приглашение Outlook/Teams
+	// с HTML-подвалом в DESCRIPTION (зеркалом не используемым!) навсегда роняло всю
+	// подписку — пользователь видел только сырую английскую ошибку в настройках.
+	maxFoldedLinesPerContentLine: 1_024,
+	maxUnfoldingWorkChars: 32 * 1024 * 1024,
 	maxParametersPerContentLine: 64,
 	maxParameterValueDelimitersPerContentLine: 256,
 	maxParameterWorkChars: 512 * 1024,
@@ -121,6 +132,21 @@ export class IcsBudgetError extends Error {
 	constructor(message: string) {
 		super(message);
 		this.name = "IcsBudgetError";
+	}
+}
+
+/**
+ * Превышен бюджет ОДНОЙ серии (шаги итератора / строки одной серии), а не ленты.
+ * Такое роняло весь фид: одно экзотическое событие (например floating-серия
+ * `FREQ=HOURLY` из 2020 года) уносило с собой и обычные встречи, и пользователь
+ * видел «календарь перестал синхронизироваться». Серию пропускаем, остальные
+ * разбираем; фатальны только общефидовые лимиты (maxTotalRows, maxElapsedMs,
+ * размер, синтаксис).
+ */
+export class IcsSeriesBudgetError extends IcsBudgetError {
+	constructor(message: string) {
+		super(message);
+		this.name = "IcsSeriesBudgetError";
 	}
 }
 
@@ -438,7 +464,11 @@ function preflightIcs(
 					);
 				}
 				// ical.js does `line += physicalSlice` for every continuation.  The
-				// accumulated-prefix sum is a conservative bound on that copy work.
+				// accumulated-prefix sum is a conservative bound on that copy work:
+				// it grows as L²/(2×foldWidth) in the content-line length L, while a
+				// real engine concatenates ropes.  Keep the budget calibrated against
+				// maxUnfoldedLineChars, not against a "typical" line — the per-line
+				// character cap is the limit users can reason about.
 				unfoldingWork += logicalLength;
 				if (unfoldingWork > budget.maxUnfoldingWorkChars) {
 					throw new IcsBudgetError(
@@ -472,7 +502,7 @@ function assertElapsed(limits: ExpansionLimits): void {
 function reserveRow(limits: ExpansionLimits, seriesRows: number): void {
 	assertElapsed(limits);
 	if (seriesRows >= limits.budget.maxSeriesRows) {
-		throw new IcsBudgetError(
+		throw new IcsSeriesBudgetError(
 			`ICS series exceeds the ${limits.budget.maxSeriesRows}-row output budget`,
 		);
 	}
@@ -629,6 +659,16 @@ function emitOccurrence(
 function firstString(comp: InstanceType<typeof ICAL.Component>, name: string): string {
 	const v = comp.getFirstPropertyValue(name);
 	return typeof v === "string" ? v : v == null ? "" : String(v);
+}
+
+/**
+ * Компонент отменён (`STATUS:CANCELLED`). Именно так Google Calendar в «секретном
+ * адресе iCal» отдаёт удалённую встречу и отменённое вхождение серии (отдельным
+ * VEVENT с RECURRENCE-ID). Без проверки отменённая планёрка оставалась в
+ * календаре, агенде и виджетах бессрочно — зеркало ведь только дополняется.
+ */
+function isCancelled(comp: InstanceType<typeof ICAL.Component>): boolean {
+	return firstString(comp, "status").trim().toUpperCase() === "CANCELLED";
 }
 
 /** Значение getter'а ICAL.Event (summary/location) → строка, "" при отсутствии. */
@@ -835,7 +875,7 @@ function expandRecurring(
 		assertElapsed(limits);
 		steps++;
 		if (steps > limits.budget.maxIteratorStepsPerSeries) {
-			throw new IcsBudgetError(
+			throw new IcsSeriesBudgetError(
 				`ICS series exceeds the ${limits.budget.maxIteratorStepsPerSeries}-step recurrence budget`,
 			);
 		}
@@ -847,6 +887,9 @@ function expandRecurring(
 		} catch {
 			continue; // битое переопределение — пропускаем вхождение, серию не роняем
 		}
+		// Отменённое ВХОЖДЕНИЕ приходит переопределением (RECURRENCE-ID +
+		// STATUS:CANCELLED) — его компонент лежит в det.item.
+		if (isCancelled(det.item.component)) continue;
 		// Output cap is spent only by rows in the mirror window.  EXDATE and
 		// RECURRENCE-ID are still resolved through ICAL.Event itself.
 		emitted += emitOccurrence(
@@ -982,7 +1025,14 @@ export function parseIcs(
 					}
 				}
 			}
+			// Метка выхода для отката: строки ЭТОЙ серии, добавленные до срыва её
+			// собственного бюджета, из зеркала снимаются — оборванная на середине
+			// серия выглядела бы как «встречи вдруг закончились» и была бы хуже
+			// честного пропуска.
+			const rowsBeforeSeries = out.length;
 			try {
+				// Отменённый МАСТЕР гасит серию целиком (у одиночного — своё событие).
+				if (isCancelled(masterComp)) continue;
 				if (ev.isRecurring()) {
 					expandRecurring(
 						ev,
@@ -994,7 +1044,7 @@ export function parseIcs(
 						out,
 						limits,
 					);
-				} else {
+				} else if (!isCancelled(masterComp)) {
 					emitOccurrence(
 						ev.startDate,
 						ev.endDate,
@@ -1010,6 +1060,14 @@ export function parseIcs(
 					);
 				}
 			} catch (e) {
+				// Бюджет ОДНОЙ серии — не повод терять весь календарь: серию
+				// пропускаем целиком (с откатом её уже добавленных строк).
+				// Общефидовые лимиты по-прежнему фатальны — частичное зеркало
+				// хуже честной ошибки.
+				if (e instanceof IcsSeriesBudgetError) {
+					out.length = rowsBeforeSeries;
+					continue;
+				}
 				if (e instanceof IcsBudgetError) throw e;
 				/* одна серия/событие упала — остальные разбираем */
 			}

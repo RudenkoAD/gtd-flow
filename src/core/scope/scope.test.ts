@@ -24,10 +24,28 @@ describe("scope IDs", () => {
 
 	it("creates readable collision-free candidates", () => {
 		expect(scopeIdCandidate("Deep Work")).toBe("deep-work");
-		expect(scopeIdCandidate("Жизнь")).toBe("scope");
 		expect(uniqueScopeId("Deep Work", new Set(["deep-work", "deep-work-2"]))).toBe(
 			"deep-work-3",
 		);
+	});
+
+	// Русскоязычные имена пространств — основной кейс проекта, а id неизменяем
+	// после создания: без транслитерации пользователь получал в тексте задач
+	// нечитаемые «🧭 scope-2»/«🧭 scope-3» и уже не мог это исправить.
+	it("транслитерирует кириллицу в читаемый id, а не в «scope-N»", () => {
+		expect(scopeIdCandidate("Жизнь")).toBe("zhizn");
+		expect(scopeIdCandidate("Работа")).toBe("rabota");
+		expect(scopeIdCandidate("Личное")).toBe("lichnoe");
+		expect(scopeIdCandidate("Дом")).toBe("dom");
+		expect(scopeIdCandidate("Здоровье")).toBe("zdorove");
+		expect(scopeIdCandidate("Работа и учёба")).toBe("rabota-i-ucheba");
+		const occupied = new Set(["rabota"]);
+		expect(uniqueScopeId("Работа", occupied)).toBe("rabota-2");
+	});
+
+	it("имя без единой распознаваемой буквы всё ещё даёт запасной «scope»", () => {
+		expect(scopeIdCandidate("!!!")).toBe("scope");
+		expect(scopeIdCandidate("字")).toBe("scope");
 	});
 });
 

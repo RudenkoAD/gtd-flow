@@ -1,8 +1,8 @@
 import { Modal, Notice, type App } from "obsidian";
-import { INTENSITY_ANCHORS } from "../../core/estimates/format";
 import type { EstimatePatch } from "../../core/estimates/provenance";
 import type { Task } from "../../core/model/Task";
 import { activeScopes, type ScopeCatalog } from "../../core/scope/scope";
+import { INTENSITY_LABELS_RU } from "./taskMetadataDisplay";
 import {
 	metadataDraftFromTask,
 	metadataPatchFromDraft,
@@ -23,7 +23,7 @@ export class TaskMetadataModal extends Modal {
 	}
 
 	override onOpen(): void {
-		this.titleEl.setText("Duration, intensity, and scope");
+		this.titleEl.setText("Длительность, нагрузка и scope");
 		const draft = metadataDraftFromTask(this.task);
 		const form = this.contentEl.createEl("form", { cls: "gtd-metadata-editor" });
 		form.style.display = "grid";
@@ -32,27 +32,27 @@ export class TaskMetadataModal extends Modal {
 		const duration = this.addNumberField(
 			form,
 			"duration",
-			"Duration (minutes)",
+			"Длительность (минуты)",
 			draft.durationMinutes,
 			5,
-			"Five-minute increments below 24h; whole-day increments from 24h. Blank clears it.",
+			"Шаг 5 минут до 24 ч, дальше — целыми днями. Пустое поле очищает значение.",
 		);
 		const cognitive = this.addIntensityField(
 			form,
 			"cognitive",
-			"Cognitive intensity",
+			"Когнитивная нагрузка",
 			draft.cognitiveIntensity,
 		);
 		const emotional = this.addIntensityField(
 			form,
 			"emotional",
-			"Emotional intensity",
+			"Эмоциональная нагрузка",
 			draft.emotionalIntensity,
 		);
 		const physical = this.addIntensityField(
 			form,
 			"physical",
-			"Physical intensity",
+			"Физическая нагрузка",
 			draft.physicalIntensity,
 		);
 		const scope = this.addScopeField(form, draft);
@@ -78,12 +78,12 @@ export class TaskMetadataModal extends Modal {
 		footer.style.justifyContent = "flex-end";
 		footer.style.gap = "8px";
 		const cancel = footer.createEl("button", {
-			text: "Cancel",
+			text: "Отмена",
 			attr: { type: "button" },
 		});
 		cancel.addEventListener("click", () => this.close());
 		footer.createEl("button", {
-			text: "Save",
+			text: "Сохранить",
 			cls: "mod-cta",
 			attr: { type: "submit" },
 		});
@@ -132,10 +132,10 @@ export class TaskMetadataModal extends Modal {
 		const id = `gtd-metadata-${field}`;
 		row.createEl("label", { text: label, attr: { for: id } });
 		const select = row.createEl("select", { attr: { id } });
-		select.createEl("option", { text: "Not set (clear)", value: "" });
+		select.createEl("option", { text: "Не задано (очистить)", value: "" });
 		for (let level = 0; level <= 5; level++) {
 			select.createEl("option", {
-				text: `${level} — ${INTENSITY_ANCHORS[field][level as 0 | 1 | 2 | 3 | 4 | 5]}`,
+				text: `${level} — ${INTENSITY_LABELS_RU[field][level as 0 | 1 | 2 | 3 | 4 | 5]}`,
 				value: String(level),
 			});
 		}
@@ -148,7 +148,7 @@ export class TaskMetadataModal extends Modal {
 		const id = "gtd-metadata-scope";
 		row.createEl("label", { text: "Scope", attr: { for: id } });
 		const select = row.createEl("select", { attr: { id } });
-		select.createEl("option", { text: "No scope (clear)", value: "" });
+		select.createEl("option", { text: "Без scope (очистить)", value: "" });
 		for (const scope of activeScopes(this.catalog)) {
 			select.createEl("option", { text: scope.name, value: scope.id });
 		}
@@ -158,7 +158,7 @@ export class TaskMetadataModal extends Modal {
 			!activeScopes(this.catalog).some((scope) => scope.id === draft.scopeId)
 		) {
 			select.createEl("option", {
-				text: `${draft.scopeId} (unavailable)`,
+				text: `${draft.scopeId} (недоступно)`,
 				value: draft.scopeId,
 			});
 		}

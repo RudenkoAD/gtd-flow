@@ -9,6 +9,32 @@ describe("widget unified settings", () => {
 		expect(settings.inboxFile).toBe("Capture.md");
 	});
 
+	// Контракт с Android: если data.json ещё не мигрирован (плагин 0.13 не
+	// запускался), виджет обязан вывести ТОТ ЖЕ путь, что выведет плагин. Иначе
+	// захват с телефона уходит в файл, который QueryEngine.isInInbox входящими
+	// уже не считает, и задача пропадает молча.
+	it("выводит единый файл входящих из legacy-настроек пространств", () => {
+		const { settings } = loadWidgetSettings(
+			JSON.stringify({
+				commonRoot: "GTD",
+				namespaces: [{ name: "Работа", root: "Work" }],
+				recurring: { spawnTarget: "GTD/Inbox.md" },
+			}),
+		);
+		expect(settings.inboxFile).toBe("GTD/Входящие.md");
+	});
+
+	it("явный inboxFile побеждает legacy-вывод, мусорный путь откатывается к дефолту", () => {
+		expect(
+			loadWidgetSettings(JSON.stringify({ inboxFile: "Мои/Входящие.md", commonRoot: "GTD" }))
+				.settings.inboxFile,
+		).toBe("Мои/Входящие.md");
+		expect(loadWidgetSettings(JSON.stringify({ inboxFile: "   " })).settings.inboxFile).toBe(
+			"GTD/Inbox.md",
+		);
+		expect(loadWidgetSettings(null).settings.inboxFile).toBe("GTD/Inbox.md");
+	});
+
 	it("migrates legacy duration presentation without consuming AI secrets", () => {
 		const { settings } = loadWidgetSettings(
 			JSON.stringify({

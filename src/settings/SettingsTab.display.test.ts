@@ -4,6 +4,11 @@ const settingProbe = vi.hoisted(() => ({
 	thenCalls: 0,
 	descriptions: [] as string[],
 	names: [] as string[],
+	textControls: [] as Array<{
+		name: string;
+		setValue: (value: string) => void;
+		listeners: Map<string, (event: { key?: string; preventDefault?: () => void }) => void>;
+	}>,
 	textChanges: [] as Array<{ name: string; handler: (value: string) => unknown }>,
 }));
 
@@ -93,15 +98,31 @@ vi.mock("obsidian", () => {
 	}
 
 	class FakeText {
-		readonly inputEl = {
-			addEventListener: vi.fn(),
-			blur: vi.fn(),
-			style: {},
-			type: "",
-		} as unknown as HTMLInputElement;
+		readonly inputEl: HTMLInputElement;
 		private value = "";
 
-		constructor(private readonly settingName: string) {}
+		constructor(private readonly settingName: string) {
+			const listeners = new Map<
+				string,
+				(event: { key?: string; preventDefault?: () => void }) => void
+			>();
+			this.inputEl = {
+				addEventListener: vi.fn((event: string, handler: (event: never) => void) => {
+					listeners.set(
+						event,
+						handler as (event: { key?: string; preventDefault?: () => void }) => void,
+					);
+				}),
+				blur: vi.fn(() => listeners.get("blur")?.({})),
+				style: {},
+				type: "",
+			} as unknown as HTMLInputElement;
+			settingProbe.textControls.push({
+				name: settingName,
+				setValue: (value) => this.setValue(value),
+				listeners,
+			});
+		}
 
 		setPlaceholder(_placeholder: string): this {
 			return this;
@@ -153,6 +174,7 @@ describe("GtdSettingsTab display", () => {
 			settingProbe.thenCalls = 0;
 			settingProbe.descriptions = [];
 			settingProbe.names = [];
+			settingProbe.textControls = [];
 			settingProbe.textChanges = [];
 			const plugin = {
 				settings: createDefaultSettings(),
@@ -176,6 +198,7 @@ describe("GtdSettingsTab display", () => {
 
 	it("shows only Android-MVP settings when desktop features are disabled", () => {
 		settingProbe.names = [];
+		settingProbe.textControls = [];
 		settingProbe.textChanges = [];
 		const plugin = {
 			settings: createDefaultSettings(),
@@ -190,7 +213,7 @@ describe("GtdSettingsTab display", () => {
 		tab.display();
 
 		expect(settingProbe.names).toContain("Входящие");
-		expect(settingProbe.names).toContain("Scopes");
+		expect(settingProbe.names).toContain("Scope");
 		expect(settingProbe.names).toContain("Календарь");
 		expect(settingProbe.names).toContain("Регулярные");
 		expect(settingProbe.names).not.toContain("AI и оценки");
@@ -200,6 +223,7 @@ describe("GtdSettingsTab display", () => {
 
 	it("updates the inbox path on Android without touching desktop calendar sync", async () => {
 		settingProbe.names = [];
+		settingProbe.textControls = [];
 		settingProbe.textChanges = [];
 		const settings = createDefaultSettings();
 		const saveSettings = vi.fn(async () => undefined);
@@ -218,12 +242,13 @@ describe("GtdSettingsTab display", () => {
 			desktopFeatures: false,
 		});
 		tab.display();
-		const inboxChange = settingProbe.textChanges.find(
-			(change) => change.name === "Файл входящих",
-		)?.handler;
+		const inboxText = settingProbe.textControls.find(
+			(control) => control.name === "Файл входящих",
+		);
 
-		expect(inboxChange).toBeTypeOf("function");
-		expect(() => inboxChange?.("  GTD/Mobile Inbox.md  ")).not.toThrow();
+		expect(inboxText).toBeDefined();
+		inboxText?.setValue("  GTD/Mobile Inbox.md  ");
+		expect(() => inboxText?.listeners.get("blur")?.({})).not.toThrow();
 		await Promise.resolve();
 		await Promise.resolve();
 

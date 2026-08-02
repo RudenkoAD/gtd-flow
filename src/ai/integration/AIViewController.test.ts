@@ -287,6 +287,73 @@ describe("AIViewController", () => {
 		});
 	});
 
+	it("выходит из «офлайна» на ближайшем обновлении вида, без повторного OAuth", async () => {
+		// Пропавший на десять секунд Wi-Fi залипал в connection === "offline":
+		// отправка заблокирована (send требует "connected"), а единственная кнопка
+		// в шапке — «Подключить», то есть полный PKCE-флоу с внешним браузером.
+		let online = false;
+		const { controller } = fixture({
+			provider: new FailingStreamProvider(
+				new AIError({
+					code: "network",
+					retryable: true,
+					retryAfterMs: null,
+					statusCode: null,
+				}),
+			),
+			connection: {
+				isConnected: async () => online,
+				connect: async () => undefined,
+				disconnect: async () => undefined,
+			},
+		});
+		await controller.createChat();
+		const sessionId = (await controller.getSnapshot()).activeSessionId!;
+		online = true;
+		await controller.sendMessage(sessionId, "Try the provider");
+
+		const seen: string[] = [];
+		const unsubscribe = controller.subscribe((event) => {
+			if (event.type === "snapshot") seen.push(event.snapshot.connection);
+		});
+		await controller.refresh();
+		unsubscribe();
+
+		expect(seen).toEqual(["connected"]);
+	});
+
+	it("не выдаёт «connected», если связи действительно нет", async () => {
+		let online = true;
+		const { controller } = fixture({
+			provider: new FailingStreamProvider(
+				new AIError({
+					code: "network",
+					retryable: true,
+					retryAfterMs: null,
+					statusCode: null,
+				}),
+			),
+			connection: {
+				isConnected: async () => online,
+				connect: async () => undefined,
+				disconnect: async () => undefined,
+			},
+		});
+		await controller.createChat();
+		const sessionId = (await controller.getSnapshot()).activeSessionId!;
+		await controller.sendMessage(sessionId, "Try the provider");
+		online = false;
+
+		const seen: string[] = [];
+		const unsubscribe = controller.subscribe((event) => {
+			if (event.type === "snapshot") seen.push(event.snapshot.connection);
+		});
+		await controller.refresh();
+		unsubscribe();
+
+		expect(seen).toEqual(["disconnected"]);
+	});
+
 	it("preserves a fail-closed configuration error at the UI boundary", async () => {
 		const { controller } = fixture({
 			connection: {

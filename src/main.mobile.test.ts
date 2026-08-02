@@ -252,6 +252,7 @@ describe("GtdFlowPlugin Android composition", () => {
 
 		const promotePass = vi.spyOn(plugin.promote, "runPass");
 		const recurrencePass = vi.spyOn(plugin.recurrence, "runPass");
+		const reconcileOwnership = vi.spyOn(plugin.metadataServices, "reconcileOwnership");
 		const layoutReady = host.getLayoutReady();
 		expect(layoutReady).toBeTypeOf("function");
 		layoutReady?.();
@@ -259,6 +260,7 @@ describe("GtdFlowPlugin Android composition", () => {
 
 		expect(recurrencePass).toHaveBeenCalledOnce();
 		expect(promotePass).not.toHaveBeenCalled();
+		expect(reconcileOwnership).not.toHaveBeenCalled();
 		expect(compositionProbe.desktopModuleLoads).toEqual([]);
 		expect(compositionProbe.onboardingConstructions).toBe(0);
 		expect(compositionProbe.intervals).toHaveLength(1);

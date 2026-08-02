@@ -30,10 +30,83 @@ export interface OpenRouterProviderOptions {
 	 * silently relaxing it.
 	 */
 	privacyPolicy: ProviderPrivacyPolicy | (() => ProviderPrivacyPolicy);
+	/** Общий бюджет одного запроса (до полного разбора ответа). */
+	requestTimeoutMs?: number;
+	/** Максимальная пауза МЕЖДУ SSE-чанками уже начавшегося потока. */
+	streamIdleTimeoutMs?: number;
 }
 
 const FREE_ROUTE = "openrouter/free";
 const DEFAULT_BASE_URL = "https://openrouter.ai/api/v1/chat/completions";
+const DEFAULT_REQUEST_TIMEOUT_MS = 120_000;
+const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 60_000;
+
+/**
+ * Жизненный цикл одного запроса: пользовательский signal + таймауты. Без них
+ * зависшее соединение (принятое, но не отвечающее, либо замерший SSE-поток)
+ * держит run в `processing`, блокирует очередь InboxProcessor и оставляет вид
+ * в «Responding…» навсегда — прервать можно было только вручную.
+ */
+class RequestScope {
+	private readonly controller = new AbortController();
+	private timer: ReturnType<typeof setTimeout> | null = null;
+	private timedOut = false;
+	private readonly forwardAbort = () => this.controller.abort();
+
+	constructor(
+		readonly userSignal: AbortSignal | undefined,
+		timeoutMs: number,
+	) {
+		if (userSignal) {
+			if (userSignal.aborted) this.controller.abort();
+			else userSignal.addEventListener("abort", this.forwardAbort, { once: true });
+		}
+		this.arm(timeoutMs);
+	}
+
+	get signal(): AbortSignal {
+		return this.controller.signal;
+	}
+
+	/** Перевзводит бюджет: на каждый пришедший чанк потока — заново. */
+	arm(ms: number): void {
+		this.disarm();
+		if (!Number.isFinite(ms) || ms <= 0) return;
+		this.timer = setTimeout(() => {
+			this.timedOut = true;
+			this.controller.abort();
+		}, ms);
+	}
+
+	/**
+	 * Истёкший таймаут — не отмена пользователем: наружу это retryable
+	 * provider-unavailable, иначе вызывающий счёл бы запрос отменённым.
+	 */
+	toError(error: unknown): AIError {
+		const mapped = asAIError(error);
+		if (mapped.code === "cancelled" && this.timedOut && !this.userSignal?.aborted) {
+			return new AIError({
+				code: "provider-unavailable",
+				retryable: true,
+				retryAfterMs: null,
+				statusCode: null,
+			});
+		}
+		return mapped;
+	}
+
+	close(): void {
+		this.disarm();
+		this.userSignal?.removeEventListener("abort", this.forwardAbort);
+	}
+
+	private disarm(): void {
+		if (this.timer !== null) {
+			clearTimeout(this.timer);
+			this.timer = null;
+		}
+	}
+}
 
 /**
  * OpenRouter adapter. All requests use the free route and a single supplied
@@ -44,27 +117,46 @@ export class OpenRouterProvider implements AIProviderPort {
 	private readonly baseUrl: string;
 	private readonly now: () => Date;
 	private readonly createMessageId: () => string;
+	private readonly requestTimeoutMs: number;
+	private readonly streamIdleTimeoutMs: number;
 
 	constructor(private readonly options: OpenRouterProviderOptions) {
-		this.fetchFn = options.fetch ?? fetch;
+		// Глобальный fetch нельзя хранить как ссылку и звать методом: в Chromium
+		// (Obsidian = Electron) WebIDL-операция делает brand-check на this, и
+		// `this.fetchFn(...)` бросает «Illegal invocation». Оборачиваем в стрелку,
+		// чтобы вызов всегда шёл от globalThis.
+		this.fetchFn = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
 		this.baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
 		this.now = options.now ?? (() => new Date());
 		this.createMessageId = options.createMessageId ?? (() => crypto.randomUUID());
+		this.requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+		this.streamIdleTimeoutMs = options.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS;
+	}
+
+	private openScope(signal?: AbortSignal): RequestScope {
+		return new RequestScope(signal, this.requestTimeoutMs);
 	}
 
 	async complete(
 		request: ProviderRequest,
 		options?: ProviderRequestOptions,
 	): Promise<ProviderCompletion> {
-		const response = await this.post(
-			this.requestBody(request, false, this.resolvePrivacyPolicy(options?.privacyPolicy)),
-			options?.signal,
-		);
-		const payload = await this.parseJson(response, options?.signal);
-		throwProviderPayloadError(payload, response.headers);
-		const parsed = OpenRouterCompletionSchema.safeParse(payload);
-		if (!parsed.success) throw invalidResponseError();
-		return this.toCompletion(parsed.data);
+		const scope = this.openScope(options?.signal);
+		try {
+			const response = await this.post(
+				this.requestBody(request, false, this.resolvePrivacyPolicy(options?.privacyPolicy)),
+				scope,
+			);
+			const payload = await this.parseJson(response, scope.signal);
+			throwProviderPayloadError(payload, response.headers);
+			const parsed = OpenRouterCompletionSchema.safeParse(payload);
+			if (!parsed.success) throw invalidResponseError();
+			return this.toCompletion(parsed.data);
+		} catch (error: unknown) {
+			throw scope.toError(error);
+		} finally {
+			scope.close();
+		}
 	}
 
 	async completeJson<T>(
@@ -82,22 +174,29 @@ export class OpenRouterProvider implements AIProviderPort {
 				},
 			},
 		};
-		const response = await this.post(body, options?.signal);
-		const payload = await this.parseJson(response, options?.signal);
-		throwProviderPayloadError(payload, response.headers);
-		const parsed = OpenRouterCompletionSchema.safeParse(payload);
-		if (!parsed.success) throw invalidResponseError();
-		const completion = this.toCompletion(parsed.data);
-		let jsonValue: unknown;
+		const scope = this.openScope(options?.signal);
 		try {
-			jsonValue = JSON.parse(completion.message.content);
-		} catch {
-			throw invalidResponseError();
-		}
-		try {
-			return { ...completion, json: request.responseSchema.parse(jsonValue) };
-		} catch {
-			throw invalidResponseError();
+			const response = await this.post(body, scope);
+			const payload = await this.parseJson(response, scope.signal);
+			throwProviderPayloadError(payload, response.headers);
+			const parsed = OpenRouterCompletionSchema.safeParse(payload);
+			if (!parsed.success) throw invalidResponseError();
+			const completion = this.toCompletion(parsed.data);
+			let jsonValue: unknown;
+			try {
+				jsonValue = JSON.parse(completion.message.content);
+			} catch {
+				throw invalidResponseError();
+			}
+			try {
+				return { ...completion, json: request.responseSchema.parse(jsonValue) };
+			} catch {
+				throw invalidResponseError();
+			}
+		} catch (error: unknown) {
+			throw scope.toError(error);
+		} finally {
+			scope.close();
 		}
 	}
 
@@ -105,21 +204,25 @@ export class OpenRouterProvider implements AIProviderPort {
 		request: ProviderRequest,
 		options?: ProviderRequestOptions,
 	): AsyncGenerator<ProviderStreamEvent> {
+		const scope = this.openScope(options?.signal);
 		try {
-			yield* this.streamInternal(request, options);
+			yield* this.streamInternal(request, options, scope);
 		} catch (error: unknown) {
-			throw asAIError(error);
+			throw scope.toError(error);
+		} finally {
+			scope.close();
 		}
 	}
 
 	private async *streamInternal(
 		request: ProviderRequest,
-		options?: ProviderRequestOptions,
+		options: ProviderRequestOptions | undefined,
+		scope: RequestScope,
 	): AsyncGenerator<ProviderStreamEvent> {
 		throwIfAborted(options?.signal);
 		const response = await this.post(
 			this.requestBody(request, true, this.resolvePrivacyPolicy(options?.privacyPolicy)),
-			options?.signal,
+			scope,
 		);
 		if (!response.body) throw invalidResponseError();
 
@@ -129,6 +232,9 @@ export class OpenRouterProvider implements AIProviderPort {
 		let text = "";
 		const toolParts = new Map<number, { id?: string; name?: string; arguments: string }>();
 		for await (const event of parseServerSentEvents(readableStreamChunks(response.body))) {
+			// Поток пошёл — общий бюджет запроса меняем на бюджет ПРОСТОЯ между
+			// чанками: длинный, но живой ответ обрывать нельзя, замерший — нужно.
+			scope.arm(this.streamIdleTimeoutMs);
 			throwIfAborted(options?.signal);
 			if (event.event === "error") {
 				throw providerErrorFromEventData(event.data, response.headers);
@@ -183,10 +289,10 @@ export class OpenRouterProvider implements AIProviderPort {
 		yield { type: "response-completed", completion };
 	}
 
-	private async post(body: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
-		throwIfAborted(signal);
+	private async post(body: Record<string, unknown>, scope: RequestScope): Promise<Response> {
+		throwIfAborted(scope.userSignal);
 		const apiKey = await this.options.getApiKey();
-		throwIfAborted(signal);
+		throwIfAborted(scope.userSignal);
 		if (!apiKey) {
 			throw new AIError({
 				code: "authentication",
@@ -204,12 +310,12 @@ export class OpenRouterProvider implements AIProviderPort {
 					Accept: "application/json, text/event-stream",
 				},
 				body: JSON.stringify(body),
-				signal,
+				signal: scope.signal,
 			});
 			if (!response.ok) throw classifyHttpError(response.status, response.headers);
 			return response;
 		} catch (error: unknown) {
-			throw asAIError(error);
+			throw scope.toError(error);
 		}
 	}
 

@@ -259,8 +259,16 @@ export class DesktopAiServices {
 	/**
 	 * Reconcile edits made while the plugin was closed or on another device.
 	 * Existing values without AI history are conservatively user-owned.
+	 *
+	 * При выключенном AI сверка — чистый мусор: она обходит ВСЕ задачи и на
+	 * каждое непустое поле ⏱/🧠/💓/💪/🧭 пишет по файлу в `.gtd-flow/ai/feedback`
+	 * (после мастера миграции пространств это ~2 файла на задачу и заметный
+	 * фриз старта). Отсутствие записи и так читается как «поле принадлежит
+	 * пользователю», а перед первым AI-действием сверку зовут process() и
+	 * assertAiPatchAllowed — то есть ленивого прохода достаточно.
 	 */
 	reconcileOwnership(): Promise<void> {
+		if (!this.options.enabled()) return Promise.resolve();
 		return this.metadataServices.reconcileOwnership();
 	}
 

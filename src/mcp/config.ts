@@ -66,14 +66,20 @@ export async function loadSettings(vaultRoot: string): Promise<GtdFlowSettings> 
 	}
 	const result = mergeSettingsWithDiagnostics(DEFAULT_SETTINGS, loaded);
 	if (loaded !== null) {
-		// Parsed known fields must merge without any recovery/drop. The one benign
-		// diagnostic is a format-version migration for legacy files.
-		const recovery = result.diagnostics.filter(
-			(message) => !/^settings: migrated v\d+ → v\d+$/.test(message),
-		);
-		if (recovery.length > 0) {
-			const field = recovery[0]?.split(":")[0] || "data.json";
-			throw new McpConfigError(`'${field}' cannot be loaded without recovery`);
+		// Parsed known fields must merge without any recovery/drop. Benign are ровно
+		// диагностики штатной миграции формата: их помечает сам merge (переход
+		// версии, вывод inboxFile из настроек пространств, решённые AI-выборы). Их
+		// разбор по тексту сообщения раньше ронял ВСЕ инструменты на любом data.json
+		// старше 0.13 — плагин переписывает файл только при сохранении настроек.
+		const migrations = new Set(result.migrations);
+		const recovery = result.diagnostics.filter((message) => !migrations.has(message));
+		const first = recovery[0];
+		if (first !== undefined) {
+			// В сообщении диагностики поле стоит до двоеточия; у сообщений без
+			// двоеточия «полем» является сам файл.
+			const separator = first.indexOf(":");
+			const field = separator > 0 ? first.slice(0, separator) : "data.json";
+			throw new McpConfigError(`'${field}' cannot be loaded without recovery (${first})`);
 		}
 	}
 	const merged = result.settings;

@@ -142,9 +142,9 @@ describe("AI view state reducer", () => {
 
 		expect(state.work).toBe("retry-waiting");
 		expect(workLabel(state)).toBe(
-			"Temporarily unavailable — retry after 2026-07-28T12:01:00.000Z",
+			"Временно недоступно — повтор после 2026-07-28T12:01:00.000Z",
 		);
-		expect(workLabel(state)).not.toContain("Rate limited");
+		expect(workLabel(state)).not.toContain("Лимит запросов");
 	});
 
 	it("upserts tool progress without duplicating a timeline entry", () => {

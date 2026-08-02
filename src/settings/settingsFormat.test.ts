@@ -5,6 +5,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "./Settings";
 import {
+	commitInboxFile,
 	commitSubName,
 	formatDeferPresets,
 	formatPathList,
@@ -206,5 +207,57 @@ describe("commitSubName", () => {
 		expect(deleteMirror).toHaveBeenCalledTimes(1);
 		expect(deleteMirror).toHaveBeenCalledWith("Луна");
 		expect(sub.name).toBe("");
+	});
+});
+
+describe("commitInboxFile", () => {
+	it("реальное изменение: путь обрезан, reconcile и save по одному разу, true", async () => {
+		const settings = { inboxFile: "Inbox.md" };
+		const reconcile = vi.fn();
+		const save = vi.fn(async () => undefined);
+
+		const changed = await commitInboxFile(settings, "  GTD/Inbox.md  ", { reconcile, save });
+
+		expect(changed).toBe(true);
+		expect(settings.inboxFile).toBe("GTD/Inbox.md");
+		expect(reconcile).toHaveBeenCalledTimes(1);
+		expect(save).toHaveBeenCalledTimes(1);
+	});
+
+	// Ключ фикса: путь зеркал ICS считается от папки этого файла, поэтому запись на
+	// каждый символ гоняла зеркала по промежуточным путям («G», «GT», …) и на каждое
+	// поколение конфигурации перезапускала полный сетевой проход по всем лентам.
+	it("промежуточные значения набора коммитом не считаются: один коммит на весь путь", async () => {
+		const settings = { inboxFile: "Inbox.md" };
+		const reconcile = vi.fn();
+		const save = vi.fn(async () => undefined);
+
+		// blur наступает один раз — ровно с итоговым значением поля
+		await commitInboxFile(settings, "GTD/Inbox.md", { reconcile, save });
+
+		expect(reconcile).toHaveBeenCalledTimes(1);
+		expect(save).toHaveBeenCalledTimes(1);
+		expect(settings.inboxFile).toBe("GTD/Inbox.md");
+	});
+
+	it("то же значение (и лишние пробелы) — ни reconcile, ни save, false", async () => {
+		const settings = { inboxFile: "GTD/Inbox.md" };
+		const reconcile = vi.fn();
+		const save = vi.fn(async () => undefined);
+
+		expect(await commitInboxFile(settings, "  GTD/Inbox.md ", { reconcile, save })).toBe(false);
+		expect(reconcile).not.toHaveBeenCalled();
+		expect(save).not.toHaveBeenCalled();
+	});
+
+	it("пустое значение изменением не считается — прежний путь сохраняется", async () => {
+		const settings = { inboxFile: "GTD/Inbox.md" };
+		const reconcile = vi.fn();
+		const save = vi.fn(async () => undefined);
+
+		expect(await commitInboxFile(settings, "   ", { reconcile, save })).toBe(false);
+		expect(settings.inboxFile).toBe("GTD/Inbox.md");
+		expect(reconcile).not.toHaveBeenCalled();
+		expect(save).not.toHaveBeenCalled();
 	});
 });

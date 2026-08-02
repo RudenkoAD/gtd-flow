@@ -1,4 +1,5 @@
 import { Notice } from "obsidian";
+import { describeError } from "./errorMessage";
 
 /** The common result shape used by write-capable view ports. */
 export interface ActionResult {
@@ -20,7 +21,7 @@ export async function runAction<T extends ActionResult>(
 		if (!result.ok) new Notice(`GTD Flow: ${label}: ${result.reason ?? "операция отклонена"}`);
 		return result;
 	} catch (error) {
-		new Notice(`GTD Flow: ${label}: ${String(error)}`);
+		new Notice(`GTD Flow: ${label}: ${describeError(error)}`);
 		return null;
 	}
 }
@@ -30,10 +31,10 @@ export async function runAction<T extends ActionResult>(
  * at this boundary. */
 export function reportAsync<T>(label: string, action: () => Promise<T>): void {
 	try {
-		void action().catch((error) => new Notice(`GTD Flow: ${label}: ${String(error)}`));
+		void action().catch((error) => new Notice(`GTD Flow: ${label}: ${describeError(error)}`));
 	} catch (error) {
 		// The UI callback may throw before producing the promised work.
-		new Notice(`GTD Flow: ${label}: ${String(error)}`);
+		new Notice(`GTD Flow: ${label}: ${describeError(error)}`);
 	}
 }
 
@@ -43,7 +44,7 @@ export async function runVoidAction(label: string, action: () => Promise<void>):
 		await action();
 		return true;
 	} catch (error) {
-		new Notice(`GTD Flow: ${label}: ${String(error)}`);
+		new Notice(`GTD Flow: ${label}: ${describeError(error)}`);
 		return false;
 	}
 }

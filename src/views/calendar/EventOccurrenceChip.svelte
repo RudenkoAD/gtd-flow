@@ -95,6 +95,12 @@
 	const draggable = $derived(
 		block !== null && dnd !== null && !Platform.isMobileApp && !external,
 	);
+	/** Перенос стрелками — клавиатурный дублёр drag, поэтому и ограничения те же:
+	 *  внешнее событие не двигаем (правка ушла бы в файл-зеркало и была бы затёрта
+	 *  ближайшим синком; меню внешнего события правки и так прячет). Один флаг на
+	 *  обработчик, aria-label и aria-keyshortcuts — иначе клавиатура обещала бы
+	 *  скринридеру то, чего не делает. */
+	const keyboardMovable = $derived(block !== null && onKeyboardMove !== null && !external);
 
 	/** Начало drag блока-вхождения: призрак — весь блок, время при drop — по его верху. */
 	function onPointerDown(e: PointerEvent): void {
@@ -153,7 +159,8 @@
 			return;
 		}
 		const move = occurrenceKeyboardAction(e.key);
-		if (block !== null && onKeyboardMove !== null && move !== null) {
+		// onKeyboardMove повторён явно: сузить тип через $derived-флаг компилятор не может
+		if (keyboardMovable && move !== null && onKeyboardMove !== null) {
 			e.preventDefault();
 			// `occurrenceKeyboardAction` is the shared policy check; narrow the
 			// original DOM key before forwarding it to the typed move port.
@@ -177,10 +184,8 @@
 	bind:this={rootEl}
 	role="button"
 	tabindex="0"
-	aria-label={`${markLabel}: ${occ.title}. Enter — меню${block !== null && onKeyboardMove !== null ? ", стрелки — перенести" : ""}`}
-	aria-keyshortcuts={block !== null && onKeyboardMove !== null
-		? "ArrowLeft ArrowRight ArrowUp ArrowDown"
-		: undefined}
+	aria-label={`${markLabel}: ${occ.title}. Enter — меню${keyboardMovable ? ", стрелки — перенести" : ""}`}
+	aria-keyshortcuts={keyboardMovable ? "ArrowLeft ArrowRight ArrowUp ArrowDown" : undefined}
 	style={block !== null
 		? `top:${block.topPct}%; height:${block.heightPct}%; left:${leftPct}%; width:${widthPct}%`
 		: ""}

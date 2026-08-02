@@ -45,14 +45,72 @@ export function isScopeId(value: unknown): value is string {
 }
 
 /**
+ * \u041a\u0438\u0440\u0438\u043b\u043b\u0438\u0446\u0430 \u2192 \u043b\u0430\u0442\u0438\u043d\u0438\u0446\u0430 \u0434\u043b\u044f scope-id. NFKD \u0435\u0451 \u043d\u0435 \u0440\u0430\u0441\u043a\u043b\u0430\u0434\u044b\u0432\u0430\u0435\u0442, \u043f\u043e\u044d\u0442\u043e\u043c\u0443 \u0431\u0435\u0437
+ * \u0442\u0430\u0431\u043b\u0438\u0446\u044b \u00ab\u0420\u0430\u0431\u043e\u0442\u0430\u00bb/\u00ab\u041b\u0438\u0447\u043d\u043e\u0435\u00bb/\u00ab\u0414\u043e\u043c\u00bb \u0441\u0445\u043b\u043e\u043f\u044b\u0432\u0430\u043b\u0438\u0441\u044c \u0432 \u043f\u0443\u0441\u0442\u0443\u044e \u0441\u0442\u0440\u043e\u043a\u0443 \u0438 \u0434\u0430\u0432\u0430\u043b\u0438
+ * \u043d\u0435\u0447\u0438\u0442\u0430\u0435\u043c\u044b\u0435 `scope`, `scope-2`, `scope-3` \u043f\u0440\u044f\u043c\u043e \u0432 \u0442\u0435\u043a\u0441\u0442\u0435 \u0437\u0430\u0434\u0430\u0447 (\ud83e\udded <id>), \u0430 id
+ * \u043d\u0435\u0438\u0437\u043c\u0435\u043d\u044f\u0435\u043c \u043f\u043e\u0441\u043b\u0435 \u0441\u043e\u0437\u0434\u0430\u043d\u0438\u044f. \u041e\u0441\u043d\u043e\u0432\u043d\u043e\u0439 \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044c \u043f\u0440\u043e\u0435\u043a\u0442\u0430 \u2014 \u0440\u0443\u0441\u0441\u043a\u043e\u044f\u0437\u044b\u0447\u043d\u044b\u0439.
+ */
+const CYRILLIC_TRANSLITERATION: Readonly<Record<string, string>> = {
+	а: "a",
+	б: "b",
+	в: "v",
+	г: "g",
+	д: "d",
+	е: "e",
+	ё: "e",
+	ж: "zh",
+	з: "z",
+	и: "i",
+	й: "y",
+	к: "k",
+	л: "l",
+	м: "m",
+	н: "n",
+	о: "o",
+	п: "p",
+	р: "r",
+	с: "s",
+	т: "t",
+	у: "u",
+	ф: "f",
+	х: "h",
+	ц: "ts",
+	ч: "ch",
+	ш: "sh",
+	щ: "sch",
+	ъ: "",
+	ы: "y",
+	ь: "",
+	э: "e",
+	ю: "yu",
+	я: "ya",
+	// \u0443\u043a\u0440\u0430\u0438\u043d\u0441\u043a\u0438\u0435/\u0431\u0435\u043b\u043e\u0440\u0443\u0441\u0441\u043a\u0438\u0435 \u0431\u0443\u043a\u0432\u044b, \u0432\u0441\u0442\u0440\u0435\u0447\u0430\u044e\u0449\u0438\u0435\u0441\u044f \u0432 \u0438\u043c\u0435\u043d\u0430\u0445 \u043f\u0440\u043e\u0441\u0442\u0440\u0430\u043d\u0441\u0442\u0432
+	і: "i",
+	ї: "yi",
+	є: "ye",
+	ґ: "g",
+	ў: "u",
+};
+
+function transliterate(lowerCased: string): string {
+	let out = "";
+	for (const ch of lowerCased) {
+		out += CYRILLIC_TRANSLITERATION[ch] ?? ch;
+	}
+	return out;
+}
+
+/**
  * Generate a readable candidate ID. Collision resolution remains the caller's
  * responsibility because it owns the current catalog.
  */
 export function scopeIdCandidate(name: string): string {
-	const normalized = name
-		.normalize("NFKD")
-		.toLowerCase()
-		.replace(/[\u0300-\u036f]/gu, "")
+	const normalized = transliterate(
+		name
+			.normalize("NFKD")
+			.toLowerCase()
+			.replace(/[\u0300-\u036f]/gu, ""),
+	)
 		.replace(/[^a-z0-9]+/gu, "-")
 		.replace(/^-+|-+$/gu, "")
 		.slice(0, 64)

@@ -49,4 +49,7 @@ if (hits.length > 0) {
 	console.error(`widget-core purity violated — bundle contains: ${hits.join(", ")}`);
 	process.exit(1);
 }
-console.log(`widget-core bundle OK (${OUTFILE}, ${code.length} bytes)`);
+// Размер печатаем в БАЙТАХ UTF-8 (в ядре есть кириллица, поэтому code.length —
+// единицы UTF-16 — меньше реального размера файла). Именно байты фиксируются в
+// WIDGET_CORE_VERSION.md рядом с sha256 при вендоринге ассета в gtd-widgets.
+console.log(`widget-core bundle OK (${OUTFILE}, ${Buffer.byteLength(code, "utf8")} bytes)`);

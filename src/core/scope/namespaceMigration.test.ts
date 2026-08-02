@@ -4,6 +4,7 @@ import {
 	LEGACY_DEFAULT_NAMESPACE,
 	createNamespaceMigrationJournal,
 	finishNamespaceMigration,
+	legacyInboxCandidates,
 	markMigrationPathCompleted,
 	pendingMigrationPaths,
 	planNamespaceMigration,
@@ -97,6 +98,32 @@ describe("namespace migration planning", () => {
 			"common",
 			"work-inbox",
 		]);
+	});
+
+	// §«Общее»: имя встроенного пространства — обычная строка, поэтому
+	// пользовательское пространство с тем же именем молча уезжало в политику
+	// commonTasks вместо своего сопоставления. Явный отказ вместо тихой потери.
+	it("refuses a user namespace that collides with the built-in Common one", () => {
+		const collided = {
+			...inventory,
+			namespaces: [
+				{ name: "Работа", root: "Work" },
+				{ name: LEGACY_DEFAULT_NAMESPACE, root: "Shared" },
+			],
+		};
+		const result = planNamespaceMigration(
+			collided,
+			{ byNamespace: { Работа: "work", [LEGACY_DEFAULT_NAMESPACE]: "life" } },
+			{
+				taskCoverage: "all-tasks",
+				commonTasks: { kind: "assign", scopeId: "life" },
+				targetInboxPath: "GTD/Inbox.md",
+			},
+			catalog,
+		);
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.errors).toEqual([expect.stringContaining("built-in Common namespace")]);
 	});
 
 	it("supports all-task coverage and an explicit Common mapping", () => {
@@ -259,5 +286,41 @@ describe("namespace migration journal", () => {
 				before: [],
 			}),
 		).toThrow("migration-snapshot-missing");
+	});
+});
+
+// Общий для плагина и виджет-бандла порядок кандидатов на единый файл входящих.
+// Плагин выбирает первый СУЩЕСТВУЮЩИЙ, виджет — первый из списка; разъехавшийся
+// порядок означает, что захват с телефона попадёт мимо входящих плагина.
+describe("legacyInboxCandidates", () => {
+	it("конвенционный файл захвата приоритетнее цели копий регулярных", () => {
+		expect(
+			legacyInboxCandidates({
+				commonRoot: "GTD",
+				namespaces: [{ name: "Работа", root: "Work" }],
+				recurring: { spawnTarget: "GTD/Inbox.md" },
+			}),
+		).toEqual(["GTD/Входящие.md", "GTD/Inbox.md"]);
+	});
+
+	it("без commonRoot остаётся только явно настроенный spawnTarget", () => {
+		expect(legacyInboxCandidates({ recurring: { spawnTarget: "My/Inbox.md" } })).toEqual([
+			"My/Inbox.md",
+		]);
+	});
+
+	it("хвостовые слэши схлопываются, дубли не повторяются", () => {
+		expect(
+			legacyInboxCandidates({
+				commonRoot: "GTD//",
+				recurring: { spawnTarget: "GTD/Входящие.md" },
+			}),
+		).toEqual(["GTD/Входящие.md", "GTD/Inbox.md"]);
+	});
+
+	it("корневой commonRoot — голые имена файлов; мусор даёт пустой список", () => {
+		expect(legacyInboxCandidates({ commonRoot: "/" })).toEqual(["Входящие.md", "Inbox.md"]);
+		expect(legacyInboxCandidates({ commonRoot: "  ", recurring: 5 })).toEqual([]);
+		expect(legacyInboxCandidates(null)).toEqual([]);
 	});
 });

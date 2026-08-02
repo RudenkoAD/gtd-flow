@@ -167,9 +167,10 @@ describe("parseIcs — безопасное ускорение UTC-серий", 
 		const ics = vcal(
 			`BEGIN:VEVENT\r\nUID:floating\r\nDTSTART:20260101T090000\r\nRRULE:FREQ=HOURLY\r\nEND:VEVENT`,
 		);
-		expect(() => parseIcs(ics, WINDOW, { budget: { maxIteratorStepsPerSeries: 10 } })).toThrow(
-			/step recurrence budget/,
-		);
+		// Шаги тратятся от самого DTSTART (сидирование к окну для floating запрещено),
+		// поэтому тесный бюджет серия не переживает — и, по своему бюджету, просто
+		// выпадает из ленты (см. «бюджет одной серии не роняет ленту» ниже).
+		expect(parseIcs(ics, WINDOW, { budget: { maxIteratorStepsPerSeries: 10 } })).toEqual([]);
 	});
 
 	it("TZID recurrence crossing DST retains the canonical iterator path", () => {
@@ -179,10 +180,9 @@ describe("parseIcs — безопасное ускорение UTC-серий", 
 		);
 		// A non-UTC seed derived from epoch milliseconds can land on the wrong
 		// side of the DST transition.  The safe path therefore spends iterator
-		// steps from DTSTART and visibly trips this deliberately tight budget.
-		expect(() =>
-			parseIcs(ics, dstWindow, { budget: { maxIteratorStepsPerSeries: 10 } }),
-		).toThrow(/step recurrence budget/);
+		// steps from DTSTART and visibly trips this deliberately tight budget
+		// (which now drops the series instead of the whole feed).
+		expect(parseIcs(ics, dstWindow, { budget: { maxIteratorStepsPerSeries: 10 } })).toEqual([]);
 		expect(parseIcs(ics, dstWindow).length).toBeGreaterThan(0);
 	});
 });
@@ -262,16 +262,32 @@ describe("parseIcs — окно у серий из далёкого прошло
 		const ics = vcal(
 			`BEGIN:VEVENT\r\nUID:seconds\r\nSUMMARY:Ticker\r\nDTSTART:20200101T000000Z\r\nRRULE:FREQ=SECONDLY\r\nEND:VEVENT`,
 		);
+		// потолок строк ОДНОЙ серии — не фатален: серия выпадает целиком (без хвоста
+		// уже добавленных строк), лента остаётся разобранной
+		expect(
+			parseIcs(ics, WINDOW, {
+				budget: { maxIteratorStepsPerSeries: 150, maxSeriesRows: 100, maxTotalRows: 1_000 },
+			}),
+		).toEqual([]);
+		// общефидовый потолок по-прежнему фатален — частичное зеркало хуже честной ошибки
 		expect(() =>
 			parseIcs(ics, WINDOW, {
-				budget: { maxIteratorStepsPerSeries: 150, maxSeriesRows: 100, maxTotalRows: 100 },
+				budget: {
+					maxIteratorStepsPerSeries: 150,
+					maxSeriesRows: 10_000,
+					maxTotalRows: 100,
+				},
 			}),
 		).toThrow(IcsBudgetError);
 		expect(() =>
 			parseIcs(ics, WINDOW, {
-				budget: { maxIteratorStepsPerSeries: 150, maxSeriesRows: 100, maxTotalRows: 100 },
+				budget: {
+					maxIteratorStepsPerSeries: 150,
+					maxSeriesRows: 10_000,
+					maxTotalRows: 100,
+				},
 			}),
-		).toThrow(/row output budget/);
+		).toThrow(/feed exceeds.*row output budget/);
 	});
 });
 
@@ -442,6 +458,116 @@ describe("parseIcs — дубль-мастер (FIX-10)", () => {
 		expect(occ).toHaveLength(1);
 		expect(occ[0]!.title).toBe("Первый");
 		expect(occ.some((o) => o.title === "Второй")).toBe(false);
+	});
+});
+
+// Именно такой формой Google Calendar в «секретном адресе iCal» отдаёт удалённую
+// встречу и удалённое вхождение серии. Раньше STATUS не читался вовсе — отменённая
+// планёрка оставалась в календаре, агенде и виджетах бессрочно (зеркало только
+// дополняется).
+describe("parseIcs — отменённые события (STATUS:CANCELLED)", () => {
+	it("отменённое одиночное событие в зеркало не попадает", () => {
+		const ics = vcal(
+			`BEGIN:VEVENT\r\nUID:c1\r\nSUMMARY:Отменённая встреча\r\nSTATUS:CANCELLED\r\nDTSTART:20260706T140000\r\nDTEND:20260706T150000\r\nEND:VEVENT`,
+		);
+		expect(parseIcs(ics, WINDOW)).toEqual([]);
+	});
+
+	it("отменённое ВХОЖДЕНИЕ серии (RECURRENCE-ID + STATUS:CANCELLED) выпадает, остальные остаются", () => {
+		const ics = vcal(
+			`BEGIN:VEVENT\r\nUID:standup\r\nSUMMARY:Стендап\r\nDTSTART:20260706T090000Z\r\nDTEND:20260706T093000Z\r\nRRULE:FREQ=WEEKLY;COUNT=4\r\nEND:VEVENT\r\n` +
+				`BEGIN:VEVENT\r\nUID:standup\r\nRECURRENCE-ID:20260727T090000Z\r\nSUMMARY:Стендап\r\nSTATUS:CANCELLED\r\nDTSTART:20260727T090000Z\r\nDTEND:20260727T093000Z\r\nEND:VEVENT`,
+		);
+		const occ = sorted(parseIcs(ics, WINDOW));
+		expect(occ).toHaveLength(3); // 06, 13, 20 — 27 отменено
+		expect(occ.some((o) => o.recurrenceKey === "2026-07-27T09:00:00Z")).toBe(false);
+	});
+
+	it("отменённый МАСТЕР гасит серию целиком", () => {
+		const ics = vcal(
+			`BEGIN:VEVENT\r\nUID:dead\r\nSUMMARY:Планёрка\r\nSTATUS:CANCELLED\r\nDTSTART:20260706T090000Z\r\nRRULE:FREQ=WEEKLY;COUNT=4\r\nEND:VEVENT`,
+		);
+		expect(parseIcs(ics, WINDOW)).toEqual([]);
+	});
+
+	it("STATUS:CONFIRMED / TENTATIVE зеркалятся как обычно", () => {
+		const ics = vcal(
+			`BEGIN:VEVENT\r\nUID:ok\r\nSUMMARY:Живая\r\nSTATUS:CONFIRMED\r\nDTSTART:20260706T140000\r\nEND:VEVENT\r\n` +
+				`BEGIN:VEVENT\r\nUID:maybe\r\nSUMMARY:Под вопросом\r\nSTATUS:TENTATIVE\r\nDTSTART:20260707T140000\r\nEND:VEVENT`,
+		);
+		expect(sorted(parseIcs(ics, WINDOW)).map((o) => o.title)).toEqual([
+			"Живая",
+			"Под вопросом",
+		]);
+	});
+});
+
+// Одно экзотическое событие не должно уносить с собой весь календарь: раньше
+// per-серийный бюджет перебрасывался наверх, SyncService писал ошибку в lastError,
+// и зеркало не обновлялось вообще — «календарь перестал синхронизироваться».
+describe("parseIcs — бюджет одной серии не роняет ленту", () => {
+	// Часы заморожены: проверяем ИМЕННО развилку «бюджет серии vs бюджет ленты»,
+	// а не скорость раннера (общефидовый лимит времени остаётся фатальным — см.
+	// «enforces elapsed-time and global-output budgets» выше). Тесный шаговый
+	// бюджет играет роль настоящей floating-серии из 2020: она так же сжигает
+	// шаги от самого DTSTART, только за миллисекунды.
+	const frozen = { budget: { maxIteratorStepsPerSeries: 200 }, nowMs: () => 0 };
+
+	it("floating FREQ=HOURLY из 2020 пропускается, обычная встреча той же ленты остаётся", () => {
+		const ics = vcal(
+			`BEGIN:VEVENT\r\nUID:normal\r\nSUMMARY:Совещание\r\nDTSTART:20260723T140000\r\nDTEND:20260723T150000\r\nEND:VEVENT\r\n` +
+				`BEGIN:VEVENT\r\nUID:hourly\r\nSUMMARY:Тик\r\nDTSTART:20200101T000000\r\nRRULE:FREQ=HOURLY\r\nEND:VEVENT`,
+		);
+		const occ = parseIcs(ics, WINDOW, frozen);
+		expect(occ.map((o) => o.uid)).toEqual(["normal"]);
+		expect(occ[0]).toMatchObject({ date: "2026-07-23", startTime: "14:00" });
+	});
+
+	it("порядок VEVENT не важен: переразмерная серия перед обычной встречей", () => {
+		const ics = vcal(
+			`BEGIN:VEVENT\r\nUID:hourly\r\nSUMMARY:Тик\r\nDTSTART:20200101T000000\r\nRRULE:FREQ=HOURLY\r\nEND:VEVENT\r\n` +
+				`BEGIN:VEVENT\r\nUID:normal\r\nSUMMARY:Совещание\r\nDTSTART:20260723T140000\r\nEND:VEVENT`,
+		);
+		expect(parseIcs(ics, WINDOW, frozen).map((o) => o.uid)).toEqual(["normal"]);
+	});
+
+	it("пропущенная серия не оставляет в зеркале своего начатого хвоста", () => {
+		const ics = vcal(
+			`BEGIN:VEVENT\r\nUID:hourly\r\nSUMMARY:Тик\r\nDTSTART:20260701T000000Z\r\nRRULE:FREQ=HOURLY\r\nEND:VEVENT`,
+		);
+		// 50 строк успевают попасть в out до срыва потолка серии — все они снимаются
+		expect(parseIcs(ics, WINDOW, { budget: { maxSeriesRows: 50 }, nowMs: () => 0 })).toEqual(
+			[],
+		);
+	});
+});
+
+// DESCRIPTION зеркалом не используется вовсе (MirrorOccurrence его не читает), но
+// одна длинная свёрнутая строка навсегда роняла всю подписку: приглашения
+// Outlook/Teams регулярно несут HTML-подвал и дисклеймеры больше 9 КБ.
+describe("parseIcs — длинные свёрнутые свойства (DESCRIPTION приглашений)", () => {
+	/** Сложить контент-строку по RFC 5545 (продолжения начинаются с пробела). */
+	function fold(line: string, width = 73): string {
+		const parts = [line.slice(0, width)];
+		for (let i = width; i < line.length; i += width) parts.push(` ${line.slice(i, i + width)}`);
+		return parts.join("\r\n");
+	}
+
+	function feedWithDescription(length: number): string {
+		return vcal(
+			`BEGIN:VEVENT\r\nUID:outlook\r\nSUMMARY:Созвон\r\nDTSTART:20260706T140000\r\nDTEND:20260706T150000\r\n` +
+				`${fold(`DESCRIPTION:${"д".repeat(length)}`)}\r\nEND:VEVENT`,
+		);
+	}
+
+	it.each([9_000, 20_000, 60_000])("DESCRIPTION длиной %i символов не роняет ленту", (n) => {
+		const occ = parseIcs(feedWithDescription(n), WINDOW);
+		expect(occ).toHaveLength(1);
+		expect(occ[0]).toMatchObject({ uid: "outlook", title: "Созвон", startTime: "14:00" });
+	});
+
+	it("свойство длиннее заявленного потолка строки по-прежнему отвергается", () => {
+		expect(() => parseIcs(feedWithDescription(70_000), WINDOW)).toThrow(/unfolded-line budget/);
 	});
 });
 

@@ -30,8 +30,17 @@ export class FeedbackStorageAdapter implements FeedbackStorage {
 		await this.files.writeAtomic(path, content);
 	}
 
-	writeNew(path: string, content: string): Promise<void> {
-		return this.files.writeNew(path, content);
+	async writeNew(path: string, content: string): Promise<void> {
+		try {
+			await this.files.writeNew(path, content);
+		} catch (error: unknown) {
+			// Immutable feedback events expose a domain conflict instead of leaking
+			// the vault implementation's create-if-absent error.
+			if (error instanceof Error && error.message.startsWith("vault-file-exists:")) {
+				throw new Error("feedback-event-conflict");
+			}
+			throw error;
+		}
 	}
 
 	delete(path: string): Promise<void> {

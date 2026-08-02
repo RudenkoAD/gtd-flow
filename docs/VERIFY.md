@@ -161,7 +161,9 @@
       недоступны. Это smoke-gate упаковки, но не заменяет запуск в реальном Obsidian.
 - [ ] На desktop проверьте pop-out: внутри отдельного окна действия и drag работают;
       между окнами используйте контекстное меню карточки.
-- [ ] Убедитесь, что release `manifest.json` содержит `isDesktopOnly: false`.
+- [ ] Убедитесь, что release `manifest.json` содержит `isDesktopOnly: false`, а
+      `npm run check:packaged-plugin` сообщает `eager: none`: bundle обязан
+      загружаться без Node/Electron.
 - [ ] На Android установите release bundle и откройте плагин. **Ожидаемо:** доступны
       только виды «Входящие», «Календарь» и «Регулярные»; общий редактор задачи
       открывается из этих видов. AI, OAuth, проекты, доски, tickler и desktop DnD

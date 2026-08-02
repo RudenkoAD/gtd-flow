@@ -283,7 +283,7 @@ test.describe("mounted GTD Flow Svelte component gate", () => {
 			"Duration 90 Cognitive 4 Emotional 2 Physical 0 Scope work",
 		);
 		await expect(fixture.getByText("Does this include review time?")).toBeVisible();
-		await expect(fixture.getByText("Affects: duration")).toBeVisible();
+		await expect(fixture.getByText("Затрагивает: duration")).toBeVisible();
 		await expect(fixture.getByLabel("Atomic task writeback")).toContainText(
 			"Last runtime fields all estimate fields",
 		);
@@ -314,35 +314,34 @@ test.describe("mounted GTD Flow Svelte component gate", () => {
 		await expect(fixture.getByTestId("ai-runtime-status")).toHaveText(
 			"Rate limited — waiting for explicit retry",
 		);
-		await expect(fixture.getByLabel("Waiting inbox processing runs")).toContainText(
-			"Waiting for free capacity: 1 (rate-limited)",
-		);
-		await expect(fixture.getByRole("button", { name: "Retry waiting runs" })).toHaveCount(0);
-		await expect(fixture.getByLabel("Waiting inbox processing runs")).toContainText(
-			"Use the command palette to retry waiting AI jobs.",
+		const queuedRuns = fixture.getByLabel("Обработка входящих в очереди");
+		await expect(queuedRuns).toContainText("Ждём свободного места: 1 (rate-limited)");
+		await expect(queuedRuns.getByRole("button")).toHaveCount(0);
+		await expect(queuedRuns).toContainText(
+			"Повторить ожидающие задания можно из палитры команд.",
 		);
 		await fixture.getByRole("button", { name: "Retry rate-limited run" }).click();
 		await expect(fixture.getByTestId("ai-runtime-status")).toHaveText(
 			"Explicit retry succeeded",
 		);
-		await expect(fixture.getByLabel("Waiting inbox processing runs")).toHaveCount(0);
+		await expect(fixture.getByLabel("Обработка входящих в очереди")).toHaveCount(0);
 
-		const composer = fixture.getByRole("textbox", { name: "Message" });
+		const composer = fixture.getByRole("textbox", { name: "Сообщение" });
 		await composer.fill("Create a follow-up");
 		await composer.press("Enter");
 		await expect(fixture.getByText("Create task")).toBeVisible();
-		await expect(fixture.getByRole("button", { name: "Undo" })).toBeVisible();
+		await expect(fixture.getByRole("button", { name: "Отменить" })).toBeVisible();
 		await expect(fixture.getByLabel("Atomic task writeback")).toContainText("Created tasks 1");
-		await fixture.getByRole("button", { name: "Undo" }).click();
+		await fixture.getByRole("button", { name: "Отменить" }).click();
 		await expect(fixture.getByText("Undone")).toBeVisible();
 		await expect(fixture.getByLabel("Atomic task writeback")).toContainText("Created tasks 0");
 
 		await composer.fill("Delete the task");
 		await composer.press("Enter");
-		await expect(fixture.getByRole("heading", { name: "Approval required" })).toBeVisible();
+		await expect(fixture.getByRole("heading", { name: "Нужно подтверждение" })).toBeVisible();
 		await expect(fixture.getByText("Delete task task-1")).toBeVisible();
 		await expect(fixture.getByLabel("Atomic task writeback")).toContainText("Task deleted no");
-		await fixture.getByRole("button", { name: "Reject" }).click();
+		await fixture.getByRole("button", { name: "Отклонить" }).click();
 		await expect(fixture.getByText("Delete task task-1")).toHaveCount(0);
 		await expect(fixture.getByLabel("Atomic task writeback")).toContainText("Task deleted no");
 		await expectNoAxeViolations(page, '[data-testid="ai-fixture"]');

@@ -8,6 +8,7 @@ import type { IsoDate, Task } from "../../core/model/Task";
 import { parseNlDate } from "../../core/parser/nlDate";
 import { parseTaskLine } from "../../core/parser/parseTaskLine";
 import { setField } from "../../core/parser/serializeTaskLine";
+import { tokenizeTaskLine } from "../../core/parser/tokenizer";
 import type { IntentDispatcher, IntentResult } from "../../services/WritebackService";
 import { dayOfWeekSun0 } from "./dates";
 
@@ -57,12 +58,28 @@ function applyNlCapture(line: string, date: IsoDate, time: string | null): strin
 }
 
 /**
+ * Явно набранное поле 📅 в строке захвата (эмодзи-поле, а не распознанное NLP).
+ * setPayloadField внутри setField правит ПОСЛЕДНИЙ существующий токен поля,
+ * поэтому без этой проверки NLP молча затирал бы дату, которую пользователь
+ * написал руками.
+ */
+function hasExplicitDue(line: string): boolean {
+	const tok = tokenizeTaskLine(line);
+	return tok !== null && tok.segments.some((s) => s.kind === "field" && s.field === "due");
+}
+
+/**
  * Быстрый ввод с распознаванием русских дат: прогнать parseNlDate(text, today) и,
  * если распознано датное выражение, вернуть `- [ ] <title>` с полем 📅 (+время).
  * today === null отключает NLP (полное соответствие старому quickCaptureLine —
  * для календарной сетки, где дата/время уже из слота). Пустой title → null.
  * Escape-путь: датное слово в кавычках («"завтра"») → кавычки снимаются, дата НЕ
  * ставится (parseNlDate вернёт date: null).
+ *
+ * Явное 📅 сильнее распознанного: «завтра позвонить 📅 2026-09-01» раньше отдавал
+ * `📅 <завтра>` — набранная сентябрьская дата исчезала без единого признака. Теперь
+ * в таком случае NLP не применяется ВОВСЕ (в т.ч. датное слово остаётся в тексте:
+ * вырезать его, не поставив дату, значило бы потерять и его).
  */
 export function quickCaptureLineNl(text: string, today: IsoDate | null): string | null {
 	if (today === null) return quickCaptureLine(text);
@@ -70,6 +87,7 @@ export function quickCaptureLineNl(text: string, today: IsoDate | null): string 
 	const base = quickCaptureLine(res !== null ? res.title : text);
 	if (base === null) return null;
 	if (res === null || res.date === null) return base;
+	if (hasExplicitDue(base)) return quickCaptureLine(text);
 	return applyNlCapture(base, res.date, res.time);
 }
 
@@ -97,6 +115,10 @@ const NL_MONTHS_SHORT = [
 export function nlCaptureHint(text: string, today: IsoDate): string | null {
 	const res = parseNlDate(text, today);
 	if (res === null || res.date === null) return null;
+	// то же правило, что в quickCaptureLineNl: при явном 📅 дата НЕ применяется —
+	// подсказка о неприменяемой дате только вводила бы в заблуждение
+	const base = quickCaptureLine(res.title);
+	if (base !== null && hasExplicitDue(base)) return null;
 	const wd = NL_WEEKDAYS_SHORT[dayOfWeekSun0(res.date)] ?? "?";
 	const day = Number(res.date.slice(8, 10));
 	const mon = NL_MONTHS_SHORT[Number(res.date.slice(5, 7)) - 1] ?? "?";

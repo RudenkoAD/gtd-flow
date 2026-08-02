@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadSettings } from "./config";
 import { FsVault } from "./fsVault";
-import { addTask, gtdOverview, listTasks, updateTask } from "./handlers";
+import { addTask, gtdOverview, listEvents, listTasks, updateTask } from "./handlers";
 import { openSession, type GtdSession } from "./session";
 import { FIXTURE_FILES, FIXTURE_TODAY, makeVault, readVaultFile, removeVault } from "./testVault";
 
@@ -83,6 +83,66 @@ describe("MCP canonical task metadata", () => {
 		content = await readVaultFile(root, "GTD/Inbox.md");
 		expect(content).toContain("- [ ] Задача с айди 🆔 aaa111");
 		expect(content).not.toMatch(/🆔 aaa111[^\n]*(?:⏱|🧠|💓|💪|🧭)/u);
+	});
+
+	// §external: зеркало внешнего календаря защищено на записи, но раньше об
+	// этом молчала проекция — агент узнавал о read-only только по отказу.
+	it("marks external-calendar mirrors as read-only in task and event projections", async () => {
+		const mirrorRoot = await makeVault({
+			...FIXTURE_FILES,
+			"Календари/Google.md": `---
+gtd-events: true
+gtd-external: true
+gtd-external-name: "Google"
+---
+- [ ] Созвон с командой 📅 2026-07-22 10:00-11:00 🆔 ext001
+`,
+		});
+		try {
+			const events = listEvents(await session(mirrorRoot), {
+				from: "2026-07-20",
+				to: "2026-07-26",
+			}) as any;
+			const occurrence = events.events.find((item: any) => item.seriesId === "ext001");
+			expect(occurrence).toMatchObject({ external: true });
+			const localEvent = events.events.find((item: any) => item.title === "День рождения");
+			expect(localEvent).not.toHaveProperty("external");
+
+			const rejected = (await updateTask(await session(mirrorRoot), {
+				id: "ext001",
+				scope: "work",
+			})) as any;
+			expect(rejected.ok).toBe(false);
+		} finally {
+			await removeVault(mirrorRoot);
+		}
+	});
+
+	// §битый каталог: молчаливый пустой каталог превращал любой scope в
+	// «unknown scope», хотя 🧭 стоит прямо в строках задач.
+	it("reports a broken scope catalog and still filters by an id seen in task lines", async () => {
+		const brokenRoot = await makeVault({
+			...FIXTURE_FILES,
+			".gtd-flow/config/scopes.json": "{ not json",
+		});
+		try {
+			const broken = await session(brokenRoot);
+			const overview = gtdOverview(broken) as any;
+			expect(overview.scopes).toEqual([]);
+			expect(overview.warnings).toEqual([expect.stringContaining("scope catalog")]);
+
+			const listed = listTasks(broken, { view: "all", scope: "work" }) as any;
+			expect(listed.count).toBeGreaterThan(0);
+			expect(() => listTasks(broken, { view: "all", scope: "nope" })).toThrow(
+				/unknown scope/,
+			);
+			// запись по-прежнему требует читаемый каталог
+			await expect(addTask(broken, { text: "Bad", scope: "work" })).rejects.toThrow(
+				/unknown scope/,
+			);
+		} finally {
+			await removeVault(brokenRoot);
+		}
 	});
 
 	it("rejects unknown/archived scope assignment but allows known scope read filtering", async () => {

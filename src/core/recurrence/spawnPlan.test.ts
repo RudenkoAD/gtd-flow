@@ -914,6 +914,54 @@ describe("planSpawns — от выполнения (§every!)", () => {
 		expect(a.cursorAdvances).toEqual(b.cursorAdvances);
 	});
 
+	it("текст и #теги ПОСЛЕ 📅 переживают спавн «от выполнения» (§FIX-1)", () => {
+		// payload дата-поля по контракту токенизатора — только «дата [HH:mm[-HH:mm]]»;
+		// всё, что стоит дальше, — описание и теги пользователя. Жадная вычистка
+		// «до следующего эмодзи» молча съедала их в КАЖДОЙ копии every!/when done.
+		const t = flowers({
+			nextSpawn: null,
+			recurrence: "every 3 days when done",
+			rawLine: "- [ ] Полить цветы 🔁 every 3 days when done 📅 2026-07-21 #дом 🆔 flowers",
+			due: "2026-07-21",
+			tags: ["дом"],
+		});
+		const res = plan([withChildren(t, [])], { today: "2026-07-21" });
+		expect(res.spawns).toHaveLength(1);
+		const line = res.spawns[0]!.instanceLine;
+		expect(line).not.toContain("📅");
+		expect(line).toContain("#дом");
+		expect(line).toBe("- [ ] Полить цветы #дом ➕ 2026-07-21 🧬 flowers 🆔 flowers-20260721");
+	});
+
+	it("текст после 📅 с временем тоже уцелевает (§FIX-1)", () => {
+		const t = flowers({
+			nextSpawn: null,
+			recurrence: "every! 3 days",
+			rawLine:
+				"- [ ] Ревью 🔁 every! 3 days ⏳ 2026-07-01 09:00-10:00 срочно #дом 🆔 flowers",
+			scheduled: "2026-07-01",
+		});
+		const res = plan([withChildren(t, [])], { today: "2026-07-21" });
+		const line = res.spawns[0]!.instanceLine;
+		expect(line).not.toContain("⏳");
+		expect(line).not.toContain("09:00");
+		expect(line).toBe("- [ ] Ревью срочно #дом ➕ 2026-07-21 🧬 flowers 🆔 flowers-20260721");
+	});
+
+	it("офсет ±Nd на правиле «от выполнения» разворачивается, а не вырезается", () => {
+		// офсет — «сдвиг ОТ ВХОЖДЕНИЯ», он осмыслен и для from-completion (вхождение
+		// = день спавна); вырезался он только как побочный эффект жадной вычистки.
+		const t = flowers({
+			nextSpawn: null,
+			recurrence: "every! 3 days",
+			rawLine: "- [ ] Ревью 🔁 every! 3 days 🛫 -1d 🆔 flowers",
+		});
+		const res = plan([withChildren(t, [])], { today: "2026-07-21" });
+		const line = res.spawns[0]!.instanceLine;
+		expect(line).toContain("🛫 2026-07-20");
+		expect(line).toBe("- [ ] Ревью 🛫 2026-07-20 ➕ 2026-07-21 🧬 flowers 🆔 flowers-20260721");
+	});
+
 	it("миграция: будущая 📅 шаблона — нижняя граница бутстрапа, первая копия откладывается (§FIX-2)", () => {
 		// мигрант перенёс `every 3 days when done 📅 2026-09-01` в июле: без нижней границы
 		// planFromCompletion заспавнил бы копию за месяц до срока. Теперь ждём до 📅.

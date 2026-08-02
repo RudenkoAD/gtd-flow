@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseDatePayload, parseTaskLine, type ParseContext } from "./parseTaskLine";
 import { fnv1a } from "./taskKey";
+import { isScopeId } from "../scope/scope";
 import type { Priority } from "../model/Task";
 
 const NBSP = " ";
@@ -137,16 +138,31 @@ describe("parseTaskLine: estimates and scope", () => {
 		expect(annotated.key).toBe(plain.key);
 	});
 
-	it("uses the final duplicate, including an invalid final payload", () => {
+	it("побеждает последний дубль, если оба payload имеют ФОРМУ поля", () => {
+		// «91m» вне допустимого диапазона, но лексически это payload поля —
+		// значит поле есть и обнуляется, как у дублей дат/id.
 		const task = parseTaskLine(
-			"- [ ] T ⏱ 60m 🧠 1 💓 2 💪 3 🧭 work ⏱ nope 🧠 6 💓 1.0 💪 -1 🧭 Work",
+			"- [ ] T ⏱ 60m 🧠 1 💓 2 💪 3 🧭 work ⏱ 91m 🧠 5 💓 0 💪 4 🧭 home",
 			ctx(),
 		)!;
 		expect(task.durationMinutes).toBeNull();
-		expect(task.cognitiveIntensity).toBeNull();
-		expect(task.emotionalIntensity).toBeNull();
-		expect(task.physicalIntensity).toBeNull();
-		expect(task.scopeId).toBeNull();
+		expect(task.cognitiveIntensity).toBe(5);
+		expect(task.emotionalIntensity).toBe(0);
+		expect(task.physicalIntensity).toBe(4);
+		expect(task.scopeId).toBe("home");
+	});
+
+	it("дубль с НЕ-полевым payload — обычный текст: побеждает предыдущее значение", () => {
+		// §гейт-payload: «⏱ nope» — не «поле с мусором», а проза. Иначе любое
+		// упоминание ⏱/🧠/💓/💪/🧭 в тексте обнуляло бы реально проставленное поле.
+		const line = "- [ ] T ⏱ 60m 🧠 1 💓 2 💪 3 🧭 work ⏱ nope 🧠 6 💓 1.0 💪 -1 🧭 Work";
+		const task = parseTaskLine(line, ctx())!;
+		expect(task.durationMinutes).toBe(60);
+		expect(task.cognitiveIntensity).toBe(1);
+		expect(task.emotionalIntensity).toBe(2);
+		expect(task.physicalIntensity).toBe(3);
+		expect(task.scopeId).toBe("work");
+		expect(task.rawLine).toBe(line);
 	});
 
 	it("rejects invalid payloads without discarding their raw syntax", () => {
@@ -162,6 +178,53 @@ describe("parseTaskLine: estimates and scope", () => {
 				payload,
 			).toBeNull();
 		}
+	});
+
+	it("эмодзи-оценка в прозе описание НЕ рвёт (§гейт-payload)", () => {
+		// ⏱/🧠/💓/💪/🧭 добавлены поверх УЖЕ написанных строк, где те же
+		// эмодзи давно живут как обычный текст. Без лексического гейта payload
+		// токенизатор съедал следующее слово, и описание менялось молча.
+		const cases: [string, string][] = [
+			["- [ ] Тренировка 💪 сегодня в зале", "Тренировка 💪 сегодня в зале"],
+			["- [ ] Купить 🧭 компас", "Купить 🧭 компас"],
+			["- [ ] Замерить ⏱ время сборки", "Замерить ⏱ время сборки"],
+			["- [ ] Прочитать [[Заметка 🧠 память]]", "Прочитать [[Заметка 🧠 память]]"],
+		];
+		for (const [line, description] of cases) {
+			const task = parseTaskLine(line, ctx())!;
+			expect(task.description, line).toBe(description);
+			expect(task.rawLine, line).toBe(line);
+			expect(task.durationMinutes, line).toBeNull();
+			expect(task.cognitiveIntensity, line).toBeNull();
+			expect(task.physicalIntensity, line).toBeNull();
+			expect(task.scopeId, line).toBeNull();
+		}
+	});
+
+	it("ведущая эмодзи-оценка — заголовок, а не поле (защита «б» от 📍)", () => {
+		const task = parseTaskLine("- [ ] 💓 Кардио", ctx())!;
+		expect(task.description).toBe("💓 Кардио");
+		expect(task.emotionalIntensity).toBeNull();
+	});
+
+	it("💪 внутри тела #тега полем не становится", () => {
+		const task = parseTaskLine("- [ ] Задача #спорт💪 тег", ctx())!;
+		expect(task.description).toBe("Задача #спорт💪 тег");
+		expect(task.physicalIntensity).toBeNull();
+	});
+
+	it("гейт 🧭 повторяет форму isScopeId, а не собственную копию регулярки", () => {
+		// копия формы разошлась бы с генератором id молча: записанный 🧭 читался
+		// бы обратно обычным текстом, а описание при правке — переставлялось
+		const longest = `a${"b".repeat(62)}c`; // 64 символа — максимум isScopeId
+		expect(isScopeId(longest)).toBe(true);
+		expect(parseTaskLine(`- [ ] T 🧭 ${longest}`, ctx())!.scopeId).toBe(longest);
+
+		const tooLong = `${longest}d`;
+		expect(isScopeId(tooLong)).toBe(false);
+		const task = parseTaskLine(`- [ ] T 🧭 ${tooLong}`, ctx())!;
+		expect(task.scopeId).toBeNull();
+		expect(task.description).toBe(`T 🧭 ${tooLong}`);
 	});
 
 	it("accepts arbitrarily large safe whole-day durations", () => {

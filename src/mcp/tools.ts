@@ -137,7 +137,7 @@ export function registerTools(server: McpServer, ctx: ServerContext): void {
 		{
 			title: "Update task",
 			description:
-				"Edit an existing task by id (🆔 preferred; a content-key from list_tasks also works). Call to mark done/undone, rename, set or clear dates, priority, location, duration_minutes, each intensity, or scope. Duration uses five-minute increments below 24h and whole-day increments from 24h; intensity is 0..5; null clears the supplied field.",
+				"Edit an existing task by id (🆔 preferred; a content-key from list_tasks also works). Call to mark done/undone, rename, set or clear dates, priority, location, duration_minutes, each intensity, or scope. Duration uses five-minute increments below 24h and whole-day increments from 24h; intensity is 0..5; null clears the supplied field. Tasks reported with external: true live in a read-only external-calendar mirror and cannot be edited — create a local copy instead.",
 			inputSchema: {
 				id: z.string().describe("Task 🆔 or content-key (from list_tasks)."),
 				done: z.boolean().optional().describe("true marks done (✅ today), false reopens."),
@@ -217,7 +217,7 @@ export function registerTools(server: McpServer, ctx: ServerContext): void {
 		{
 			title: "List calendar events",
 			description:
-				"List expanded calendar event occurrences in a date range [from, to] (inclusive, ISO dates). Call when the user asks what's on their calendar / schedule for a period. Recurring series (🔁) are expanded to concrete dates (honoring 🚫 exclusions); one-off events (📅) included on their date. Returns date, time, title, kind (series|single), location (📍), and file:line.",
+				"List expanded calendar event occurrences in a date range [from, to] (inclusive, ISO dates). Call when the user asks what's on their calendar / schedule for a period. Recurring series (🔁) are expanded to concrete dates (honoring 🚫 exclusions); one-off events (📅) included on their date. Returns date, time, title, kind (series|single), location (📍), and file:line. Occurrences mirrored from an external calendar carry external: true — those lines are read-only (writes are rejected); offer the user a local copy instead of editing them.",
 			inputSchema: {
 				from: z.string().describe("Range start, ISO YYYY-MM-DD (inclusive)."),
 				to: z.string().describe("Range end, ISO YYYY-MM-DD (inclusive)."),

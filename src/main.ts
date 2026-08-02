@@ -137,9 +137,13 @@ export default class GtdFlowPlugin extends Plugin {
 				if (features.backgroundPromotion) {
 					reportAsync("фоновое возвращение отложенных", () => this.promote.runPass());
 				}
-				reportAsync("сверка владельцев полей оценки", () =>
-					this.metadataServices.reconcileOwnership(),
-				);
+				// Ownership reconciliation is part of the optional desktop AI slice.
+				// DesktopAiServices keeps the expensive vault-wide pass behind the
+				// settings.ai.enabled gate; mobile has no AI composition at all.
+				if (this.ai !== null) {
+					const ai = this.ai;
+					reportAsync("сверка владельцев полей оценки", () => ai.reconcileOwnership());
+				}
 			},
 		});
 		this.taskStore = createTaskStore(this.indexer);
@@ -640,12 +644,38 @@ export default class GtdFlowPlugin extends Plugin {
 		const raw = (await this.loadData()) as unknown;
 		this.legacyNamespaceSettings = readLegacyNamespaceSettings(raw);
 		this.legacyNamespacePersisted = legacyNamespaceFields(raw);
-		const merged = mergeSettingsWithDiagnostics(DEFAULT_SETTINGS, raw);
+		const merged = mergeSettingsWithDiagnostics(DEFAULT_SETTINGS, raw, {
+			// Хранилище — единственный источник правды о том, КУДА писал захват до
+			// 0.13: конвенционный <commonRoot>/Входящие.md или переопределённая
+			// цель копий регулярных. Проверка синхронная и доступна уже в onload.
+			legacyInboxExists: (path) => this.app.vault.getAbstractFileByPath(path) !== null,
+		});
 		this.settings = merged.settings;
 		// Диагностика намеренно содержит только имена полей/версии (см. schema),
 		// а не приватные значения из data.json (URL календарей, пути и т.п.).
 		if (merged.diagnostics.length > 0)
 			console.warn("GTD Flow: recovered invalid settings", merged.diagnostics);
+		if (merged.migratedInboxFile !== null)
+			await this.announceMigratedInbox(merged.migratedInboxFile);
+	}
+
+	/**
+	 * Единый файл входящих выведен из настроек пространств. Сообщаем путь ОДИН раз
+	 * и сразу сохраняем настройки: записанный inboxFile переводит data.json в v2,
+	 * поэтому следующая загрузка ничего не выводит заново, а виджет-бандл читает
+	 * тот же путь из data.json вместо собственной догадки.
+	 */
+	private async announceMigratedInbox(path: string): Promise<void> {
+		try {
+			await this.saveSettings();
+		} catch (e) {
+			console.warn("GTD Flow: could not persist the migrated inbox path", e);
+		}
+		new Notice(
+			`GTD Flow: пространства выпилены — единым файлом входящих стал «${path}».\n` +
+				"Изменить: настройки плагина; перенести старые входящие: команда «Мигрировать пространства в scope…».",
+			0,
+		);
 	}
 
 	async saveSettings(): Promise<void> {

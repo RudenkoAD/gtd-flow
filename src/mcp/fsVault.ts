@@ -138,6 +138,19 @@ function safeRealpath(p: string): string | null {
 	}
 }
 
+/**
+ * Асинхронный realpath без исключений. Скан обязан пользоваться именно им:
+ * realpathSync на каждый файл блокировал event loop (на 10 000 заметок — десятки
+ * секунд), обнуляя SCAN_IO_CONCURRENCY и подвешивая весь MCP-процесс.
+ */
+async function safeRealpathAsync(p: string): Promise<string | null> {
+	try {
+		return await fs.realpath(p);
+	} catch {
+		return null;
+	}
+}
+
 function isNotFound(e: unknown): boolean {
 	return (e as NodeJS.ErrnoException | undefined)?.code === "ENOENT";
 }
@@ -324,6 +337,12 @@ export class FsVault {
 		return physical !== null && isInsideRoot(physical, this.root) ? physical : null;
 	}
 
+	/** То же самое без блокировки event loop — для всех асинхронных путей (скан). */
+	private async inRootRealpathAsync(absPath: string): Promise<string | null> {
+		const physical = await safeRealpathAsync(absPath);
+		return physical !== null && isInsideRoot(physical, this.root) ? physical : null;
+	}
+
 	/**
 	 * Read one stable, regular in-vault file through a descriptor. Opening with
 	 * O_NOFOLLOW rejects a final-component symlink on POSIX; handle.stat before
@@ -337,7 +356,7 @@ export class FsVault {
 	private async snapshot(abs: string): Promise<FileSnapshot | null> {
 		let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
 		try {
-			const physicalBefore = this.inRootRealpath(abs);
+			const physicalBefore = await this.inRootRealpathAsync(abs);
 			if (physicalBefore === null) return null;
 			handle = await fs.open(abs, READ_NOFOLLOW);
 			const before = await handle.stat();
@@ -346,7 +365,7 @@ export class FsVault {
 			const content = await handle.readFile({ encoding: "utf8" });
 			const after = await handle.stat();
 			const pathStat = await fs.lstat(abs);
-			const physicalAfter = this.inRootRealpath(abs);
+			const physicalAfter = await this.inRootRealpathAsync(abs);
 			if (
 				!after.isFile() ||
 				!pathStat.isFile() ||
@@ -604,7 +623,7 @@ export class FsVault {
 					const stat = await fs.lstat(absPath);
 					return (
 						stat.isDirectory() &&
-						this.inRootRealpath(absPath) !== null &&
+						(await this.inRootRealpathAsync(absPath)) !== null &&
 						sameStamp(expected, stampOf(stat))
 					);
 				} catch {
@@ -627,7 +646,7 @@ export class FsVault {
 				// lstat keeps a directory swapped for a symlink out of the index. The
 				// normal walk below also does not follow symlinked directories.
 				stat = await fs.lstat(absDir);
-				physicalBefore = this.inRootRealpath(absDir) ?? "";
+				physicalBefore = (await this.inRootRealpathAsync(absDir)) ?? "";
 				if (!stat.isDirectory() || physicalBefore === "") {
 					complete = false;
 					return;
@@ -646,7 +665,7 @@ export class FsVault {
 			}
 			try {
 				const after = await fs.lstat(absDir);
-				const physicalAfter = this.inRootRealpath(absDir);
+				const physicalAfter = await this.inRootRealpathAsync(absDir);
 				if (
 					!after.isDirectory() ||
 					physicalAfter === null ||
@@ -723,11 +742,11 @@ export class FsVault {
 						// ancestor swaps immediately afterwards, no outside bytes are read.
 						return { file: { path: relPath, content: cached.content }, stamp };
 					}
-					if (this.inRootRealpath(absPath) === null) {
-						cache.files.delete(relPath);
-						needsDirectoryRefresh = true;
-						return null;
-					}
+					// Отдельной проверки пути здесь нет намеренно: ПЕРВЫЙ шаг snapshot()
+					// — тот же inRootRealpath, и его null обрабатывается ниже тем же
+					// блоком (файл выкидывается из кэша, индекс каталогов сбрасывается,
+					// тело НЕ открывается). Дубликат стоил ещё одного realpath на файл —
+					// треть времени холодного скана на 10 000 заметок.
 					const snapshot = await this.snapshot(absPath);
 					if (snapshot === null) {
 						cache.files.delete(relPath);

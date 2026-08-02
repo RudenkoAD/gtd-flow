@@ -63,6 +63,7 @@ if (eagerDesktopRuntimeExternals.length > 0) {
 		`universal main.js eagerly loads Node/Electron modules: ${eagerDesktopRuntimeExternals.sort().join(", ")}`,
 	);
 }
+const eagerDesktopLoads = [];
 
 const concreteSecretPatterns = [
 	/\bsk-[A-Za-z0-9_-]{16,}\b/u,
@@ -94,7 +95,11 @@ if (errors.length === 0) {
 		Module._cache[mainPath] = pluginModule;
 		Module._load = function loadWithObsidianShim(request, parent, isMain) {
 			if (request === "obsidian") return obsidianShim;
+			// Мобильный Obsidian не даёт ни electron, ни node-встроек. Загрузка
+			// бандла обязана обходиться без них — desktop-специфика допустима
+			// только за ленивым `await import()` внутри вызова.
 			if (request === "electron" || nodeBuiltins.has(request)) {
+				eagerDesktopLoads.push(request);
 				throw new Error(`mobile-runtime-external:${request}`);
 			}
 			return originalLoad.call(this, request, parent, isMain);
@@ -111,6 +116,11 @@ if (errors.length === 0) {
 		Module._load = originalLoad;
 		delete Module._cache[mainPath];
 	}
+	if (manifest.isDesktopOnly !== true && eagerDesktopLoads.length > 0) {
+		errors.push(
+			`main.js loads desktop-only modules at import time: ${[...new Set(eagerDesktopLoads)].sort().join(", ")}`,
+		);
+	}
 }
 
 if (errors.length > 0) {
@@ -121,5 +131,6 @@ if (errors.length > 0) {
 }
 
 console.log(
-	`packaged plugin check OK (deferred desktop externals: ${desktopRuntimeExternals.sort().join(", ") || "none"})`,
+	`packaged plugin check OK (desktop externals: ${desktopRuntimeExternals.sort().join(", ") || "none"};` +
+		` eager: ${[...new Set(eagerDesktopLoads)].sort().join(", ") || "none"})`,
 );

@@ -8,7 +8,16 @@
 - [ ] Выполнить `npm version <x.y.z>`. Скрипт `version-bump.mjs` синхронизирует
       `package.json`, `manifest.json` и `versions.json`.
 - [ ] Проверить `git diff` и release notes.
-- [ ] Проверить [breaking AI Inbox MVP release notes](BREAKING_AI_INBOX_MVP.md)
+- [ ] Если релизу нужна преамбула (breaking-переход, миграция, известное
+      ограничение) — написать её в `docs/release-notes/<x.y.z>.md`. Файл
+      относится ТОЛЬКО к своей версии: `prepare-release` кладёт его в bundle, а
+      publish публикует через `--notes-file`. Нет файла — заметки состоят из
+      автогенерируемого списка коммитов, как и положено обычному патчу.
+      Ссылки внутри заметок указывайте на тег своей версии
+      (например `.../blob/v0.13.0/docs/BREAKING_AI_INBOX_MVP.md`), а не на
+      подвижную ветку.
+- [ ] Для релиза с миграцией namespaces — сверить
+      [breaking AI Inbox MVP release notes](BREAKING_AI_INBOX_MVP.md)
       и убедиться, что D1/D2 остаются явными выборами каждого migration run.
 - [ ] Выполнить `npm run verify:release` (или полный `npm run verify`, который также
       проверяет собранные артефакты).
@@ -61,6 +70,10 @@ CI устанавливает Chromium автоматически. Не обхо
 2. `publish` получает `contents: write`, но не checkout-ит и не исполняет код
    зависимостей — только проверяет SHA-256 и публикует готовый bundle.
 
+Текст релиза publish тоже берёт из проверенного bundle (`RELEASE_NOTES.md`,
+собранный из `docs/release-notes/<version>.md`), а не из константы в workflow:
+преамбула одной версии не может протечь в заметки следующих тегов.
+
 Все сторонние GitHub Actions закреплены на полных commit SHA.
 Любой несовпадающий или невалидный тег завершает `build` ошибкой до публикации.
 
@@ -76,10 +89,16 @@ GitHub release публикует отдельными файлами:
 | `LICENSE`                                | Лицензия проекта                                           |
 | `SHA256SUMS`                             | Проверка целостности всех файлов выше                      |
 
+`dist/release/RELEASE_NOTES.md` входит в bundle и в `SHA256SUMS`, но не
+публикуется отдельным файлом: это вход для `gh release create --notes-file`.
+Файл без непробельных символов означает «заметок для версии нет» — publish
+просто не передаёт флаг.
+
 `manifest.json` и `versions.json` остаются в корне репозитория, как требует
 экосистема Obsidian. `widget-core.js` не нужно копировать в папку Obsidian-плагина.
 `manifest.json` содержит `isDesktopOnly: false`: один bundle загружается на desktop
-и Android, а desktop-only возможности подключаются лениво только в desktop runtime.
+и Android, а desktop-специфика (`node:http`, `electron`) подключается ленивым
+`import()` только внутри desktop runtime.
 
 Для локальной проверки полного набора:
 
@@ -100,7 +119,8 @@ sha256sum --check SHA256SUMS
       Recurring загружаются; AI/OAuth, проекты, доски, tickler, onboarding и DnD
       отсутствуют (`isDesktopOnly: false`).
 - [ ] `main.js` загружается при недоступных Node/Electron; эти зависимости встречаются
-      только за отложенной desktop-границей.
+      только за отложенной desktop-границей; `npm run check:packaged-plugin`
+      сообщает `eager: none`.
 - [ ] Custom URI из widgets открывает единый Inbox и точный Calendar day в warm/cold
       Obsidian, включая имя vault с пробелами и кириллицей; невалидный URI fail-closed.
 - [ ] Одновременный recurring pass на Android и desktop создаёт не более одного
@@ -164,7 +184,9 @@ MCP пишет прямо в Markdown-файлы. Перед релизом пр
 - [ ] Установка через BRAT проверена с нуля.
 - [ ] `SHA256SUMS` сходится с опубликованными файлами.
 - [ ] Известные ограничения и миграции перечислены в release notes.
-- [ ] Release notes явно называют breaking переход с runtime namespaces на
-      unified inbox + task scopes и дают путь к dry-run/apply/resume/rollback.
+- [ ] Опубликованные заметки соответствуют ИМЕННО этой версии: у breaking-релиза
+      явно назван переход (для 0.13.0 — с runtime namespaces на unified inbox +
+      task scopes, с путём dry-run/apply/resume/rollback), а у патча нет чужого
+      предупреждения о миграции и бэкапе.
 - [ ] После публикации отслеживать CI dependency audit и пользовательские ошибки
       синхронизации/writeback.

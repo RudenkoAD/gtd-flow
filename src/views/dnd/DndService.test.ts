@@ -335,9 +335,10 @@ describe("DndService: ошибки drop доступны пользовател�
 		dragToDragging(src);
 		mainWin.document.dispatch("pointerup", pointerEvent(10, 20));
 
+		// текст без служебного «Error:» — Notice показывает причину, а не тип
 		await vi.waitFor(() =>
 			expect(notice).toHaveBeenCalledWith(
-				expect.stringContaining("не удалось перенести карточку: Error: vault readonly"),
+				expect.stringContaining("не удалось перенести карточку: vault readonly"),
 			),
 		);
 	});
@@ -351,7 +352,7 @@ describe("DndService: ошибки drop доступны пользовател�
 		mainWin.document.dispatch("pointerup", pointerEvent(10, 20));
 
 		expect(notice).toHaveBeenCalledWith(
-			expect.stringContaining("не удалось перенести карточку: Error: target disappeared"),
+			expect.stringContaining("не удалось перенести карточку: target disappeared"),
 		);
 	});
 });

@@ -4,6 +4,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FsVault, McpMutationConflictError, McpVaultScanError } from "./fsVault";
 import { makeVault, readVaultFile, removeVault } from "./testVault";
 
+/**
+ * Размер фикстуры для регрессии счётчиков ввода-вывода. Тест проверяет РАБОТУ
+ * второго скана («ровно один fs.open, ноль readdir»), а не время: на 3 000
+ * заметок гарантия та же, а прогон укладывается в бюджет и на обычном диске с
+ * антивирусом (10 000 стоили ~31 с и делали гейт `npm run verify` красным на
+ * машине мейнтейнера). Полномасштабный замер — `GTD_PERF_NOTES=10000`.
+ */
+const SCALE_NOTES = ((): number => {
+	const configured = Number(process.env.GTD_PERF_NOTES);
+	return Number.isSafeInteger(configured) && configured >= 100 ? configured : 3_000;
+})();
+
 describe("FsVault", () => {
 	let root: string;
 	let vault: FsVault;
@@ -47,6 +59,9 @@ describe("FsVault", () => {
 		expect(await readVaultFile(root, "Note.md")).toBe("hello\nmore\n");
 	});
 
+	// Явный бюджет: 100 сериализованных мутаций (по три realpath на снимок плюс
+	// writeFile+chmod+rename) на изолированном прогоне занимают ~2 с, но под
+	// нагрузкой всего сюита стабильно перебирали дефолтные 5 с vitest.
 	it("100 параллельных append из разных FsVault сохраняют все успешные изменения", async () => {
 		const writes = Array.from({ length: 100 }, (_, i) =>
 			new FsVault(root).processFile("Note.md", (content) => `${content}parallel-${i}\n`),
@@ -57,7 +72,7 @@ describe("FsVault", () => {
 			.filter((line) => line.startsWith("parallel-"));
 		expect(lines).toHaveLength(100);
 		expect(new Set(lines)).toHaveLength(100);
-	});
+	}, 30_000);
 
 	it("очередь мутаций не блокирует независимые файлы", async () => {
 		let enterSlowCommit!: () => void;
@@ -373,15 +388,15 @@ describe("FsVault", () => {
 		}
 	});
 
-	it("10,000-note metadata index rereads exactly one externally edited body without re-enumerating", async () => {
+	it("large metadata index rereads exactly one externally edited body without re-enumerating", async () => {
 		const scaleDir = path.join(root, "Scale");
 		await fs.mkdir(scaleDir);
 		// Batches keep this representative fixture from opening thousands of file
 		// descriptors at once. This is a regression benchmark, not a wall-clock
 		// assertion: it verifies the I/O work performed by the second scan.
-		for (let start = 0; start < 10_000; start += 64) {
+		for (let start = 0; start < SCALE_NOTES; start += 64) {
 			await Promise.all(
-				Array.from({ length: Math.min(64, 10_000 - start) }, (_, offset) => {
+				Array.from({ length: Math.min(64, SCALE_NOTES - start) }, (_, offset) => {
 					const index = start + offset;
 					return fs.writeFile(
 						path.join(scaleDir, `note-${index.toString().padStart(5, "0")}.md`),
@@ -393,7 +408,7 @@ describe("FsVault", () => {
 		}
 
 		const first = await new FsVault(root).scanMarkdownFiles();
-		expect(first.files).toHaveLength(10_003);
+		expect(first.files).toHaveLength(SCALE_NOTES + 3);
 		const bodyOpenSpy = vi.spyOn(fs, "open");
 		const readdirSpy = vi.spyOn(fs, "readdir");
 		try {
@@ -402,7 +417,9 @@ describe("FsVault", () => {
 			expect(bodyOpenSpy).not.toHaveBeenCalled();
 			expect(readdirSpy).not.toHaveBeenCalled();
 
-			const editedPath = "Scale/note-05000.md";
+			const editedPath = `Scale/note-${Math.floor(SCALE_NOTES / 2)
+				.toString()
+				.padStart(5, "0")}.md`;
 			await fs.writeFile(path.join(root, editedPath), "- [ ] changed task\n", "utf8");
 			const changed = await new FsVault(root).scanMarkdownFiles();
 			expect(changed.revision).not.toBe(first.revision);

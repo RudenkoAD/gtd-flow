@@ -22,6 +22,8 @@ import {
 } from "./settingsFormat";
 import { reportAsync } from "../views/common/runAction";
 import { confirm } from "../views/common/ConfirmModal";
+import { recreateScopeCatalogWithConfirm } from "../views/common/scopeRecovery";
+import { SCOPE_CATALOG_PATH } from "../services/ScopeCatalogService";
 
 const CALENDAR_FIELD_LABEL: Record<CalendarField, string> = {
 	due: "Срок (📅 due)",
@@ -73,6 +75,12 @@ export class GtdSettingsTab extends PluginSettingTab {
 		const scopes = [...this.plugin.scopes.current().scopes].sort(
 			(left, right) => left.order - right.order || left.name.localeCompare(right.name),
 		);
+		if (!this.plugin.scopes.isMutationSafe()) {
+			el.createDiv({
+				cls: "setting-item-description",
+				text: `Каталог scope (${SCOPE_CATALOG_PATH}) повреждён — создание и правка scope заблокированы. Нажмите «Пересоздать каталог scope…»: старый файл сохранится рядом как .bak-…`,
+			});
+		}
 		if (scopes.length === 0) {
 			el.createDiv({
 				cls: "setting-item-description",
@@ -173,6 +181,23 @@ export class GtdSettingsTab extends PluginSettingTab {
 						this.reportAction("scope не создан", async () => {
 							await this.plugin.scopes.create(newScopeName);
 							this.display();
+						}),
+					),
+			);
+
+		new Setting(el)
+			.setName("Пересоздать каталог scope…")
+			.setDesc(
+				`Аварийный выход, если ${SCOPE_CATALOG_PATH} испорчен и изменения заблокированы: старый файл сохраняется рядом как .bak-<дата>, на его место пишется пустой каталог. Та же команда есть в палитре.`,
+			)
+			.addButton((button) =>
+				button
+					.setButtonText("Пересоздать")
+					.setWarning()
+					.onClick(() =>
+						this.reportAction("каталог scope не пересоздан", async () => {
+							if (await recreateScopeCatalogWithConfirm(this.app, this.plugin.scopes))
+								this.display();
 						}),
 					),
 			);

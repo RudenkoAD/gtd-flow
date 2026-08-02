@@ -73,9 +73,67 @@ function createAdapter(): { vault: IndexedMemoryVault; adapter: VaultAdapter } {
 	return { vault, adapter: new VaultAdapter({ vault } as unknown as App) };
 }
 
+/**
+ * Строгий двойник `vault.adapter`: как настоящая ФС, отказывает в записи, если
+ * родительской папки нет, и создаёт ровно один уровень за `mkdir`. Свежий vault
+ * (совсем нет `.gtd-flow`) проверяем именно здесь: мягкий фейк такую регрессию
+ * не увидел бы.
+ */
+function createStrictAdapter(): { written: Map<string, string>; adapter: VaultAdapter } {
+	const written = new Map<string, string>();
+	const folders = new Set<string>();
+	const parent = (path: string): string => path.split("/").slice(0, -1).join("/");
+	const strict = {
+		async exists(path: string) {
+			return written.has(path) || folders.has(path);
+		},
+		async read(path: string) {
+			const content = written.get(path);
+			if (content === undefined) throw new Error(`ENOENT:${path}`);
+			return content;
+		},
+		async write(path: string, content: string) {
+			const dir = parent(path);
+			if (dir !== "" && !folders.has(dir)) throw new Error(`ENOENT:${dir}`);
+			written.set(path, content);
+		},
+		async mkdir(path: string) {
+			const dir = parent(path);
+			if (dir !== "" && !folders.has(dir)) throw new Error(`ENOENT:${dir}`);
+			folders.add(path);
+		},
+		async remove(path: string) {
+			written.delete(path);
+		},
+		async list() {
+			return { files: [], folders: [] };
+		},
+		async stat() {
+			return null;
+		},
+	};
+	return { written, adapter: new VaultAdapter({ vault: { adapter: strict } } as unknown as App) };
+}
+
 const CATALOG = ".gtd-flow/config/scopes.json";
 
 describe("VaultAdapter and hidden .gtd-flow paths", () => {
+	it("создаёт всю цепочку скрытых папок на свежем vault без .gtd-flow", async () => {
+		const { written, adapter } = createStrictAdapter();
+
+		await adapter.writeAtomic(CATALOG, "{}");
+		await adapter.writeNew(".gtd-flow/ai/runs/2026/08/run-1.json", "run");
+		expect(await adapter.compareAndSet(".gtd-flow/ai/migrations/one.json", null, "cas")).toBe(
+			true,
+		);
+		await adapter.ensureFile(".gtd-flow/logs/deep/nested/file.md");
+
+		expect(written.get(CATALOG)).toBe("{}");
+		expect(written.get(".gtd-flow/ai/runs/2026/08/run-1.json")).toBe("run");
+		expect(written.get(".gtd-flow/ai/migrations/one.json")).toBe("cas");
+		expect(written.get(".gtd-flow/logs/deep/nested/file.md")).toBe("");
+	});
+
 	it("reads back what it wrote, though the vault index never sees the file", async () => {
 		const { vault, adapter } = createAdapter();
 

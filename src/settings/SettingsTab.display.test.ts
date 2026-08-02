@@ -180,6 +180,7 @@ describe("GtdSettingsTab display", () => {
 				settings: createDefaultSettings(),
 				scopes: {
 					current: () => ({ schemaVersion: 1, scopes: [] }),
+					isMutationSafe: () => true,
 				},
 				ai: {
 					feedbackSummary: summary,
@@ -204,6 +205,7 @@ describe("GtdSettingsTab display", () => {
 			settings: createDefaultSettings(),
 			scopes: {
 				current: () => ({ schemaVersion: 1, scopes: [] }),
+				isMutationSafe: () => true,
 			},
 		};
 		const tab = new GtdSettingsTab({} as never, plugin as never, {
@@ -234,6 +236,7 @@ describe("GtdSettingsTab display", () => {
 			settings,
 			scopes: {
 				current: () => ({ schemaVersion: 1, scopes: [] }),
+				isMutationSafe: () => true,
 			},
 			saveSettings,
 			desktopCalendarSync,

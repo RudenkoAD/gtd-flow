@@ -24,6 +24,7 @@ import { appendLine } from "./views/calendar/calendarLogic";
 import { pickBoardColumn, pickDate } from "./views/common/pickers";
 import { reportAsync } from "./views/common/runAction";
 import { ensureCaptureFile, findTaskAtLine, quickCaptureLine } from "./views/common/taskActions";
+import { recreateScopeCatalogWithConfirm } from "./views/common/scopeRecovery";
 import type { ProcessInboxSummary } from "./ai/processing/InboxProcessor";
 
 export interface CommandRegistrationOptions {
@@ -48,6 +49,17 @@ export function registerCommands(
 		id: "run-recurrence-pass",
 		name: "Проверить регулярные сейчас",
 		callback: () => reportAsync("проход повторов не выполнен", () => runRecurrencePass(plugin)),
+	});
+
+	// Доступно и на Android: раздел scope в настройках есть на обеих платформах,
+	// а повреждённый каталог блокирует создание scope везде одинаково.
+	plugin.addCommand({
+		id: "recreate-scope-catalog",
+		name: "Пересоздать каталог scope…",
+		callback: () =>
+			reportAsync("каталог scope не пересоздан", async () => {
+				await recreateScopeCatalogWithConfirm(plugin.app, plugin.scopes);
+			}),
 	});
 
 	// Android MVP intentionally exposes only commands backed by its registered

@@ -4,8 +4,8 @@ import {
 	parseScopeCatalog,
 	scopeById,
 	uniqueScopeId,
-	type ParsedScopeCatalog,
 	type ScopeCatalog,
+	type ScopeCatalogDiagnostic,
 	type ScopeDef,
 } from "../core/scope/scope";
 
@@ -20,8 +20,23 @@ export interface ScopeReferenceCounter {
 	countTasksWithScope(scopeId: string): number;
 }
 
-export interface ScopeCatalogLoadResult extends ParsedScopeCatalog {
+/**
+ * Диагностики загрузки шире разборных: пустой файл — не порча каталога,
+ * а след прерванной записи, и лечится молча (мягкий код только для лога).
+ */
+export type ScopeCatalogLoadDiagnostic =
+	ScopeCatalogDiagnostic | { code: "empty-catalog-healed"; message: string };
+
+export interface ScopeCatalogLoadResult {
+	catalog: ScopeCatalog;
+	diagnostics: ScopeCatalogLoadDiagnostic[];
 	exists: boolean;
+}
+
+/** Итог пересоздания каталога: куда лёг бэкап (null — спасать было нечего). */
+export interface ScopeCatalogRecreateResult {
+	backupPath: string | null;
+	catalog: ScopeCatalog;
 }
 
 /**
@@ -47,14 +62,38 @@ export class ScopeCatalogService {
 		return this.loaded;
 	}
 
+	/** false — каталог повреждён и все мутации закрыты до пересоздания. */
+	isMutationSafe(): boolean {
+		return this.loaded && this.mutationSafe;
+	}
+
 	async load(): Promise<ScopeCatalogLoadResult> {
 		const raw = await this.storage.read(SCOPE_CATALOG_PATH);
 		this.loaded = true;
 		this.persistedRaw = raw;
-		if (raw === null) {
+		// Пустой (или из одних пробелов) файл — не «повреждённый каталог», а след
+		// оборванной записи: так 0.13.x создавала дот-путь через TFile-API, и так
+		// же выглядит обрезанный синк. JSON.parse('') бросил бы, и пользователь
+		// оставался с заблокированными мутациями без пути восстановления, хотя
+		// терять нечего. Трактуем как отсутствующий файл: bootstrap пустого
+		// каталога, мутации открыты, первая же запись перезапишет пустышку.
+		if (raw === null || raw.trim() === "") {
 			this.catalog = createScopeCatalog();
 			this.mutationSafe = true;
-			return { exists: false, catalog: this.current(), diagnostics: [] };
+			return {
+				exists: false,
+				catalog: this.current(),
+				diagnostics:
+					raw === null
+						? []
+						: [
+								{
+									code: "empty-catalog-healed",
+									message:
+										"scope catalog file was empty and is treated as absent",
+								},
+							],
+			};
 		}
 		let decoded: unknown;
 		try {
@@ -74,6 +113,38 @@ export class ScopeCatalogService {
 		this.catalog = parsed.catalog;
 		this.mutationSafe = parsed.diagnostics.length === 0;
 		return { exists: true, catalog: this.current(), diagnostics: parsed.diagnostics };
+	}
+
+	/**
+	 * Единственный выход из «каталог scope повреждён»: старый файл уезжает в
+	 * `scopes.json.bak-<yyyyMMdd-HHmmss>` рядом (тем же storage — дот-путь идёт
+	 * через adapter), на его место пишется валидный пустой каталог, состояние
+	 * перечитывается. Мутации после этого снова открыты. Метки 🧭 в задачах не
+	 * трогаем: имена scope восстанавливаются вручную из бэкапа.
+	 */
+	async recreate(now: Date = new Date()): Promise<ScopeCatalogRecreateResult> {
+		const raw = await this.storage.read(SCOPE_CATALOG_PATH);
+		let backupPath: string | null = null;
+		if (raw !== null && raw.trim() !== "") {
+			backupPath = await this.freeBackupPath(now);
+			await this.storage.writeAtomic(backupPath, raw);
+		}
+		await this.storage.writeAtomic(
+			SCOPE_CATALOG_PATH,
+			`${JSON.stringify(createScopeCatalog(), null, 2)}\n`,
+		);
+		await this.load();
+		return { backupPath, catalog: this.current() };
+	}
+
+	/** Две аварии в одну секунду не должны затирать первый бэкап. */
+	private async freeBackupPath(now: Date): Promise<string> {
+		const base = `${SCOPE_CATALOG_PATH}.bak-${backupStamp(now)}`;
+		for (let attempt = 0; attempt < 100; attempt++) {
+			const candidate = attempt === 0 ? base : `${base}-${attempt}`;
+			if ((await this.storage.read(candidate)) === null) return candidate;
+		}
+		throw new Error("scope-catalog-backup-path-unavailable");
 	}
 
 	async initialize(scopes: readonly ScopeDef[]): Promise<ScopeCatalog> {
@@ -205,6 +276,15 @@ export class ScopeCatalogService {
 		this.requireLoaded();
 		if (!this.mutationSafe) throw new Error("scope-catalog-invalid");
 	}
+}
+
+/** Локальный штамп бэкапа: yyyyMMdd-HHmmss, читается человеком в файловом менеджере. */
+function backupStamp(now: Date): string {
+	const pad = (value: number, width = 2): string => String(value).padStart(width, "0");
+	return (
+		`${pad(now.getFullYear(), 4)}${pad(now.getMonth() + 1)}${pad(now.getDate())}` +
+		`-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+	);
 }
 
 function validateScopeName(name: string): string {

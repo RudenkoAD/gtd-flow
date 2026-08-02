@@ -67,6 +67,71 @@ describe("ScopeCatalogService", () => {
 		await expect(fixture.service.delete("work")).rejects.toThrow("scope-is-referenced:2");
 	});
 
+	it.each([
+		["пустой файл", ""],
+		["только пробелы и перевод строки", "   \n"],
+	])("лечит %s: это оборванная запись, а не повреждённый каталог", async (_label, content) => {
+		const fixture = service();
+		fixture.storage.files.set(SCOPE_CATALOG_PATH, content);
+
+		const loaded = await fixture.service.load();
+
+		expect(loaded.exists).toBe(false);
+		expect(loaded.catalog.scopes).toEqual([]);
+		expect(loaded.diagnostics.map((item) => item.code)).toEqual(["empty-catalog-healed"]);
+		expect(fixture.service.isMutationSafe()).toBe(true);
+		await expect(fixture.service.create("Work")).resolves.toMatchObject({ id: "work" });
+		expect(JSON.parse(fixture.storage.files.get(SCOPE_CATALOG_PATH)!)).toEqual({
+			schemaVersion: 1,
+			scopes: [{ id: "work", name: "Work", order: 0, archived: false }],
+		});
+	});
+
+	it("пересоздаёт повреждённый каталог, сохранив старый файл рядом", async () => {
+		const fixture = service();
+		fixture.storage.files.set(SCOPE_CATALOG_PATH, "{oops");
+		await fixture.service.load();
+		expect(fixture.service.isMutationSafe()).toBe(false);
+
+		const recreated = await fixture.service.recreate(new Date(2026, 7, 2, 9, 5, 3));
+
+		expect(recreated.backupPath).toBe(`${SCOPE_CATALOG_PATH}.bak-20260802-090503`);
+		expect(fixture.storage.files.get(recreated.backupPath!)).toBe("{oops");
+		expect(JSON.parse(fixture.storage.files.get(SCOPE_CATALOG_PATH)!)).toEqual({
+			schemaVersion: 1,
+			scopes: [],
+		});
+		expect(fixture.service.isMutationSafe()).toBe(true);
+		await expect(fixture.service.create("Work")).resolves.toMatchObject({ id: "work" });
+	});
+
+	it("не затирает первый бэкап и не плодит его там, где спасать нечего", async () => {
+		const fixture = service();
+		fixture.storage.files.set(SCOPE_CATALOG_PATH, "{oops");
+		await fixture.service.load();
+		const stamp = new Date(2026, 7, 2, 9, 5, 3);
+
+		const first = await fixture.service.recreate(stamp);
+		const second = await fixture.service.recreate(stamp);
+		const third = await fixture.service.recreate(stamp);
+
+		expect(first.backupPath).toBe(`${SCOPE_CATALOG_PATH}.bak-20260802-090503`);
+		// второй вызов спасает уже пустой валидный каталог, третий — тоже
+		expect(second.backupPath).toBe(`${SCOPE_CATALOG_PATH}.bak-20260802-090503-1`);
+		expect(third.backupPath).toBe(`${SCOPE_CATALOG_PATH}.bak-20260802-090503-2`);
+		expect(fixture.storage.files.get(first.backupPath!)).toBe("{oops");
+	});
+
+	it("пересоздание на свежем vault не создаёт бэкап пустоты", async () => {
+		const fixture = service();
+		await fixture.service.load();
+
+		const recreated = await fixture.service.recreate(new Date(2026, 7, 2, 9, 5, 3));
+
+		expect(recreated.backupPath).toBeNull();
+		expect([...fixture.storage.files.keys()]).toEqual([SCOPE_CATALOG_PATH]);
+	});
+
 	it("fails closed on malformed synced JSON", async () => {
 		const fixture = service();
 		fixture.storage.files.set(SCOPE_CATALOG_PATH, "{not json");

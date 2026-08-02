@@ -25,7 +25,8 @@ const MESSAGES: Readonly<Record<string, string | Describe>> = {
 	"scope-not-active": "scope архивирован или не существует",
 	"scope-name-already-exists": "scope с таким именем уже есть",
 	"scope-catalog-not-loaded": "каталог scope ещё не загружен",
-	"scope-catalog-invalid": "каталог scope повреждён — изменения заблокированы",
+	"scope-catalog-invalid":
+		"каталог scope повреждён — изменения заблокированы; используйте команду «Пересоздать каталог scope…»",
 	"scope-catalog-changed": "каталог scope изменился на другом устройстве, повторите",
 	"scope-catalog-already-initialized": "каталог scope уже создан",
 	"scope-order-must-contain-every-scope-once": "порядок scope задан неверно",

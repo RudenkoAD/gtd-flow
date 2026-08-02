@@ -28,7 +28,10 @@ export class SyncedStorageError extends Error {
 
 export async function readJsonFile(port: AtomicFilePort, path: string): Promise<unknown | null> {
 	const content = await port.read(path);
-	if (content === null) return null;
+	// Пустой файл — не запись, а след оборванной записи (так дот-пути создавала
+	// 0.13.x через TFile-API, так же выглядит обрезанный синк). Для конфигов это
+	// «файла нет»; неизменяемые записи ловят null отдельной проверкой.
+	if (content === null || content.trim() === "") return null;
 	try {
 		return JSON.parse(content);
 	} catch {

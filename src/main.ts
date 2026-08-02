@@ -158,7 +158,13 @@ export default class GtdFlowPlugin extends Plugin {
 						.length,
 			},
 		);
-		await this.scopes.load();
+		const scopeCatalog = await this.scopes.load();
+		// Пустой файл каталога лечится молча, но след в консоли нужен: это признак
+		// оборванной записи или обрезанного синка. Настоящая порча (не JSON) не
+		// лечится сама — там пользователю остаётся «Пересоздать каталог scope…».
+		if (scopeCatalog.diagnostics.length > 0) {
+			console.warn("GTD Flow: диагностика каталога scope", scopeCatalog.diagnostics);
+		}
 		this.namespaceMigration = new NamespaceMigrationService(
 			this.vaultAdapter,
 			{

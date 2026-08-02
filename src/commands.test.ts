@@ -194,6 +194,10 @@ function makePlugin(over?: {
 	const aiOpenSession = vi.fn(over?.aiOpenSession ?? (() => Promise.resolve()));
 	const aiCancelProcessing = vi.fn(over?.aiCancelProcessing ?? (() => 0));
 	const aiRetryWaiting = vi.fn(over?.aiRetryWaiting ?? (() => Promise.resolve([])));
+	const scopesRecreate = vi.fn(async () => ({
+		backupPath: ".gtd-flow/config/scopes.json.bak-20260802-090503",
+		catalog: { schemaVersion: 1 as const, scopes: [] },
+	}));
 	const bindMigrationPreview = vi.fn(async (value: Record<string, unknown>) => ({
 		...value,
 		fileBindings: [],
@@ -207,6 +211,8 @@ function makePlugin(over?: {
 				schemaVersion: 1 as const,
 				scopes: [{ id: "work", name: "Work", order: 0, archived: false }],
 			}),
+			isMutationSafe: () => true,
+			recreate: scopesRecreate,
 		},
 		legacyNamespaceMigrationInventory: () => ({
 			inventory: { namespaces: [], inboxes: [], tasks: [] },
@@ -249,6 +255,7 @@ function makePlugin(over?: {
 		aiCancelProcessing,
 		aiRetryWaiting,
 		bindMigrationPreview,
+		scopesRecreate,
 	};
 }
 
@@ -271,7 +278,12 @@ beforeEach(() => {
 describe("AI command registration", () => {
 	it("does not register desktop-only commands for the Android MVP", () => {
 		const { commands } = makePlugin({ desktopFeatures: false });
-		expect([...commands.keys()]).toEqual(["quick-capture", "run-recurrence-pass"]);
+		// восстановление каталога scope доступно и на Android: раздел scope есть там же
+		expect([...commands.keys()]).toEqual([
+			"quick-capture",
+			"run-recurrence-pass",
+			"recreate-scope-catalog",
+		]);
 	});
 
 	it("registers explicit processing, reprocessing, unlock, history, and retry commands", () => {
@@ -583,5 +595,33 @@ describe("quick-capture: ошибки записи", () => {
 
 		expect(H.notices).toHaveLength(1);
 		expect(H.notices[0]).toContain("не удалось записать");
+	});
+});
+
+describe("восстановление каталога scope", () => {
+	it("после подтверждения пересоздаёт каталог и называет файл бэкапа", async () => {
+		const { commands, scopesRecreate } = makePlugin();
+
+		commands.get("recreate-scope-catalog")!.callback!();
+		await tick();
+		const modal = H.modals.at(-1) as InstanceType<typeof H.Modal>;
+		const row = modal.contentEl.querySelector(".modal-button-container")!;
+		row.children[0]!.dispatch("click", {});
+		await tick();
+
+		expect(scopesRecreate).toHaveBeenCalledTimes(1);
+		expect(H.notices.at(-1)).toContain(".gtd-flow/config/scopes.json.bak-20260802-090503");
+	});
+
+	it("отмена не трогает файл каталога", async () => {
+		const { commands, scopesRecreate } = makePlugin();
+
+		commands.get("recreate-scope-catalog")!.callback!();
+		await tick();
+		(H.modals.at(-1) as InstanceType<typeof H.Modal>).close();
+		await tick();
+
+		expect(scopesRecreate).not.toHaveBeenCalled();
+		expect(H.notices).toHaveLength(0);
 	});
 });

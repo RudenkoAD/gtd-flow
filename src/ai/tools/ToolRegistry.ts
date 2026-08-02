@@ -1,4 +1,4 @@
-import type { z } from "zod";
+import type { Output, ZodType } from "../../schema/zod";
 import type { AgentToolCall, AgentToolDefinition } from "../core/messages";
 import { permissionForRisk, type ToolRisk } from "./permissionPolicy";
 
@@ -20,15 +20,15 @@ export interface ToolExecutionContext {
 	signal?: AbortSignal;
 }
 
-export interface RegisteredTool<TSchema extends z.ZodType = z.ZodType> {
+export interface RegisteredTool<TSchema extends ZodType = ZodType> {
 	name: string;
 	description: string;
 	parameters: Record<string, unknown>;
 	schema: TSchema;
 	risk: ToolRisk;
-	preview?: (input: z.output<TSchema>) => string;
+	preview?: (input: Output<TSchema>) => string;
 	execute: (
-		input: z.output<TSchema>,
+		input: Output<TSchema>,
 		context?: ToolExecutionContext,
 	) => Promise<ReversibleToolResult>;
 }
@@ -73,7 +73,7 @@ export class ToolRegistry {
 
 	constructor(private readonly createId: () => string = () => crypto.randomUUID()) {}
 
-	register<TSchema extends z.ZodType>(tool: RegisteredTool<TSchema>): void {
+	register<TSchema extends ZodType>(tool: RegisteredTool<TSchema>): void {
 		if (!/^[a-z][a-z0-9_]{1,63}$/u.test(tool.name)) throw new Error("invalid-tool-name");
 		if (
 			tool.risk !== "read" &&

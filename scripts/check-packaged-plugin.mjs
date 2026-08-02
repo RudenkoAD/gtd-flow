@@ -15,8 +15,8 @@ const { manifest, packageJson } = contract;
 
 errors.push(...validateReleaseContract(contract, { artifacts: true }));
 
-if (manifest.isDesktopOnly !== true) {
-	errors.push("manifest.json must explicitly set isDesktopOnly: true");
+if (manifest.isDesktopOnly !== false) {
+	errors.push("manifest.json must explicitly set isDesktopOnly: false");
 }
 if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(manifest.id ?? "")) {
 	errors.push("manifest.json id must be a lowercase, hyphen-separated identifier");
@@ -36,12 +36,13 @@ if (!mainCode.includes("module.exports")) {
 	errors.push("main.js is not a CommonJS Obsidian plugin bundle");
 }
 
-const externals = new Set(
-	[
-		...mainCode.matchAll(/\brequire\(\s*["']([^"']+)["']\s*\)/gu),
-		...mainCode.matchAll(/\bimport\(\s*["']([^"']+)["']\s*\)/gu),
-	].map((match) => match[1]),
+const eagerExternals = new Set(
+	[...mainCode.matchAll(/\brequire\(\s*["']([^"']+)["']\s*\)/gu)].map((match) => match[1]),
 );
+const deferredExternals = new Set(
+	[...mainCode.matchAll(/\bimport\(\s*["']([^"']+)["']\s*\)/gu)].map((match) => match[1]),
+);
+const externals = new Set([...eagerExternals, ...deferredExternals]);
 const nodeBuiltins = new Set([...builtinModules, ...builtinModules.map((name) => `node:${name}`)]);
 const allowedExternals = new Set(["obsidian", "electron", ...nodeBuiltins]);
 const unexpectedExternals = [...externals].filter((name) => !allowedExternals.has(name)).sort();
@@ -54,8 +55,13 @@ if (!externals.has("obsidian")) {
 const desktopRuntimeExternals = [...externals].filter(
 	(name) => name === "electron" || nodeBuiltins.has(name),
 );
-if (desktopRuntimeExternals.length > 0 && manifest.isDesktopOnly !== true) {
-	errors.push("Node/Electron runtime imports require a desktop-only manifest");
+const eagerDesktopRuntimeExternals = [...eagerExternals].filter(
+	(name) => name === "electron" || nodeBuiltins.has(name),
+);
+if (eagerDesktopRuntimeExternals.length > 0) {
+	errors.push(
+		`universal main.js eagerly loads Node/Electron modules: ${eagerDesktopRuntimeExternals.sort().join(", ")}`,
+	);
 }
 
 const concreteSecretPatterns = [
@@ -88,6 +94,9 @@ if (errors.length === 0) {
 		Module._cache[mainPath] = pluginModule;
 		Module._load = function loadWithObsidianShim(request, parent, isMain) {
 			if (request === "obsidian") return obsidianShim;
+			if (request === "electron" || nodeBuiltins.has(request)) {
+				throw new Error(`mobile-runtime-external:${request}`);
+			}
 			return originalLoad.call(this, request, parent, isMain);
 		};
 		pluginModule._compile(mainCode, mainPath);
@@ -112,5 +121,5 @@ if (errors.length > 0) {
 }
 
 console.log(
-	`packaged plugin check OK (desktop externals: ${desktopRuntimeExternals.sort().join(", ") || "none"})`,
+	`packaged plugin check OK (deferred desktop externals: ${desktopRuntimeExternals.sort().join(", ") || "none"})`,
 );

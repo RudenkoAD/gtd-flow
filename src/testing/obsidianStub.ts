@@ -33,6 +33,12 @@ export class MarkdownView {}
 
 export class Plugin {}
 
+export const Platform = {
+	isDesktopApp: true,
+	isMobileApp: false,
+	isPhone: false,
+};
+
 /**
  * Как реальный Obsidian ≥1.12: конструктор View вызывает getViewType()
  * ДО присвоения полей подкласса. Регрессия живой верификации — виды,

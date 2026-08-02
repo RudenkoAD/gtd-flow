@@ -3,7 +3,7 @@ import type { Intent } from "../core/intents/Intent";
 import type { ContainerKind, IsoDate, Task } from "../core/model/Task";
 import { parseTaskLine } from "../core/parser/parseTaskLine";
 import { FakeFeed } from "../stores/testSupport";
-import { RecurrenceService } from "./RecurrenceService";
+import { deterministicRecurringTemplateId, RecurrenceService } from "./RecurrenceService";
 import {
 	WritebackService,
 	type IntentDispatcher,
@@ -307,12 +307,14 @@ describe("RecurrenceService: ленивая инъекция 🆔 в шабло�
 		expect(port.files.get(INBOX) ?? "").toBe(""); // копии в этом проходе нет
 
 		sync(); // индексатор увидел 🆔 на шаблоне
+		expect(svc.needsIndexTriggeredPass()).toBe(true);
 
 		const second = await svc.runPass();
 
 		expect(second.errors).toEqual([]);
 		expect(second.spawned).toBe(1);
 		expect(port.files.get(INBOX)).toContain("🧬 genrec 🆔 genrec-20260715");
+		expect(svc.needsIndexTriggeredPass()).toBe(false);
 	});
 
 	it("повторный проход до реиндекса НЕ вписывает второй id (идемпотентность окна дебаунса)", async () => {
@@ -332,6 +334,39 @@ describe("RecurrenceService: ленивая инъекция 🆔 в шабло�
 		expect(port.files.get(REC)).not.toContain("id2");
 		expect(second.errors).toEqual([]);
 	});
+
+	it("peer-injected deterministic ID still schedules the deferred spawn", async () => {
+		const port = new FakePort();
+		const feed = new FakeFeed();
+		const writeback = new WritebackService({ write: port, feed, autoInjectId: false });
+		port.files.set(REC, "- [ ] Обзор 🔁 every day\n");
+		port.files.set(INBOX, "");
+		feed.replaceFile(REC, parseFile(REC, port.files.get(REC)!, "recurring"));
+		const taskKey = feed.getIndex().fileTasks(REC)[0]!.key;
+		const deterministicId = deterministicRecurringTemplateId(taskKey);
+		const dispatcher: IntentDispatcher = {
+			dispatch: async (intent) => {
+				if (intent.type !== "set-id") return writeback.dispatch(intent);
+				port.files.set(REC, `- [ ] Обзор 🔁 every day 🆔 ${deterministicId}\n`);
+				feed.replaceFile(REC, parseFile(REC, port.files.get(REC)!, "recurring"));
+				return { ok: false, reason: "task-not-found" };
+			},
+		};
+		const svc = new RecurrenceService({
+			feed,
+			write: port,
+			dispatcher,
+			settings: () => ({ inboxFile: INBOX, catchUp: "latest", catchUpCap: 30 }),
+			todayIso: () => "2026-07-15",
+			indexReady: () => true,
+			ensureFile: async () => undefined,
+		});
+
+		await expect(svc.runPass()).resolves.toMatchObject({ spawned: 0 });
+		expect(svc.needsIndexTriggeredPass()).toBe(true);
+		await expect(svc.runPass()).resolves.toMatchObject({ spawned: 1 });
+		expect(port.files.get(INBOX)).toContain(`🧬 ${deterministicId}`);
+	});
 });
 
 describe("RecurrenceService: дедуп двух устройств", () => {
@@ -339,6 +374,58 @@ describe("RecurrenceService: дедуп двух устройств", () => {
 	const TPL_ADVANCED =
 		"- [ ] Ревью приоритетов #review 🔁 every month on the last day 🛫 -3d 🆔 rev-prio 🔜 2026-08-31";
 	const OTHER = "GTD/Другое.md";
+
+	it("два независимых устройства одновременно создают не больше одной копии", async () => {
+		const port = new FakePort();
+		const feeds = [new FakeFeed(), new FakeFeed()] as const;
+		port.files.set(REC, `${TPL_LINE}\n`);
+		for (const feed of feeds) {
+			feed.replaceFile(REC, parseFile(REC, port.files.get(REC)!, "recurring"));
+		}
+		const services = feeds.map((feed) => {
+			const dispatcher = new WritebackService({ write: port, feed, autoInjectId: false });
+			return new RecurrenceService({
+				feed,
+				write: port,
+				dispatcher,
+				settings: () => ({ inboxFile: INBOX, catchUp: "latest", catchUpCap: 30 }),
+				todayIso: () => "2026-08-03",
+				indexReady: () => true,
+				ensureFile: async (path) => {
+					if (!port.files.has(path)) port.files.set(path, "");
+				},
+			});
+		});
+
+		const reports = await Promise.all(services.map((service) => service.runPass()));
+
+		expect(reports.reduce((sum, report) => sum + report.spawned, 0)).toBe(1);
+		expect(port.files.get(INBOX)!.split("rev-prio-20260731")).toHaveLength(2);
+		expect(port.files.get(REC)).toContain("🔜 2026-08-31");
+	});
+
+	it("две офлайн-копии обнаруживаются и сходятся после объединения индексов", async () => {
+		const devices = [
+			makeHarness({ today: "2026-08-03" }),
+			makeHarness({ today: "2026-08-03" }),
+		];
+		for (const device of devices) {
+			device.port.files.set(REC, `${TPL_LINE}\n`);
+			device.sync();
+			await expect(device.svc.runPass()).resolves.toMatchObject({ spawned: 1 });
+		}
+
+		const merged = makeHarness({ today: "2026-08-05" });
+		merged.port.files.set(REC, devices[0]!.port.files.get(REC)!);
+		merged.port.files.set("GTD/Device A.md", devices[0]!.port.files.get(INBOX)!);
+		merged.port.files.set("GTD/Device B.md", devices[1]!.port.files.get(INBOX)!);
+		merged.sync();
+
+		expect(merged.svc.needsConvergencePass()).toBe(true);
+		await expect(merged.svc.runPass()).resolves.toMatchObject({ deduped: 1, conflicts: [] });
+		merged.sync();
+		expect(merged.svc.needsConvergencePass()).toBe(false);
+	});
 
 	it("пристин-проигравший удалён, модифицированный выживает", async () => {
 		const { port, svc, sync, state } = makeHarness();
@@ -416,6 +503,7 @@ describe("RecurrenceService: дедуп двух устройств", () => {
 		port.files.set(INBOX, `${doneHere}\n`);
 		port.files.set(OTHER, `${editedThere}\n`);
 		sync();
+		expect(svc.needsConvergencePass()).toBe(false);
 
 		const report = await svc.runPass();
 
@@ -457,6 +545,20 @@ describe("RecurrenceService: дедуп двух устройств", () => {
 
 		expect(report).toEqual({ spawned: 0, advanced: 0, deduped: 0, conflicts: [], errors: [] });
 		expect(port.files.get(INBOX)).toBe("- [ ] раз 🆔 shared\n");
+	});
+});
+
+describe("RecurrenceService: deterministic legacy template IDs", () => {
+	it("derives one stable parent ID per content key on offline replicas", () => {
+		const taskKey = "GTD/Recurring.md#d34db33f#0";
+		const firstReplica = deterministicRecurringTemplateId(taskKey);
+		const secondReplica = deterministicRecurringTemplateId(taskKey);
+
+		expect(firstReplica).toMatch(/^rec-[0-9a-f]{16}$/u);
+		expect(secondReplica).toBe(firstReplica);
+		expect(deterministicRecurringTemplateId("GTD/Recurring.md#d34db33f#1")).not.toBe(
+			firstReplica,
+		);
 	});
 });
 

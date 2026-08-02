@@ -11,6 +11,7 @@ If you want to view the source, please visit the github repository of this plugi
 `;
 
 const prod = process.argv[2] === "production";
+const analyzeBundle = process.env.GTD_FLOW_ANALYZE_BUNDLE === "1";
 
 const context = await esbuild.context({
 	banner: { js: banner },
@@ -41,6 +42,7 @@ const context = await esbuild.context({
 	outfile: "main.js",
 	minify: prod,
 	conditions: ["svelte", "browser"],
+	metafile: analyzeBundle,
 	plugins: [
 		esbuildSvelte({
 			preprocess: sveltePreprocess(),
@@ -67,6 +69,9 @@ if (prod) {
 			`production build rejected ${projectWarnings.length} project-authored Svelte warning(s)`,
 		);
 		process.exit(1);
+	}
+	if (analyzeBundle && result.metafile) {
+		console.log(await esbuild.analyzeMetafile(result.metafile, { verbose: false }));
 	}
 	await context.dispose();
 } else {

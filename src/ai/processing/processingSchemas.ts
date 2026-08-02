@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { type Infer, z } from "../../schema/zod";
 import { isDurationMinutes } from "../../core/model/Task";
 
 /** Canonical duration: five-minute sub-day values or whole-day values. */
@@ -11,7 +11,7 @@ export const DurationMinutesSchema = z
 		"Duration must use five-minute increments below 24h and whole days from 24h upward",
 	);
 export const NullableDurationMinutesSchema = DurationMinutesSchema.nullable();
-export type DurationMinutes = z.infer<typeof DurationMinutesSchema>;
+export type DurationMinutes = Infer<typeof DurationMinutesSchema>;
 
 export const IntensityDimensionSchema = z.union([
 	z.literal(0),
@@ -21,7 +21,7 @@ export const IntensityDimensionSchema = z.union([
 	z.literal(4),
 	z.literal(5),
 ]);
-export type IntensityDimension = z.infer<typeof IntensityDimensionSchema>;
+export type IntensityDimension = Infer<typeof IntensityDimensionSchema>;
 
 export const TaskIntensitySchema = z
 	.object({
@@ -30,7 +30,7 @@ export const TaskIntensitySchema = z
 		physical: IntensityDimensionSchema,
 	})
 	.strict();
-export type TaskIntensity = z.infer<typeof TaskIntensitySchema>;
+export type TaskIntensity = Infer<typeof TaskIntensitySchema>;
 
 export const ProcessingFieldSchema = z.enum([
 	"duration",
@@ -39,7 +39,7 @@ export const ProcessingFieldSchema = z.enum([
 	"physical",
 	"scope",
 ]);
-export type ProcessingField = z.infer<typeof ProcessingFieldSchema>;
+export type ProcessingField = Infer<typeof ProcessingFieldSchema>;
 
 export const ConfidenceSchema = z
 	.object({
@@ -50,7 +50,7 @@ export const ConfidenceSchema = z
 		scope: z.number().finite().min(0).max(1),
 	})
 	.strict();
-export type Confidence = z.infer<typeof ConfidenceSchema>;
+export type Confidence = Infer<typeof ConfidenceSchema>;
 
 export const ProcessingQuestionSchema = z
 	.object({
@@ -59,7 +59,7 @@ export const ProcessingQuestionSchema = z
 		affectedFields: z.array(ProcessingFieldSchema).min(1).max(5),
 	})
 	.strict();
-export type ProcessingQuestion = z.infer<typeof ProcessingQuestionSchema>;
+export type ProcessingQuestion = Infer<typeof ProcessingQuestionSchema>;
 
 /**
  * Builds a closed result schema from the current catalog. Archived or absent
@@ -87,4 +87,4 @@ export function createInboxProcessingResultSchema(activeScopeIds: ReadonlySet<st
 	return z.object({ tasks: z.array(task).max(100) }).strict();
 }
 
-export type InboxProcessingResult = z.infer<ReturnType<typeof createInboxProcessingResultSchema>>;
+export type InboxProcessingResult = Infer<ReturnType<typeof createInboxProcessingResultSchema>>;

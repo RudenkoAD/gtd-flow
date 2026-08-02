@@ -120,7 +120,7 @@ function createNoticeRoot(): HTMLElement {
 	return root;
 }
 
-export const Platform = { isPhone: false };
+export const Platform = { isPhone: false, isMobileApp: false };
 
 export function setTooltip(_element: HTMLElement, _text: string, _options?: unknown): void {}
 export function setIcon(_element: HTMLElement, _icon: string): void {}

@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "../../schema/zod";
 import { isDurationMinutes, type Priority, type ProjectStatus } from "../../core/model/Task";
 import { parseDatePayload } from "../../core/parser/parseTaskLine";
 import { ToolRegistry, type ToolExecutionContext } from "./ToolRegistry";

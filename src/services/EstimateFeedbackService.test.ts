@@ -13,9 +13,11 @@ class MemoryFeedbackStorage {
 	readonly files = new Map<string, string>();
 	readonly atomicWrites: string[] = [];
 	readonly newWrites: string[] = [];
+	listCalls = 0;
 	failNextNew = false;
 
 	async list(path: string): Promise<string[]> {
+		this.listCalls++;
 		return [...this.files.keys()].filter((file) => file.startsWith(`${path}/`));
 	}
 
@@ -204,6 +206,37 @@ describe("EstimateFeedbackService", () => {
 			lastPredictionEventId: event.id,
 		});
 		expect((await service.readAll()).events).toEqual([event]);
+	});
+
+	it("replays one storage snapshot for multiple task provenances", async () => {
+		const storage = new MemoryFeedbackStorage();
+		const service = new EstimateFeedbackService(storage);
+		await service.append(
+			correction(
+				"task-one-duration",
+				"estimate-corrected",
+				"duration",
+				"2026-07-28T00:00:00.000Z",
+			),
+		);
+		await service.append({
+			...correction("task-two-scope", "scope-changed", "scope", "2026-07-28T00:01:00.000Z"),
+			taskId: "task-2",
+		});
+		const listCallsBefore = storage.listCalls;
+
+		const result = await service.provenanceForTasks(
+			["task-1", "task-2", "task-1"],
+			"2026-07-28T00:02:00.000Z",
+		);
+
+		expect(result.get("task-1")?.fields.duration).toMatchObject({
+			owner: "user",
+			locked: true,
+		});
+		expect(result.get("task-2")?.fields.scope).toMatchObject({ owner: "user", locked: true });
+		expect(result.size).toBe(2);
+		expect(storage.listCalls - listCallsBefore).toBe(2);
 	});
 
 	it("recovers matching writes, cancels clearly unwritten ones, and retains conflicts", async () => {

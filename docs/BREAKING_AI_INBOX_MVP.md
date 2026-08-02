@@ -4,6 +4,11 @@ This document is the release-note companion for the breaking GTD Flow release.
 It describes the migration and the decided MVP boundary. It does not promise
 mobile, background, or paid-model support.
 
+> Historical note: this document describes the 0.13.0 boundary. The later Android
+> core release adds Inbox, Calendar, task editing, and Recurring on Android while
+> keeping AI/OAuth and the remaining desktop features behind the desktop boundary.
+> The 0.13.0 upgrade and data-migration instructions below remain unchanged.
+
 ## What changes
 
 - Runtime **namespaces are removed**. GTD Flow now has one user-configured

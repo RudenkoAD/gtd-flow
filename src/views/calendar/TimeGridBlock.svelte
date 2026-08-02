@@ -57,7 +57,7 @@
 	// нижних 6px — компромисс принят как у всех календарей с resize.
 	// На телефоне resize выключен (как и drag): пальцем в 6px не попасть,
 	// паритет — «Дата…» в меню задачи.
-	const resizable = !Platform.isPhone;
+	const resizable = !Platform.isMobileApp;
 
 	/** Минуты конца live-превью; null — resize не идёт и превью нет. После
 	 *  pointerup превью НЕ сбрасывается до прихода нового block.endMin из

@@ -393,17 +393,22 @@
 		flex: 1 1 auto;
 		min-height: 0;
 		overflow-y: auto;
+		overflow-x: hidden;
+		container-type: inline-size;
 	}
 	.gtd-rec-header {
 		display: flex;
 		align-items: center;
+		flex-wrap: wrap;
 		gap: 10px;
 		padding: 8px 10px;
 		border-bottom: 1px solid var(--background-modifier-border);
 	}
 	.gtd-rec-report {
+		min-width: 0;
 		color: var(--text-muted);
 		font-size: var(--font-ui-smaller, 0.85em);
+		overflow-wrap: anywhere;
 	}
 	.gtd-rec-spacer {
 		flex: 1 1 auto;
@@ -432,11 +437,16 @@
 	}
 	.gtd-rec-group-title {
 		display: flex;
+		flex-wrap: wrap;
 		gap: 6px;
 		align-items: baseline;
 		padding: 8px 10px 4px;
 		font-weight: 600;
 		background: var(--background-secondary);
+	}
+	.gtd-rec-group-file {
+		min-width: 0;
+		overflow-wrap: anywhere;
 	}
 	.gtd-rec-group-heading {
 		color: var(--text-muted);
@@ -448,6 +458,7 @@
 		gap: 8px;
 		padding: 6px 10px;
 		border-bottom: 1px solid var(--background-modifier-border);
+		min-width: 0;
 	}
 	.gtd-rec-card:hover {
 		background: var(--background-secondary);
@@ -510,6 +521,7 @@
 		padding: 2px 6px;
 		border-radius: var(--radius-s, 4px);
 		font-size: var(--font-ui-smaller, 0.85em);
+		touch-action: manipulation;
 	}
 	.gtd-rec-btn:hover {
 		color: var(--text-normal);
@@ -556,5 +568,69 @@
 	}
 	.gtd-rec-empty p {
 		margin: 0 0 12px;
+	}
+
+	@media (pointer: coarse) {
+		.gtd-rec-header button,
+		.gtd-rec-btn,
+		.gtd-rec-empty button {
+			min-height: 44px;
+		}
+		.gtd-rec-btn {
+			min-width: 44px;
+		}
+	}
+
+	@container (max-width: 34rem) {
+		.gtd-rec-header {
+			display: grid;
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+			gap: 8px;
+			padding: 8px;
+		}
+		.gtd-rec-header > button {
+			min-width: 0;
+			min-height: 44px;
+			white-space: normal;
+		}
+		.gtd-rec-report {
+			grid-column: 1 / -1;
+		}
+		.gtd-rec-spacer {
+			display: none;
+		}
+		.gtd-rec-card {
+			display: grid;
+			grid-template-columns: minmax(0, 1fr);
+			gap: 6px;
+			padding: 8px;
+		}
+		.gtd-rec-actions {
+			width: 100%;
+		}
+		.gtd-rec-actions .gtd-rec-btn:first-child {
+			flex: 1 1 auto;
+		}
+		.gtd-rec-actions .gtd-rec-more {
+			flex: 0 0 44px;
+		}
+		.gtd-rec-history {
+			padding: 6px 8px 10px;
+		}
+		.gtd-rec-history-item {
+			display: grid;
+			grid-template-columns: auto minmax(0, 1fr);
+			align-items: start;
+			gap: 4px 8px;
+			padding: 6px 0;
+		}
+		.gtd-rec-history-date {
+			grid-column: 2;
+		}
+		.gtd-rec-history-item .gtd-rec-btn {
+			grid-column: 1 / -1;
+			width: 100%;
+			min-height: 44px;
+		}
 	}
 </style>

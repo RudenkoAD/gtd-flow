@@ -78,7 +78,8 @@ GitHub release публикует отдельными файлами:
 
 `manifest.json` и `versions.json` остаются в корне репозитория, как требует
 экосистема Obsidian. `widget-core.js` не нужно копировать в папку Obsidian-плагина.
-`manifest.json` для этого breaking release содержит `isDesktopOnly: true`.
+`manifest.json` содержит `isDesktopOnly: false`: один bundle загружается на desktop
+и Android, а desktop-only возможности подключаются лениво только в desktop runtime.
 
 Для локальной проверки полного набора:
 
@@ -95,8 +96,16 @@ sha256sum --check SHA256SUMS
 - [ ] Компиляция использует API, доступные в `manifest.minAppVersion`.
 - [ ] Smoke-тест чистой установки Obsidian на минимальной поддерживаемой версии.
 - [ ] Smoke-тест последней Obsidian на desktop.
-- [ ] Проверить, что mobile не заявлен и не загружается как поддерживаемая
-      поверхность (`isDesktopOnly: true`).
+- [ ] Smoke-тест актуальной Obsidian на Android: Inbox, Calendar, task editor и
+      Recurring загружаются; AI/OAuth, проекты, доски, tickler, onboarding и DnD
+      отсутствуют (`isDesktopOnly: false`).
+- [ ] `main.js` загружается при недоступных Node/Electron; эти зависимости встречаются
+      только за отложенной desktop-границей.
+- [ ] Custom URI из widgets открывает единый Inbox и точный Calendar day в warm/cold
+      Obsidian, включая имя vault с пробелами и кириллицей; невалидный URI fail-closed.
+- [ ] Одновременный recurring pass на Android и desktop создаёт не более одного
+      экземпляра на вхождение после синхронизации; появление двух офлайн-копий в
+      индексе запускает схождение без рестарта или ручной команды.
 - [ ] MCP запускается заявленным минимальным Node и возвращает правильную
       `serverInfo.version`.
 - [ ] Проверить breaking MCP contract: нет `namespace` входов/выходов; есть
@@ -119,6 +128,8 @@ sha256sum --check SHA256SUMS
 - календарные подписки, таймаут и удаление во время активной синхронизации;
 - клавиатурную работу календаря;
 - pop-out на desktop;
+- Android Inbox/Calendar/task editor/Recurring и touch/long-press взаимодействия;
+- warm/cold deep links из Android widgets;
 - unified inbox/scope migration: dry-run, apply, interrupted resume and rollback;
 - AI setup, reconnect-after-restart behavior and explicit queue retry;
 - отсутствие неожиданных изменений соседних строк/frontmatter.

@@ -16,6 +16,7 @@ import type { BoardDef } from "../core/board/boardFile";
 import { isBoardError, parseBoardFrontmatter, parseMatchSpec } from "../core/board/boardFile";
 import { belongsToBoard, resolveColumn } from "../core/board/membership";
 import { applyOrder, patchOrder } from "../core/board/ordering";
+import { secureUuid, type CryptoRandomSource } from "../core/id/secureUuid";
 import type { MoveColumn, SetDate } from "../core/intents/Intent";
 import { isDeferred } from "../core/model/gtdState";
 import type { Task } from "../core/model/Task";
@@ -91,11 +92,6 @@ export interface BoardModel {
 const MAX_BOARD_ID_ALLOCATION_ATTEMPTS = 32;
 const BOARD_ID_SUFFIX_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
-type CryptoRandomSource = {
-	randomUUID?: () => string;
-	getRandomValues?: (array: Uint8Array) => Uint8Array;
-};
-
 /**
  * Secure UUID-form suffix for ids of newly created boards. Older mobile WebViews
  * can expose Web Crypto's getRandomValues without randomUUID, so retain the same
@@ -105,17 +101,7 @@ type CryptoRandomSource = {
 export function secureBoardIdSuffix(
 	cryptoSource: CryptoRandomSource | undefined = globalThis.crypto,
 ): string {
-	if (typeof cryptoSource?.randomUUID === "function") return cryptoSource.randomUUID();
-	if (typeof cryptoSource?.getRandomValues !== "function") {
-		throw new Error("secure-board-id-generator-unavailable");
-	}
-	const bytes = cryptoSource.getRandomValues(new Uint8Array(16));
-	// UUID v4/version + RFC 4122 variant; other 122 bits came from the CSPRNG.
-	bytes[6] = (bytes[6]! & 0x0f) | 0x40;
-	bytes[8] = (bytes[8]! & 0x3f) | 0x80;
-	let hex = "";
-	for (const byte of bytes) hex += byte.toString(16).padStart(2, "0");
-	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+	return secureUuid(cryptoSource, "secure-board-id-generator-unavailable");
 }
 
 export class BoardService {

@@ -1,4 +1,4 @@
-import { createServer, type Server } from "node:http";
+import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { AIError, cancelledError, classifyHttpError } from "../core/errors";
 import type { AIConnectionPort } from "../integration/AIViewController";
@@ -28,6 +28,10 @@ export class LoopbackOAuthCallback implements OAuthCallbackPort {
 	constructor(private readonly timeoutMs = 5 * 60_000) {}
 
 	async open(): Promise<OAuthCallbackSession> {
+		// Obsidian Mobile cannot resolve Node built-ins while evaluating main.js.
+		// The callback adapter is constructed only by the desktop composition root,
+		// and the runtime import keeps the universal plugin bundle loadable on mobile.
+		const { createServer } = await import("node:http");
 		let settle:
 			| {
 					resolve(value: { code: string; state: string }): void;

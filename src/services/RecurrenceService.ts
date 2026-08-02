@@ -12,6 +12,7 @@
  */
 import type { IsoDate, Task } from "../core/model/Task";
 import { parseTaskLine } from "../core/parser/parseTaskLine";
+import { fnv1a } from "../core/parser/taskKey";
 import { VALUE_FIELD_EMOJI } from "../core/parser/emoji";
 import { serializeTokens, tokenizeTaskLine, type FieldToken } from "../core/parser/tokenizer";
 import { compare, isValidIsoDate } from "../core/recurrence/dateMath";
@@ -48,6 +49,10 @@ export interface SpawnReport {
 
 export interface RecurrencePort {
 	runPass(): Promise<SpawnReport>; // spawn + dedup; сериализован мьютексом; до готовности индекса — no-op {spawned:0,...}
+	/** True when synced recurrence instances need a convergence pass. */
+	needsConvergencePass(): boolean;
+	/** True when an index change made deferred recurrence work safe to continue. */
+	needsIndexTriggeredPass(): boolean;
 	spawnNow(templateKey: string): Promise<{ ok: boolean; reason?: string }>;
 	pause(templateKey: string): Promise<void>; // status -> '-'
 	resume(templateKey: string): Promise<void>; // status -> ' ' + снап курсора 🔜 = nextOccurrence(rule, today)
@@ -63,7 +68,7 @@ export interface RecurrenceDeps {
 	indexReady: () => boolean;
 	/** Создать файл-цель спавна (и папку), если его ещё нет (VaultAdapter.ensureFile). */
 	ensureFile: (path: string) => Promise<void>;
-	/** Генератор 🆔; по умолчанию 6 символов base36 (как в WritebackService/CardService). */
+	/** Test override for generated IDs. Production derives stable cross-device IDs. */
 	genId?: () => string;
 }
 
@@ -73,6 +78,12 @@ export interface RecurrenceDeps {
 
 /** Детерминированный id копии: <templateId>-<YYYYMMDD> (ТЗ §6). */
 const INSTANCE_ID_RE = /^(.+)-(\d{4})(\d{2})(\d{2})$/;
+const REINDEX_RACE_REASONS = new Set([
+	"task-not-found",
+	"file-not-found",
+	"line-not-found",
+	"stale-index",
+]);
 
 /** Правило «каждый день» для spawn-now: даёт ровно сегодняшнее вхождение,
  *  не требуя парсинга 🔁 шаблона (spawn-now легален и для черновика без правила). */
@@ -86,12 +97,15 @@ function errorMessage(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
 }
 
-const BASE36 = "0123456789abcdefghijklmnopqrstuvwxyz";
-
-function defaultGenId(): string {
-	let s = "";
-	for (let i = 0; i < 6; i++) s += BASE36.charAt(Math.floor(Math.random() * BASE36.length));
-	return s;
+/**
+ * Stable parent ID for legacy/manually-authored templates. The content key is
+ * shared by offline replicas (path + normalized description + occurrence), so
+ * both devices derive the same child-ID family after sync.
+ */
+export function deterministicRecurringTemplateId(taskKey: string): string {
+	const first = fnv1a(`gtd-recurring-template:${taskKey}`).toString(16).padStart(8, "0");
+	const second = fnv1a(`gtd-recurring-template-v2:${taskKey}`).toString(16).padStart(8, "0");
+	return `rec-${first}${second}`;
 }
 
 /** Все 🆔 из содержимого файла — повторная проверка ВНУТРИ transform:
@@ -187,19 +201,19 @@ export class RecurrenceService implements RecurrencePort {
 	 */
 	private mutex: Promise<unknown> = Promise.resolve();
 
-	private readonly genId: () => string;
+	private readonly genId: (() => string) | null;
 
 	/**
 	 * Память «ключ id-less шаблона → вписанный нами 🆔» на окно дебаунса
 	 * реиндексации (~150мс): пока индекс отдаёт шаблон ещё БЕЗ taskId, повторный
-	 * runPass НЕ должен выдать ему второй (другой) id, а обязан подождать. После
+	 * runPass НЕ выдаёт второй id, а безопасно повторяет тот же. После
 	 * реиндекса ключ шаблона переезжает в 'id:<🆔>' и из числа id-less исчезает —
 	 * его запись здесь вычищается (иначе память растёт по сессии).
 	 */
 	private readonly injectedIds = new Map<string, string>();
 
 	constructor(private readonly deps: RecurrenceDeps) {
-		this.genId = deps.genId ?? defaultGenId;
+		this.genId = deps.genId ?? null;
 	}
 
 	/** Every recurrence instance is written to the configured unified inbox. */
@@ -220,6 +234,34 @@ export class RecurrenceService implements RecurrencePort {
 
 	async runPass(): Promise<SpawnReport> {
 		return this.locked(() => this.runPassInner());
+	}
+
+	needsConvergencePass(): boolean {
+		if (!this.deps.indexReady()) return false;
+		const index = this.deps.feed.getIndex();
+		for (const [id, keys] of index.duplicateIds()) {
+			const carriers = keys.flatMap((key) => {
+				const carrier = index.get(key);
+				return carrier === undefined ? [] : [carrier];
+			});
+			if (carriers.length < 2) continue;
+			if (!INSTANCE_ID_RE.test(id) && !carriers.some((task) => task.spawnedFrom !== null))
+				continue;
+			const canonical = this.canonicalCarriers(id, carriers);
+			if (canonical === null) continue;
+			const classified = classifyDuplicates(canonical);
+			if (!("conflict" in classified) && classified.remove.length > 0) return true;
+		}
+		return false;
+	}
+
+	needsIndexTriggeredPass(): boolean {
+		if (!this.deps.indexReady()) return false;
+		// This predicate is called because the index changed. A retained marker
+		// means either the parent ID was just observed or a stale write should be
+		// retried once against the new snapshot.
+		if (this.injectedIds.size > 0) return true;
+		return this.needsConvergencePass();
 	}
 
 	async spawnNow(templateKey: string): Promise<{ ok: boolean; reason?: string }> {
@@ -395,7 +437,7 @@ export class RecurrenceService implements RecurrencePort {
 	 * Вписать 🆔 в шаблоны без него — по одному свежему id на шаблон, интентом
 	 * set-id (та же ленивая механика, что у CardService.openOrCreate). Память
 	 * injectedIds закрывает окно дебаунса реиндексации: пока индекс отдаёт шаблон
-	 * ещё без taskId, повторный проход НЕ выдаёт второй id, а ждёт. Ключи,
+	 * ещё без taskId, повторный проход НЕ выдаёт второй id, а повторяет тот же. Ключи,
 	 * переставшие быть id-less шаблонами (реиндекс переименовал ключ в 'id:<🆔>' /
 	 * шаблон удалён), из памяти вычищаются. Спавн этих шаблонов — дело следующего
 	 * прохода: здесь ни спавна, ни курсора, ни ошибки в report.
@@ -407,17 +449,29 @@ export class RecurrenceService implements RecurrencePort {
 		const seen = new Set<string>();
 		for (const t of idless) {
 			seen.add(t.key);
-			if (this.injectedIds.has(t.key)) continue; // уже вписали в этой сессии — ждём реиндекс
-			const fresh = this.freshId(existingIds);
+			// Retry the same pending ID rather than minting another one. This is safe
+			// before reindex (idempotent no-op) and recovers a stale-index race.
+			const remembered = this.injectedIds.get(t.key);
+			const fresh = remembered ?? this.freshId(t, existingIds);
 			if (fresh === null) continue; // генератор зациклился на занятых id — повторит следующий проход
-			const res = await this.deps.dispatcher.dispatch({
-				type: "set-id",
-				key: t.key,
-				taskId: fresh,
-			});
+			// Publish the pending identity before the write: an index callback may be
+			// delivered before dispatch resolves, and must still schedule pass two.
+			this.injectedIds.set(t.key, fresh);
+			let res;
+			try {
+				res = await this.deps.dispatcher.dispatch({
+					type: "set-id",
+					key: t.key,
+					taskId: fresh,
+				});
+			} catch (error: unknown) {
+				this.injectedIds.delete(t.key);
+				throw error;
+			}
 			if (res.ok) {
-				this.injectedIds.set(t.key, fresh);
 				existingIds.add(fresh); // не переиспользовать этот id для соседнего id-less шаблона
+			} else if (!REINDEX_RACE_REASONS.has(res.reason)) {
+				this.injectedIds.delete(t.key);
 			}
 		}
 		// прунинг памяти: ключи, ушедшие из числа id-less шаблонов
@@ -426,10 +480,15 @@ export class RecurrenceService implements RecurrencePort {
 		}
 	}
 
-	/** Свежий 🆔 для ленивой инъекции: минуя и занятые (existingIds — индекс плюс
-	 *  выданные в этом проходе), и все носители по индексу; 32 попытки — как в
-	 *  WritebackService.freshId. null — генератор зациклился на занятых id. */
-	private freshId(existingIds: ReadonlySet<string>): string | null {
+	/** Production IDs converge across offline replicas. A test override retains
+	 * the old collision-retry path for deterministic failure/race coverage. */
+	private freshId(task: Task, existingIds: ReadonlySet<string>): string | null {
+		if (this.genId === null) {
+			// Do not salt an occupied deterministic ID: an offline peer may already
+			// have injected it. Reuse makes the duplicate fail closed and keeps all
+			// future instances in one deduplicable child-ID family.
+			return deterministicRecurringTemplateId(task.key);
+		}
 		for (let attempt = 0; attempt < 32; attempt++) {
 			const id = this.genId();
 			if (!existingIds.has(id) && this.deps.feed.getIndex().resolveDep(id).length === 0)

@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { type Infer, type Input, z } from "../../schema/zod";
 import { isScopeId } from "../../core/scope/scope";
 import { AgentMessageSchema } from "../core/messages";
 import { isWaitingRunState, ProcessingRunStateSchema } from "../processing/ProcessingQueue";
@@ -64,7 +64,7 @@ export const ScopeCatalogV1Schema = z
 			orders.add(scope.order);
 		}
 	});
-export type ScopeCatalogV1 = z.infer<typeof ScopeCatalogV1Schema>;
+export type ScopeCatalogV1 = Infer<typeof ScopeCatalogV1Schema>;
 
 export const ProcessingErrorRecordSchema = z
 	.object({
@@ -108,7 +108,7 @@ export const ProcessingRequestContextV1Schema = z
 			}
 		}
 	});
-export type ProcessingRequestContextV1 = z.infer<typeof ProcessingRequestContextV1Schema>;
+export type ProcessingRequestContextV1 = Infer<typeof ProcessingRequestContextV1Schema>;
 
 export const ProcessingRunV1Schema = z
 	.object({
@@ -188,7 +188,7 @@ export const ProcessingRunV1Schema = z
 		}
 	});
 /** Input remains backward-compatible with v1 records that predate retry lineage. */
-export type ProcessingRunV1 = z.input<typeof ProcessingRunV1Schema>;
+export type ProcessingRunV1 = Input<typeof ProcessingRunV1Schema>;
 
 /** Immutable, per-attempt recovery lease. Old/expired leases are retained for audit. */
 export const RecoveryLeaseV1Schema = z
@@ -211,7 +211,7 @@ export const RecoveryLeaseV1Schema = z
 			});
 		}
 	});
-export type RecoveryLeaseV1 = z.infer<typeof RecoveryLeaseV1Schema>;
+export type RecoveryLeaseV1 = Infer<typeof RecoveryLeaseV1Schema>;
 
 export const SessionHeaderV1Schema = z
 	.object({
@@ -232,7 +232,7 @@ export const SessionHeaderV1Schema = z
 			});
 		}
 	});
-export type SessionHeaderV1 = z.infer<typeof SessionHeaderV1Schema>;
+export type SessionHeaderV1 = Infer<typeof SessionHeaderV1Schema>;
 
 export const SessionMessageV1Schema = z
 	.object({
@@ -271,13 +271,13 @@ export const SessionMessageV1Schema = z
 			});
 		}
 	});
-export type SessionMessageV1 = z.infer<typeof SessionMessageV1Schema>;
+export type SessionMessageV1 = Infer<typeof SessionMessageV1Schema>;
 
 export const SessionRecordV1Schema = z.discriminatedUnion("kind", [
 	SessionHeaderV1Schema,
 	SessionMessageV1Schema,
 ]);
-export type SessionRecordV1 = z.infer<typeof SessionRecordV1Schema>;
+export type SessionRecordV1 = Infer<typeof SessionRecordV1Schema>;
 
 export const FeedbackKindSchema = z.enum([
 	"estimate-suggested",
@@ -315,4 +315,4 @@ export const FeedbackEventV1Schema = z
 		prediction: FeedbackPredictionSchema.nullable(),
 	})
 	.strict();
-export type FeedbackEventV1 = z.infer<typeof FeedbackEventV1Schema>;
+export type FeedbackEventV1 = Infer<typeof FeedbackEventV1Schema>;

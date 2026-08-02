@@ -10,7 +10,7 @@ import type {
 	ProviderRequestOptions,
 	ProviderStreamEvent,
 } from "./AIProviderPort";
-import type { z } from "zod";
+import type { Infer } from "../../schema/zod";
 import { OpenRouterCompletionSchema, OpenRouterStreamChunkSchema } from "./openRouterSchemas";
 import { parseServerSentEvents } from "./sseParser";
 
@@ -263,7 +263,7 @@ export class OpenRouterProvider implements AIProviderPort {
 		}
 	}
 
-	private toCompletion(payload: z.infer<typeof OpenRouterCompletionSchema>): ProviderCompletion {
+	private toCompletion(payload: Infer<typeof OpenRouterCompletionSchema>): ProviderCompletion {
 		const choice = payload.choices[0];
 		if (!choice) throw invalidResponseError();
 		const content = choice.message.content ?? "";

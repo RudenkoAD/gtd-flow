@@ -7,10 +7,10 @@ import {
 import type { Intent } from "../core/intents/Intent";
 import { resolveLineTransform } from "../core/intents/resolveIntent";
 import type { LongDurationStyle } from "../core/estimates/format";
+import { secureUuid } from "../core/id/secureUuid";
 import type { Task } from "../core/model/Task";
 import { parseTaskLine } from "../core/parser/parseTaskLine";
-import { activeScopes, isActiveScopeId, type ScopeCatalog } from "../core/scope/scope";
-import type { InboxProcessor } from "../ai/processing/InboxProcessor";
+import { isActiveScopeId, type ScopeCatalog } from "../core/scope/scope";
 import type {
 	EstimateCorrectedEvent,
 	EstimateFeedbackService,
@@ -20,13 +20,19 @@ import type {
 import { feedbackTaskSnapshot } from "./EstimateFeedbackService";
 import type { IntentResult, WritebackService } from "./WritebackService";
 
+/** Desktop-only actions that can be attached without making this service load AI code. */
+export interface TaskMetadataAiActionsPort {
+	unlockAndReprocess(task: Task, field?: EstimateField): Promise<IntentResult>;
+	unlockFieldAndReprocess(task: Task, field: EstimateField): Promise<IntentResult>;
+	openRelatedAiRun(task: Task): Promise<IntentResult>;
+}
+
 export interface TaskMetadataServiceOptions {
 	dispatcher: WritebackService;
 	history: EstimateFeedbackService;
-	processor: Pick<InboxProcessor, "process">;
 	scopes(): ScopeCatalog;
 	durationLongStyle?(): LongDurationStyle | null;
-	openSession(sessionId: string): Promise<void>;
+	aiActions?: TaskMetadataAiActionsPort | null;
 	expectKnownPatch?(
 		taskId: string,
 		patch: Partial<Record<EstimateField, number | string | null>>,
@@ -35,13 +41,36 @@ export interface TaskMetadataServiceOptions {
 	createId?: () => string;
 }
 
+interface ProvenanceWaiter {
+	resolve(value: TaskEstimateProvenance | null): void;
+	reject(reason: unknown): void;
+}
+
+interface ActiveProvenanceBatch {
+	taskIds: ReadonlySet<string>;
+	result: Promise<Map<string, TaskEstimateProvenance>>;
+}
+
 export class TaskMetadataService {
 	private readonly now: () => Date;
 	private readonly createId: () => string;
+	private aiActions: TaskMetadataAiActionsPort | null;
+	private provenanceBatch = new Map<string, ProvenanceWaiter[]>();
+	private provenanceBatchScheduled = false;
+	private activeProvenanceBatch: ActiveProvenanceBatch | null = null;
+	openRelatedAiRun?: (task: Task) => Promise<IntentResult>;
 
 	constructor(private readonly options: TaskMetadataServiceOptions) {
 		this.now = options.now ?? (() => new Date());
-		this.createId = options.createId ?? (() => crypto.randomUUID());
+		this.createId = options.createId ?? (() => secureUuid());
+		this.aiActions = options.aiActions ?? null;
+		this.updateOptionalAiActions();
+	}
+
+	/** Attach or remove the optional desktop AI capability. */
+	attachAiActions(actions: TaskMetadataAiActionsPort | null): void {
+		this.aiActions = actions;
+		this.updateOptionalAiActions();
 	}
 
 	scopes(): ScopeCatalog {
@@ -61,7 +90,58 @@ export class TaskMetadataService {
 	}
 
 	provenanceForTask(taskId: string): Promise<TaskEstimateProvenance | null> {
-		return this.options.history.provenanceForTask(taskId, this.now().toISOString());
+		const active = this.activeProvenanceBatch;
+		if (active !== null && active.taskIds.has(taskId)) {
+			return active.result.then((provenances) => provenances.get(taskId) ?? null);
+		}
+		return new Promise((resolve, reject) => {
+			const waiter = { resolve, reject } satisfies ProvenanceWaiter;
+			const existing = this.provenanceBatch.get(taskId);
+			if (existing === undefined) this.provenanceBatch.set(taskId, [waiter]);
+			else existing.push(waiter);
+			this.scheduleProvenanceBatch();
+		});
+	}
+
+	private scheduleProvenanceBatch(): void {
+		if (
+			this.activeProvenanceBatch !== null ||
+			this.provenanceBatchScheduled ||
+			this.provenanceBatch.size === 0
+		)
+			return;
+		this.provenanceBatchScheduled = true;
+		void Promise.resolve().then(() => this.flushProvenanceBatch());
+	}
+
+	private async flushProvenanceBatch(): Promise<void> {
+		this.provenanceBatchScheduled = false;
+		if (this.activeProvenanceBatch !== null || this.provenanceBatch.size === 0) return;
+		const batch = this.provenanceBatch;
+		this.provenanceBatch = new Map();
+		const taskIds = [...batch.keys()];
+		let result: Promise<Map<string, TaskEstimateProvenance>>;
+		try {
+			result = Promise.resolve(
+				this.options.history.provenanceForTasks(taskIds, this.now().toISOString()),
+			);
+		} catch (error: unknown) {
+			result = Promise.reject(error);
+		}
+		this.activeProvenanceBatch = { taskIds: new Set(taskIds), result };
+		try {
+			const provenances = await result;
+			for (const [taskId, waiters] of batch) {
+				for (const waiter of waiters) waiter.resolve(provenances.get(taskId) ?? null);
+			}
+		} catch (error: unknown) {
+			for (const waiters of batch.values()) {
+				for (const waiter of waiters) waiter.reject(error);
+			}
+		} finally {
+			if (this.activeProvenanceBatch?.result === result) this.activeProvenanceBatch = null;
+			this.scheduleProvenanceBatch();
+		}
 	}
 
 	async applyManualPatch(task: Task, patch: EstimatePatch): Promise<IntentResult> {
@@ -182,67 +262,24 @@ export class TaskMetadataService {
 		}
 	}
 
-	async unlockAndReprocess(task: Task, field?: EstimateField): Promise<IntentResult> {
-		const anchored = await this.options.dispatcher.ensureTaskId(task.key);
-		if (!anchored.ok) return anchored;
-		const provenance = await this.options.history.provenanceForTask(
-			anchored.taskId,
-			this.now().toISOString(),
+	unlockAndReprocess(task: Task, field?: EstimateField): Promise<IntentResult> {
+		return (
+			this.aiActions?.unlockAndReprocess(task, field) ??
+			Promise.resolve({ ok: false, reason: "desktop-ai-unavailable" })
 		);
-		const eligibleFields = ESTIMATE_FIELDS.filter(
-			(field) => provenance.fields[field].locked || provenance.fields[field].owner === "user",
-		);
-		if (eligibleFields.length === 0) {
-			return { ok: false, reason: "no-locked-ai-fields" };
-		}
-		const selectedField =
-			field ?? (eligibleFields.length === 1 ? eligibleFields[0] : undefined);
-		if (selectedField === undefined) {
-			return { ok: false, reason: "ai-field-selection-required" };
-		}
-		if (!eligibleFields.includes(selectedField)) {
-			return { ok: false, reason: "ai-field-not-locked" };
-		}
-		if (activeScopes(this.options.scopes()).length === 0) {
-			return { ok: false, reason: "ai-reprocessing-blocked-no-scopes" };
-		}
-		const summary = await this.options.processor.process({
-			taskKeys: [task.key],
-			onlyFields: [selectedField],
-			unlockFields: [selectedField],
-		});
-		switch (summary.state) {
-			case "nothing-to-process":
-				return { ok: false, reason: "ai-reprocessing-nothing-to-process" };
-			case "blocked-no-scopes":
-				return { ok: false, reason: "ai-reprocessing-blocked-no-scopes" };
-			case "failed":
-				return {
-					ok: false,
-					reason: summary.failed[0]?.reason ?? "ai-reprocessing-failed",
-				};
-			case "cancelled":
-				return { ok: false, reason: "ai-reprocessing-cancelled" };
-			default:
-				return summary.runId === null
-					? { ok: false, reason: "ai-reprocessing-did-not-start" }
-					: { ok: true };
-		}
 	}
 
 	unlockFieldAndReprocess(task: Task, field: EstimateField): Promise<IntentResult> {
-		return this.unlockAndReprocess(task, field);
+		return (
+			this.aiActions?.unlockFieldAndReprocess(task, field) ??
+			Promise.resolve({ ok: false, reason: "desktop-ai-unavailable" })
+		);
 	}
 
-	async openRelatedAiRun(task: Task): Promise<IntentResult> {
-		if (task.taskId === null) return { ok: false, reason: "task-has-no-ai-run" };
-		const events = await this.options.history.eventsForTask(task.taskId);
-		const latest = [...events]
-			.reverse()
-			.find((event) => event.kind === "estimate-suggested" && event.sessionId !== null);
-		if (!latest?.sessionId) return { ok: false, reason: "task-has-no-ai-run" };
-		await this.options.openSession(latest.sessionId);
-		return { ok: true };
+	private updateOptionalAiActions(): void {
+		const actions = this.aiActions;
+		this.openRelatedAiRun =
+			actions === null ? undefined : (task) => actions.openRelatedAiRun(task);
 	}
 }
 

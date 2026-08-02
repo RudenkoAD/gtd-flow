@@ -9,7 +9,7 @@
  * нормализуются в те же границы, что и UI, а не передаются в setTimeout/циклы
  * как бесконтрольные значения.
  */
-import { z } from "zod";
+import { type ZodType, z } from "../schema/zod";
 import { readLegacyNamespaceSettings } from "../core/scope/namespaceMigration";
 import { SETTINGS_FORMAT_VERSION, type GtdFlowSettings } from "./Settings";
 
@@ -238,21 +238,21 @@ export function mergeSettingsWithDiagnostics(
 	mergeNested(
 		settings.ai as unknown as JsonObject,
 		data["ai"],
-		aiSchema.shape as Record<string, z.ZodType>,
+		aiSchema.shape as Record<string, ZodType>,
 		"ai",
 		diagnostics,
 	);
 	mergeNested(
 		settings.debounceMs as unknown as JsonObject,
 		data["debounceMs"],
-		debounceSchema.shape as Record<string, z.ZodType>,
+		debounceSchema.shape as Record<string, ZodType>,
 		"debounceMs",
 		diagnostics,
 	);
 	mergeNested(
 		settings.recurring as unknown as JsonObject,
 		data["recurring"],
-		recurringSchema.shape as Record<string, z.ZodType>,
+		recurringSchema.shape as Record<string, ZodType>,
 		"recurring",
 		diagnostics,
 	);
@@ -319,7 +319,7 @@ function migrateToCurrent(raw: JsonObject, diagnostics: string[]): JsonObject {
 function mergeNested(
 	target: JsonObject,
 	raw: unknown,
-	shape: Record<string, z.ZodType>,
+	shape: Record<string, ZodType>,
 	field: string,
 	diagnostics: string[],
 ): void {
@@ -334,7 +334,7 @@ function mergeNested(
 	// settings.recurring через механизм forward compatibility.
 	const retiredKeys = field === "recurring" ? ["spawnTarget"] : [];
 	copyUnknownFields(target, record, new Set([...Object.keys(shape), ...retiredKeys]));
-	for (const [key, child] of Object.entries(shape) as Array<[string, z.ZodType]>) {
+	for (const [key, child] of Object.entries(shape) as Array<[string, ZodType]>) {
 		if (!(key in record)) continue;
 		const parsed = child.safeParse(record[key]);
 		if (parsed.success) target[key] = parsed.data;
@@ -345,7 +345,7 @@ function mergeNested(
 function assignIfValid<T extends keyof GtdFlowSettings>(
 	target: GtdFlowSettings,
 	field: T,
-	schema: z.ZodType,
+	schema: ZodType,
 	raw: JsonObject,
 	diagnostics: string[],
 ): void {

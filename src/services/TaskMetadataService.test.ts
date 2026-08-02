@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { emptyTaskProvenance } from "../core/estimates/provenance";
 import type { Task } from "../core/model/Task";
 import { parseTaskLine } from "../core/parser/parseTaskLine";
 import { createScopeCatalog } from "../core/scope/scope";
@@ -90,10 +91,8 @@ describe("TaskMetadataService", () => {
 					prepared.delete(eventId);
 				},
 			} as never,
-			processor: { process: vi.fn() },
 			scopes: () =>
 				createScopeCatalog([{ id: "life", name: "Life", order: 0, archived: false }]),
-			openSession: async () => undefined,
 			expectKnownPatch: expected,
 			createId: () => `event-${++id}`,
 			now: () => new Date("2026-07-28T00:00:00.000Z"),
@@ -154,9 +153,7 @@ describe("TaskMetadataService", () => {
 		const service = new TaskMetadataService({
 			dispatcher: { ensureTaskId, dispatchMany } as never,
 			history: { prepareMutation } as never,
-			processor: { process: vi.fn() },
 			scopes: () => createScopeCatalog(),
-			openSession: async () => undefined,
 		});
 		const intent = {
 			type: "set-text" as const,
@@ -181,9 +178,7 @@ describe("TaskMetadataService", () => {
 		const service = new TaskMetadataService({
 			dispatcher: { ensureTaskId, dispatchMany } as never,
 			history: { prepareMutation } as never,
-			processor: { process: vi.fn() },
 			scopes: () => catalog,
-			openSession: async () => undefined,
 		});
 		const uiSnapshot = service.scopes();
 		expect(uiSnapshot.scopes[0]?.archived).toBe(false);
@@ -230,10 +225,8 @@ describe("TaskMetadataService", () => {
 				commitPrepared: async () => undefined,
 				cancelPrepared: async () => undefined,
 			} as never,
-			processor: { process: vi.fn() },
 			scopes: () =>
 				createScopeCatalog([{ id: "work", name: "Work", order: 0, archived: false }]),
-			openSession: async () => undefined,
 			createId: () => `event-${++eventId}`,
 		});
 
@@ -297,9 +290,7 @@ describe("TaskMetadataService", () => {
 					commitPrepared: async () => undefined,
 					cancelPrepared: async () => undefined,
 				} as never,
-				processor: { process: vi.fn() },
 				scopes: () => createScopeCatalog(),
-				openSession: async () => undefined,
 				createId: () => "event-1",
 			});
 			const idless = parseTask("- [ ] Id-less task ⏱ 30m");
@@ -330,9 +321,7 @@ describe("TaskMetadataService", () => {
 					cancelled.push(eventId);
 				},
 			} as never,
-			processor: { process: vi.fn() },
 			scopes: () => createScopeCatalog(),
-			openSession: async () => undefined,
 			expectKnownPatch: () => cancelExpected,
 			createId: () => "manual-event",
 		});
@@ -345,132 +334,99 @@ describe("TaskMetadataService", () => {
 		expect(prepared.size).toBe(0);
 	});
 
-	it("requests unlock and reprocessing for exactly the selected field", async () => {
-		const process = vi.fn(async () => ({
-			runId: "run-1",
-			sessionId: "session-1",
-			state: "completed" as const,
-			applied: 1,
-			skippedLocked: 0,
-			failed: [],
-			questions: [],
-			actualModel: "free-model",
-			nextEligibleAt: null,
-			feedbackWarnings: 0,
-		}));
+	it("exposes desktop actions only while an AI capability is attached", async () => {
+		const openRelatedAiRun = vi.fn(async () => ({ ok: true as const }));
+		const unlockAndReprocess = vi.fn(async () => ({ ok: true as const }));
+		const unlockFieldAndReprocess = vi.fn(async () => ({ ok: true as const }));
 		const service = new TaskMetadataService({
-			dispatcher: {
-				ensureTaskId: async () => ({ ok: true, taskId: "task-1" }),
-			} as never,
-			history: {
-				provenanceForTask: async () => {
-					const fields = Object.fromEntries(
-						["duration", "cognitive", "emotional", "physical", "scope"].map((field) => [
-							field,
-							{
-								owner: field === "duration" ? "user" : "ai",
-								locked: field === "duration",
-								lastPredictionEventId: null,
-								updatedAt: "2026-07-28T00:00:00.000Z",
-							},
-						]),
-					);
-					return { schemaVersion: 1, taskId: "task-1", fields };
-				},
-			} as never,
-			processor: { process },
-			scopes: () =>
-				createScopeCatalog([{ id: "work", name: "Work", order: 0, archived: false }]),
-			openSession: async () => undefined,
+			dispatcher: {} as never,
+			history: {} as never,
+			scopes: () => createScopeCatalog(),
 		});
+
+		expect(service.openRelatedAiRun).toBeUndefined();
+		await expect(service.unlockAndReprocess(task())).resolves.toEqual({
+			ok: false,
+			reason: "desktop-ai-unavailable",
+		});
+
+		service.attachAiActions({
+			openRelatedAiRun,
+			unlockAndReprocess,
+			unlockFieldAndReprocess,
+		});
+		expect(service.openRelatedAiRun).toBeTypeOf("function");
 		await expect(service.unlockFieldAndReprocess(task(), "duration")).resolves.toEqual({
 			ok: true,
 		});
-		expect(process).toHaveBeenCalledWith({
-			taskKeys: ["id:task-1"],
-			onlyFields: ["duration"],
-			unlockFields: ["duration"],
-		});
+		expect(unlockFieldAndReprocess).toHaveBeenCalledWith(task(), "duration");
+
+		service.attachAiActions(null);
+		expect(service.openRelatedAiRun).toBeUndefined();
 	});
 
-	it("requires a field selection when multiple user-owned fields are locked", async () => {
-		const process = vi.fn();
+	it("coalesces concurrently mounted task cards into one provenance scan", async () => {
+		const provenanceForTasks = vi.fn(
+			async (taskIds: readonly string[], now: string) =>
+				new Map(taskIds.map((taskId) => [taskId, emptyTaskProvenance(taskId, now)])),
+		);
 		const service = new TaskMetadataService({
-			dispatcher: {
-				ensureTaskId: async () => ({ ok: true, taskId: "task-1" }),
-			} as never,
-			history: {
-				provenanceForTask: async () => ({
-					schemaVersion: 1,
-					taskId: "task-1",
-					fields: Object.fromEntries(
-						["duration", "cognitive", "emotional", "physical", "scope"].map((field) => [
-							field,
-							{
-								owner:
-									field === "duration" || field === "cognitive" ? "user" : "ai",
-								locked: field === "duration" || field === "cognitive",
-								lastPredictionEventId: null,
-								updatedAt: "2026-07-28T00:00:00.000Z",
-							},
-						]),
-					),
-				}),
-			} as never,
-			processor: { process },
-			scopes: () =>
-				createScopeCatalog([{ id: "work", name: "Work", order: 0, archived: false }]),
-			openSession: async () => undefined,
+			dispatcher: {} as never,
+			history: { provenanceForTasks } as never,
+			scopes: () => createScopeCatalog(),
+			now: () => new Date("2026-07-28T00:00:00.000Z"),
 		});
-		await expect(service.unlockAndReprocess(task())).resolves.toEqual({
-			ok: false,
-			reason: "ai-field-selection-required",
-		});
-		expect(process).not.toHaveBeenCalled();
+
+		const [first, second, duplicate] = await Promise.all([
+			service.provenanceForTask("task-1"),
+			service.provenanceForTask("task-2"),
+			service.provenanceForTask("task-1"),
+		]);
+
+		expect(provenanceForTasks).toHaveBeenCalledOnce();
+		expect(provenanceForTasks).toHaveBeenCalledWith(
+			["task-1", "task-2"],
+			"2026-07-28T00:00:00.000Z",
+		);
+		expect(first?.taskId).toBe("task-1");
+		expect(second?.taskId).toBe("task-2");
+		expect(duplicate).toBe(first);
 	});
 
-	it("reports nothing-to-process as a failed reprocessing intent", async () => {
-		const process = vi.fn(async () => ({
-			runId: null,
-			sessionId: null,
-			state: "nothing-to-process" as const,
-			applied: 0,
-			skippedLocked: 0,
-			failed: [],
-			questions: [],
-			actualModel: null,
-			nextEligibleAt: null,
-			feedbackWarnings: 0,
-		}));
+	it("reuses an in-flight scan and serializes newly requested task IDs", async () => {
+		let releaseFirst!: (value: Map<string, ReturnType<typeof emptyTaskProvenance>>) => void;
+		const firstResult = new Promise<Map<string, ReturnType<typeof emptyTaskProvenance>>>(
+			(resolve) => {
+				releaseFirst = resolve;
+			},
+		);
+		const provenanceForTasks = vi
+			.fn()
+			.mockImplementationOnce(() => firstResult)
+			.mockImplementationOnce(
+				async (taskIds: readonly string[], now: string) =>
+					new Map(taskIds.map((taskId) => [taskId, emptyTaskProvenance(taskId, now)])),
+			);
 		const service = new TaskMetadataService({
-			dispatcher: {
-				ensureTaskId: async () => ({ ok: true, taskId: "task-1" }),
-			} as never,
-			history: {
-				provenanceForTask: async () => ({
-					schemaVersion: 1,
-					taskId: "task-1",
-					fields: Object.fromEntries(
-						["duration", "cognitive", "emotional", "physical", "scope"].map((field) => [
-							field,
-							{
-								owner: field === "duration" ? "user" : "ai",
-								locked: field === "duration",
-								lastPredictionEventId: null,
-								updatedAt: "2026-07-28T00:00:00.000Z",
-							},
-						]),
-					),
-				}),
-			} as never,
-			processor: { process },
-			scopes: () =>
-				createScopeCatalog([{ id: "work", name: "Work", order: 0, archived: false }]),
-			openSession: async () => undefined,
+			dispatcher: {} as never,
+			history: { provenanceForTasks } as never,
+			scopes: () => createScopeCatalog(),
+			now: () => new Date("2026-07-28T00:00:00.000Z"),
 		});
-		await expect(service.unlockFieldAndReprocess(task(), "duration")).resolves.toEqual({
-			ok: false,
-			reason: "ai-reprocessing-nothing-to-process",
-		});
+
+		const first = service.provenanceForTask("task-1");
+		await Promise.resolve();
+		const sameWhileScanning = service.provenanceForTask("task-1");
+		const nextId = service.provenanceForTask("task-2");
+		expect(provenanceForTasks).toHaveBeenCalledTimes(1);
+
+		releaseFirst(
+			new Map([["task-1", emptyTaskProvenance("task-1", "2026-07-28T00:00:00.000Z")]]),
+		);
+		const [firstValue, sameValue] = await Promise.all([first, sameWhileScanning]);
+		expect(sameValue).toBe(firstValue);
+		await expect(nextId).resolves.toMatchObject({ taskId: "task-2" });
+		expect(provenanceForTasks).toHaveBeenCalledTimes(2);
+		expect(provenanceForTasks.mock.calls[1]?.[0]).toEqual(["task-2"]);
 	});
 });

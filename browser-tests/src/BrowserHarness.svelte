@@ -1,10 +1,14 @@
 <script lang="ts">
 	import { onMount } from "svelte";
-	import type { App, Plugin } from "obsidian";
+	import { readable } from "svelte/store";
+	import { Platform, type App, type Plugin } from "obsidian";
 	import VirtualList from "../../src/views/common/VirtualList.svelte";
 	import DayCell from "../../src/views/calendar/DayCell.svelte";
+	import CalendarToolbar from "../../src/views/calendar/CalendarToolbar.svelte";
 	import AI from "../../src/views/ai/AI.svelte";
 	import TaskCard from "../../src/views/common/TaskCard.svelte";
+	import Recurring from "../../src/views/recurring/Recurring.svelte";
+	import Inbox from "../../src/views/inbox/Inbox.svelte";
 	import Column from "../../src/views/kanban/Column.svelte";
 	import type { BoardDef } from "../../src/core/board/boardFile";
 	import type { BoardService } from "../../src/services/BoardService";
@@ -17,6 +21,10 @@
 	import type { TaskMetadataPort, TaskMenuPorts } from "../../src/views/common/taskMenu";
 	import type { BoardWritePort, ColumnVM } from "../../src/views/kanban/kanbanLogic";
 	import { createBrowserAiFixture } from "./aiBrowserFixture";
+	import { TaskIndex } from "../../src/core/index/TaskIndex";
+	import type { TaskStore } from "../../src/stores/taskStore";
+	import type { CalendarMode } from "../../src/views/calendar/calendarLogic";
+	import type { TemplateVaultPort } from "../../src/views/recurring/recurringLogic";
 
 	type FixtureRow = { id: string; label: string; height: number };
 
@@ -28,6 +36,8 @@
 
 	let rows = $state<FixtureRow[]>(initialRows);
 	const settings = createDefaultSettings();
+	Platform.isMobileApp = navigator.maxTouchPoints > 0;
+	Platform.isPhone = Platform.isMobileApp && matchMedia("(max-width: 600px)").matches;
 	const app = {} as App;
 	const dispatcher = {
 		dispatch: async () => ({ ok: true }),
@@ -108,6 +118,30 @@
 			progressOf: () => ({ done: 1, total: 2 }),
 			openOrCreate: async () => ({ ok: true, path: "GTD/Cards/browser-task-1.md" }),
 		},
+	};
+	let mobileCalendarMode = $state<CalendarMode>("day");
+	const recurringIndex = new TaskIndex();
+	recurringIndex.replaceFile("GTD/Recurring.md", [
+		makeTask({
+			filePath: "GTD/Recurring.md",
+			taskId: "browser-recurring-1",
+			container: "recurring",
+			description: "A deliberately long recurring task that must wrap on a phone",
+			recurrence: "every 2 weeks on mon, thu",
+			nextSpawn: "2026-08-03",
+		}),
+	]);
+	const recurringTaskStore: TaskStore = {
+		epoch: readable(recurringIndex.epoch),
+		today: readable("2026-08-02"),
+		index: () => recurringIndex,
+		dispose: () => {},
+	};
+	const recurringSettingsRevision = readable(0);
+	const recurringVault: TemplateVaultPort = {
+		ensureFile: async () => {},
+		processFile: async () => true,
+		processFrontmatter: async () => {},
 	};
 
 	function resolvePendingDetailsSave(): void {
@@ -266,6 +300,57 @@
 					onQuickAdd={rejectQuickAdd}
 				/>
 			</div>
+		</div>
+	</section>
+
+	<section
+		aria-labelledby="mobile-calendar-toolbar-heading"
+		data-testid="mobile-calendar-toolbar-fixture"
+	>
+		<h2 id="mobile-calendar-toolbar-heading">Narrow calendar toolbar</h2>
+		<div class="mobile-narrow-frame">
+			<CalendarToolbar
+				title="Воскресенье, 2 августа 2026"
+				mode={mobileCalendarMode}
+				overdueCount={2}
+				onPrev={() => {}}
+				onToday={() => {}}
+				onNext={() => {}}
+				onMode={(mode) => (mobileCalendarMode = mode)}
+			/>
+		</div>
+		<output data-testid="mobile-calendar-mode">{mobileCalendarMode}</output>
+	</section>
+
+	<section aria-labelledby="mobile-recurring-heading" data-testid="mobile-recurring-fixture">
+		<h2 id="mobile-recurring-heading">Narrow recurring view</h2>
+		<div class="mobile-narrow-frame">
+			<Recurring
+				taskStore={recurringTaskStore}
+				{dispatcher}
+				{settings}
+				settingsRevision={recurringSettingsRevision}
+				{app}
+				recurrence={null}
+				cards={null}
+				vault={recurringVault}
+			/>
+		</div>
+	</section>
+
+	<section aria-labelledby="mobile-inbox-heading" data-testid="mobile-inbox-fixture">
+		<h2 id="mobile-inbox-heading">Narrow inbox view</h2>
+		<div class="mobile-narrow-frame mobile-inbox-frame">
+			<Inbox
+				taskStore={recurringTaskStore}
+				{dispatcher}
+				{settings}
+				settingsRevision={recurringSettingsRevision}
+				{app}
+				dnd={null}
+				menuPorts={null}
+				vault={recurringVault}
+			/>
 		</div>
 	</section>
 
@@ -465,6 +550,15 @@
 	}
 	[data-testid="calendar-day-fixture"] :global(.gtd-cal-cell) {
 		min-height: 8rem;
+	}
+	.mobile-narrow-frame {
+		width: min(100%, 22rem);
+		min-width: 0;
+		border: 1px solid #94a3b8;
+		overflow: hidden;
+	}
+	.mobile-inbox-frame {
+		height: 12rem;
 	}
 	.rejected-drop-target {
 		min-height: 5rem;

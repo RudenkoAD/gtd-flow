@@ -60,7 +60,7 @@
 	);
 	const titleText = $derived(displayText(ev.task));
 	// ТЗ §8: на телефоне кросс-видовой drag выключен — меню/пикеры вместо него
-	const draggable = $derived(dnd !== null && !Platform.isPhone);
+	const draggable = $derived(dnd !== null && !Platform.isMobileApp);
 	/** Бейдж времени поля-размещения перед текстом: «14:30–16:00» при заданном
 	 *  конце интервала (dueTimeEnd/scheduledTimeEnd/startTimeEnd), иначе «14:30». */
 	const timeLabel = $derived(

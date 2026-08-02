@@ -26,7 +26,14 @@ import { reportAsync } from "./views/common/runAction";
 import { ensureCaptureFile, findTaskAtLine, quickCaptureLine } from "./views/common/taskActions";
 import type { ProcessInboxSummary } from "./ai/processing/InboxProcessor";
 
-export function registerCommands(plugin: GtdFlowPlugin): void {
+export interface CommandRegistrationOptions {
+	desktopFeatures?: boolean;
+}
+
+export function registerCommands(
+	plugin: GtdFlowPlugin,
+	options: CommandRegistrationOptions = {},
+): void {
 	plugin.addCommand({
 		id: "quick-capture",
 		name: "Быстрый ввод во входящие",
@@ -42,6 +49,11 @@ export function registerCommands(plugin: GtdFlowPlugin): void {
 		name: "Проверить регулярные сейчас",
 		callback: () => reportAsync("проход повторов не выполнен", () => runRecurrencePass(plugin)),
 	});
+
+	// Android MVP intentionally exposes only commands backed by its registered
+	// Inbox/Calendar/Recurring surface. In particular, no AI callback is ever
+	// registered against the absent desktop composition root.
+	if (options.desktopFeatures === false) return;
 
 	plugin.addCommand({
 		id: "sync-external-calendars",
@@ -94,7 +106,7 @@ export function registerCommands(plugin: GtdFlowPlugin): void {
 		name: "Открыть разговор последнего AI-запуска",
 		callback: () =>
 			reportAsync("последний AI-запуск не открыт", async () => {
-				if (!(await plugin.ai.openLastRun())) {
+				if (!(await desktopAi(plugin).openLastRun())) {
 					new Notice("GTD Flow: сохранённых AI-запусков пока нет");
 				}
 			}),
@@ -530,7 +542,7 @@ async function syncExternalCalendars(plugin: GtdFlowPlugin): Promise<void> {
 		return;
 	}
 	new Notice("GTD Flow: синхронизация внешних календарей…");
-	await plugin.sync.syncAll();
+	await plugin.desktopCalendarSync().syncAll();
 	new Notice("GTD Flow: синхронизация внешних календарей завершена");
 }
 
@@ -569,12 +581,12 @@ async function runRecurrencePass(plugin: GtdFlowPlugin): Promise<void> {
 }
 
 async function processInboxWithAi(plugin: GtdFlowPlugin): Promise<void> {
-	const summary = await plugin.ai.process();
+	const summary = await desktopAi(plugin).process();
 	await showAiProcessingSummary(plugin, summary);
 }
 
 function cancelActiveAiInboxProcessing(plugin: GtdFlowPlugin): void {
-	const cancelled = plugin.ai.cancelProcessing();
+	const cancelled = desktopAi(plugin).cancelProcessing();
 	new Notice(
 		cancelled === 0
 			? "GTD Flow: активных AI-обработок входящих нет"
@@ -592,7 +604,7 @@ async function reprocessAtCursorWithAi(
 		noticeNoTask();
 		return;
 	}
-	const summary = await plugin.ai.reprocessTask(task);
+	const summary = await desktopAi(plugin).reprocessTask(task);
 	await showAiProcessingSummary(plugin, summary);
 }
 
@@ -632,7 +644,7 @@ async function unlockAiFieldAtCursor(
 }
 
 async function retryWaitingAiJobs(plugin: GtdFlowPlugin): Promise<void> {
-	const summaries = await plugin.ai.retryWaiting();
+	const summaries = await desktopAi(plugin).retryWaiting();
 	if (summaries.length === 0) {
 		new Notice("GTD Flow: готовых к повтору AI-запусков нет");
 		return;
@@ -681,8 +693,13 @@ async function showAiProcessingSummary(
 	];
 	new Notice(`GTD Flow: AI-обработка — ${details.join(", ")}`);
 	if (summary.questions.length > 0 && summary.sessionId !== null) {
-		await plugin.ai.openSession(summary.sessionId);
+		await desktopAi(plugin).openSession(summary.sessionId);
 	}
+}
+
+function desktopAi(plugin: GtdFlowPlugin): NonNullable<GtdFlowPlugin["ai"]> {
+	if (plugin.ai === null) throw new Error("desktop-ai-unavailable");
+	return plugin.ai;
 }
 
 // ---------------------------------------------------------------------------

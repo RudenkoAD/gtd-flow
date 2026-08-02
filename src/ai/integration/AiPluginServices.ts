@@ -1,9 +1,5 @@
 import type { App } from "obsidian";
-import {
-	ESTIMATE_FIELDS,
-	type EstimateField,
-	type TaskEstimateProvenance,
-} from "../../core/estimates/provenance";
+import { ESTIMATE_FIELDS, type EstimateField } from "../../core/estimates/provenance";
 import type { LongDurationStyle } from "../../core/estimates/format";
 import type { Task } from "../../core/model/Task";
 import { isActiveScopeId } from "../../core/scope/scope";
@@ -12,16 +8,20 @@ import type { ScopeCatalogService } from "../../services/ScopeCatalogService";
 import type { BoardService } from "../../services/BoardService";
 import type { ProjectService } from "../../services/ProjectService";
 import {
-	type EstimateCorrectedEvent,
-	type EstimateFeedbackEvent,
 	type EstimateFieldSuggestedEvent,
-	type EstimateSuggestedEvent,
-	EstimateFeedbackService,
 	feedbackTaskSnapshot,
 } from "../../services/EstimateFeedbackService";
-import { EstimateMemoryService } from "../../services/EstimateMemoryService";
-import { FieldOwnershipMonitor } from "../../services/FieldOwnershipMonitor";
-import { TaskMetadataService } from "../../services/TaskMetadataService";
+import type { EstimateFeedbackService } from "../../services/EstimateFeedbackService";
+import type { EstimateMemoryService } from "../../services/EstimateMemoryService";
+import type { FieldOwnershipMonitor } from "../../services/FieldOwnershipMonitor";
+import {
+	AI_FEEDBACK_INSPECTION_LIMIT,
+	MetadataServices,
+	type AiFeedbackInspection,
+	type MetadataFeedbackSummary,
+	type MetadataServicesBridge,
+} from "../../services/MetadataServices";
+import type { TaskMetadataService } from "../../services/TaskMetadataService";
 import type { WritebackService } from "../../services/WritebackService";
 import { MemoryCredentialStore } from "../auth/MemoryCredentialStore";
 import { OpenRouterOAuthConnection } from "../auth/DesktopOpenRouterOAuth";
@@ -29,7 +29,7 @@ import { AgentRuntime } from "../core/AgentRuntime";
 import { AIError } from "../core/errors";
 import { AIViewController, type AIConnectionPort, type AIQueuePort } from "./AIViewController";
 import type { AIViewQueueStatus } from "../../views/ai/aiViewModel";
-import { FeedbackStorageAdapter } from "./FeedbackStorageAdapter";
+import { DesktopTaskMetadataActions } from "./DesktopTaskMetadataActions";
 import { GtdToolPortsAdapter, type PreparedAiMetadataMutation } from "./GtdToolPortsAdapter";
 import { InboxTaskAdapter } from "./InboxTaskAdapter";
 import { RepositoryProcessingPersistence } from "./ProcessingPersistence";
@@ -50,7 +50,7 @@ import { SessionRepository } from "../storage/SessionRepository";
 import { createGtdToolRegistry } from "../tools/gtdTools";
 import type { ToolExecutionContext } from "../tools/ToolRegistry";
 
-export interface AiPluginServicesOptions {
+export interface DesktopAiServicesOptions {
 	app: App;
 	vault: VaultAdapter;
 	dispatcher: WritebackService;
@@ -68,40 +68,25 @@ export interface AiPluginServicesOptions {
 	openAiView(): Promise<void>;
 	now?: () => Date;
 	createId?: () => string;
+	metadataServices?: MetadataServicesBridge;
 }
 
-export const AI_FEEDBACK_INSPECTION_LIMIT = 50;
+/** @deprecated Use `DesktopAiServicesOptions`. */
+export type AiPluginServicesOptions = DesktopAiServicesOptions;
 
-export interface AiFeedbackInspectionField {
-	field: EstimateField;
-	owner: "ai" | "user";
-	locked: boolean;
-	lastPredictionEventId: string | null;
-	updatedAt: string;
-}
-
-export interface AiFeedbackInspectionEvent {
-	id: string;
-	taskId: string;
-	createdAt: string;
-	kind: EstimateFeedbackEvent["kind"];
-	detail: string;
-	provenance: AiFeedbackInspectionField[];
-}
-
-export interface AiFeedbackInspection {
-	totalEvents: number;
-	invalidRecords: number;
-	omittedEvents: number;
-	events: AiFeedbackInspectionEvent[];
-}
+export {
+	AI_FEEDBACK_INSPECTION_LIMIT,
+	type AiFeedbackInspection,
+	type AiFeedbackInspectionEvent,
+	type AiFeedbackInspectionField,
+} from "../../services/MetadataServices";
 
 /**
  * Composition root for the desktop AI slice. Keeping it outside `main.ts`
  * makes the credential/provider boundary and every synced repository visible
  * in one place, while commands and views receive only narrow service facades.
  */
-export class AiPluginServices {
+export class DesktopAiServices {
 	readonly credentials = new MemoryCredentialStore();
 	readonly sessions: SessionRepository;
 	readonly runs: RunRepository;
@@ -113,23 +98,33 @@ export class AiPluginServices {
 	readonly view: AIViewController;
 	readonly metadata: TaskMetadataService;
 	readonly ownership: FieldOwnershipMonitor;
+	readonly metadataServices: MetadataServicesBridge;
 
 	private readonly now: () => Date;
 	private readonly createId: () => string;
 	private readonly processingControllers = new Set<AbortController>();
-	private reconciliationTail: Promise<void> = Promise.resolve();
 
-	constructor(private readonly options: AiPluginServicesOptions) {
+	constructor(private readonly options: DesktopAiServicesOptions) {
 		this.now = options.now ?? (() => new Date());
 		this.createId = options.createId ?? (() => crypto.randomUUID());
 
 		this.sessions = new SessionRepository(options.vault);
 		this.runs = new RunRepository(options.vault);
-		this.history = new EstimateFeedbackService(
-			new FeedbackStorageAdapter(options.app, options.vault),
-			this.now,
-		);
-		this.memory = new EstimateMemoryService(this.history);
+		this.metadataServices =
+			options.metadataServices ??
+			new MetadataServices({
+				vault: options.vault,
+				dispatcher: options.dispatcher,
+				scopes: options.scopes,
+				allTasks: options.allTasks,
+				durationLongStyle: options.durationLongStyle,
+				now: this.now,
+				createId: this.createId,
+			});
+		this.history = this.metadataServices.history;
+		this.memory = this.metadataServices.memory;
+		this.ownership = this.metadataServices.ownership;
+		this.metadata = this.metadataServices.taskMetadata;
 
 		const rawConnection = new OpenRouterOAuthConnection(this.credentials);
 		const connection: AIConnectionPort = {
@@ -146,40 +141,6 @@ export class AiPluginServices {
 			now: this.now,
 		});
 		const runtime = new AgentRuntime(provider);
-
-		this.ownership = new FieldOwnershipMonitor(async (edit) => {
-			try {
-				const event: EstimateCorrectedEvent = {
-					schemaVersion: 1,
-					id: safeId(this.createId()),
-					kind:
-						edit.field === "scope"
-							? "scope-changed"
-							: edit.previousValue === null
-								? "estimate-manual"
-								: "estimate-corrected",
-					taskId: edit.task.taskId!,
-					createdAt: this.now().toISOString(),
-					runId: null,
-					sessionId: null,
-					field: edit.field,
-					previousValue: edit.previousValue,
-					value: edit.value,
-					taskSnapshot: feedbackTaskSnapshot(edit.task),
-				};
-				await this.history.recordMutation(event, [
-					{
-						field: edit.field,
-						previousValue: edit.previousValue,
-						intendedValue: edit.value,
-					},
-				]);
-			} catch (error: unknown) {
-				// Never log task text or values. A prepared outbox record or a
-				// later startup reconciliation retries canonical publication.
-				console.warn("GTD Flow: AI ownership feedback write failed", errorName(error));
-			}
-		});
 
 		const taskPort = new InboxTaskAdapter({
 			allTasks: options.allTasks,
@@ -279,21 +240,20 @@ export class AiPluginServices {
 			now: this.now,
 			createId: this.createId,
 		});
-		this.metadata = new TaskMetadataService({
-			dispatcher: options.dispatcher,
-			history: this.history,
-			processor: guardedProcessor,
-			scopes: () => options.scopes.current(),
-			durationLongStyle: options.durationLongStyle,
-			openSession: (sessionId) => this.openSession(sessionId),
-			expectKnownPatch: (taskId, patch) => this.ownership.expectAiPatch(taskId, patch),
-			now: this.now,
-			createId: this.createId,
-		});
+		this.metadataServices.attachAiActions(
+			new DesktopTaskMetadataActions({
+				dispatcher: options.dispatcher,
+				history: this.history,
+				processor: guardedProcessor,
+				scopes: () => options.scopes.current(),
+				openSession: (sessionId) => this.openSession(sessionId),
+				now: this.now,
+			}),
+		);
 	}
 
 	observeTasks(): void {
-		this.ownership.observe(this.options.allTasks());
+		this.metadataServices.observeTasks();
 	}
 
 	/**
@@ -301,9 +261,7 @@ export class AiPluginServices {
 	 * Existing values without AI history are conservatively user-owned.
 	 */
 	reconcileOwnership(): Promise<void> {
-		const before = this.reconciliationTail.catch(() => undefined);
-		this.reconciliationTail = before.then(() => this.reconcileOwnershipOnce());
-		return this.reconciliationTail;
+		return this.metadataServices.reconcileOwnership();
 	}
 
 	async process(request: ProcessInboxRequest = {}): Promise<ProcessInboxSummary> {
@@ -413,24 +371,8 @@ export class AiPluginServices {
 		return true;
 	}
 
-	async feedbackSummary(): Promise<{
-		events: number;
-		invalidRecords: number;
-		pendingOutbox: number;
-		conflictedOutbox: number;
-		invalidOutboxRecords: number;
-	}> {
-		const [result, outbox] = await Promise.all([
-			this.history.readAll(),
-			this.history.outboxHealth(),
-		]);
-		return {
-			events: result.events.length,
-			invalidRecords: result.invalidPaths.length,
-			pendingOutbox: outbox.pending,
-			conflictedOutbox: outbox.conflicts,
-			invalidOutboxRecords: outbox.invalidRecords,
-		};
+	feedbackSummary(): Promise<MetadataFeedbackSummary> {
+		return this.metadataServices.feedbackSummary();
 	}
 
 	/**
@@ -439,47 +381,23 @@ export class AiPluginServices {
 	 * never cross this boundary. Identifier-like values are allowlisted and
 	 * credential-shaped strings are redacted before Settings can render them.
 	 */
-	async feedbackInspection(
+	feedbackInspection(
 		requestedLimit: number = AI_FEEDBACK_INSPECTION_LIMIT,
 	): Promise<AiFeedbackInspection> {
-		const limit = inspectionLimit(requestedLimit);
-		const result = await this.history.readAll();
-		const recent = result.events.slice(-limit).reverse();
-		const taskIds = [...new Set(recent.map((event) => event.taskId))];
-		const provenanceByTask = new Map<string, TaskEstimateProvenance>();
-		await Promise.all(
-			taskIds.map(async (taskId) => {
-				provenanceByTask.set(
-					taskId,
-					await this.history.provenanceForTask(taskId, this.now().toISOString()),
-				);
-			}),
-		);
-		return {
-			totalEvents: result.events.length,
-			invalidRecords: result.invalidPaths.length,
-			omittedEvents: Math.max(0, result.events.length - recent.length),
-			events: recent.map((event) => ({
-				id: safeInspectionIdentifier(event.id),
-				taskId: safeInspectionIdentifier(event.taskId),
-				createdAt: safeInspectionTimestamp(event.createdAt),
-				kind: event.kind,
-				detail: feedbackEventDetail(event).slice(0, 500),
-				provenance: inspectionProvenance(provenanceByTask.get(event.taskId)),
-			})),
-		};
+		return this.metadataServices.feedbackInspection(requestedLimit);
 	}
 
 	exportFeedback(): Promise<string> {
-		return this.history.exportJson();
+		return this.metadataServices.exportFeedback();
 	}
 
 	clearFeedbackConfirmed(): Promise<number> {
-		return this.history.clearConfirmed();
+		return this.metadataServices.clearFeedbackConfirmed();
 	}
 
 	async dispose(): Promise<void> {
 		this.cancelProcessing();
+		this.metadataServices.attachAiActions(null);
 		await this.credentials.clear();
 	}
 
@@ -585,84 +503,12 @@ export class AiPluginServices {
 			},
 		};
 	}
-
-	private async reconcileOwnershipOnce(): Promise<void> {
-		const tasks = this.options.allTasks().filter((task) => task.taskId !== null);
-		const recovery = await this.history.recoverPending(
-			(taskId) => tasks.find((task) => task.taskId === taskId) ?? null,
-		);
-		if (recovery.conflicts.length > 0 || recovery.invalidPaths.length > 0) {
-			console.warn("GTD Flow: AI feedback recovery needs attention", {
-				conflicts: recovery.conflicts.length,
-				invalidRecords: recovery.invalidPaths.length,
-			});
-		}
-		const conflictedFields = new Set(
-			recovery.conflicts.flatMap((conflict) =>
-				conflict.fields.map((field) => `${conflict.taskId}\0${field}`),
-			),
-		);
-		const { events } = await this.history.readAll();
-		const byTask = new Map<string, EstimateFeedbackEvent[]>();
-		for (const event of events) {
-			const bucket = byTask.get(event.taskId);
-			if (bucket) bucket.push(event);
-			else byTask.set(event.taskId, [event]);
-		}
-		for (const task of tasks) {
-			const taskId = task.taskId!;
-			const state = replayOfflineBaselines(byTask.get(taskId) ?? []);
-			for (const field of FIELDS) {
-				if (conflictedFields.has(`${taskId}\0${field}`)) continue;
-				const baseline = state[field];
-				if (baseline.userOwned || baseline.unlockedWithoutPrediction) continue;
-				const value = taskFieldValue(task, field);
-				if (!baseline.hasPrediction && value === null) continue;
-				if (baseline.hasPrediction && baseline.value === value) continue;
-				const previousValue = baseline.hasPrediction ? baseline.value : null;
-				const event: EstimateCorrectedEvent = {
-					schemaVersion: 1,
-					id: safeId(this.createId()),
-					kind:
-						field === "scope"
-							? "scope-changed"
-							: baseline.hasPrediction
-								? "estimate-corrected"
-								: "estimate-manual",
-					taskId,
-					createdAt: this.now().toISOString(),
-					runId: null,
-					sessionId: null,
-					field,
-					previousValue,
-					value,
-					taskSnapshot: feedbackTaskSnapshot(task),
-				};
-				await this.history.recordMutation(event, [
-					{ field, previousValue, intendedValue: value },
-				]);
-			}
-		}
-		this.ownership.observe(tasks);
-	}
 }
 
-interface OfflineFieldBaseline {
-	userOwned: boolean;
-	unlockedWithoutPrediction: boolean;
-	hasPrediction: boolean;
-	value: number | string | null;
-}
+/** @deprecated Use `DesktopAiServices`; retained for the existing desktop entrypoint. */
+export class AiPluginServices extends DesktopAiServices {}
 
 type AiMetadataPatch = Partial<Record<EstimateField, number | string | null>>;
-
-const FIELDS: readonly EstimateField[] = [
-	"duration",
-	"cognitive",
-	"emotional",
-	"physical",
-	"scope",
-];
 
 function metadataPatchFields(patch: AiMetadataPatch): EstimateField[] {
 	return ESTIMATE_FIELDS.filter((field) => Object.prototype.hasOwnProperty.call(patch, field));
@@ -683,202 +529,6 @@ async function settlePreparedEvents<T>(
 	if (firstError !== undefined) throw firstError;
 }
 
-const INSPECTION_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$/u;
-const CREDENTIAL_SHAPED =
-	/(?:api[_-]?key|access[_-]?token|refresh[_-]?token|bearer|credential|client[_-]?secret|secret|oauth|sk-[A-Za-z0-9_-]{4,}|github_pat_|gh[pousr]_|xox[baprs]-|AKIA[0-9A-Z]|AIza[0-9A-Za-z_-]|[pr]k_(?:live|test)_)/iu;
-
-function inspectionLimit(value: number): number {
-	if (!Number.isSafeInteger(value)) return AI_FEEDBACK_INSPECTION_LIMIT;
-	return Math.max(1, Math.min(AI_FEEDBACK_INSPECTION_LIMIT, value));
-}
-
-function safeInspectionIdentifier(value: string): string {
-	return INSPECTION_IDENTIFIER.test(value) && !CREDENTIAL_SHAPED.test(value)
-		? value
-		: "[redacted]";
-}
-
-function safeInspectionTimestamp(value: string): string {
-	const timestamp = Date.parse(value);
-	return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : "[invalid timestamp]";
-}
-
-function safeScopeValue(value: number | string | null): string {
-	if (value === null) return "unknown";
-	if (typeof value !== "string") return String(value);
-	return isActiveInspectionScopeId(value) ? value : "[redacted]";
-}
-
-function isActiveInspectionScopeId(value: string): boolean {
-	return /^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$/u.test(value) && !CREDENTIAL_SHAPED.test(value);
-}
-
-function feedbackValue(
-	event: EstimateSuggestedEvent,
-	field: EstimateField,
-): number | string | null {
-	switch (field) {
-		case "duration":
-			return event.values.durationMinutes;
-		case "cognitive":
-			return event.values.cognitiveIntensity;
-		case "emotional":
-			return event.values.emotionalIntensity;
-		case "physical":
-			return event.values.physicalIntensity;
-		case "scope":
-			return event.values.scopeId;
-	}
-}
-
-function displayFeedbackValue(field: EstimateField, value: number | string | null): string {
-	if (field === "scope") return safeScopeValue(value);
-	if (value === null) return "unknown";
-	return field === "duration" ? `${String(value)}m` : String(value);
-}
-
-function feedbackEventDetail(event: EstimateFeedbackEvent): string {
-	switch (event.kind) {
-		case "estimate-suggested":
-			return `applied ${event.appliedFields
-				.map(
-					(field) =>
-						`${field}=${displayFeedbackValue(field, feedbackValue(event, field))}`,
-				)
-				.join(", ")}`;
-		case "estimate-field-suggested":
-			return `applied ${event.field}=${displayFeedbackValue(event.field, event.value)}`;
-		case "estimate-corrected":
-		case "estimate-manual":
-		case "scope-changed":
-			return `${event.field}: ${displayFeedbackValue(
-				event.field,
-				event.previousValue,
-			)} → ${displayFeedbackValue(event.field, event.value)}`;
-		case "field-unlocked":
-			return `unlocked ${event.fields.join(", ")}`;
-		case "field-locked":
-			return `locked ${event.fields.join(", ")}`;
-		case "question-asked":
-			return `question asked for ${event.affectedFields.join(", ")} (content hidden)`;
-		case "question-answered":
-			return `question answered for ${event.affectedFields.join(", ")} (content hidden)`;
-		default: {
-			const exhaustive: never = event;
-			return exhaustive;
-		}
-	}
-}
-
-function inspectionProvenance(
-	provenance: TaskEstimateProvenance | undefined,
-): AiFeedbackInspectionField[] {
-	if (provenance === undefined) return [];
-	return ESTIMATE_FIELDS.map((field) => {
-		const state = provenance.fields[field];
-		return {
-			field,
-			owner: state.owner,
-			locked: state.locked,
-			lastPredictionEventId:
-				state.lastPredictionEventId === null
-					? null
-					: safeInspectionIdentifier(state.lastPredictionEventId),
-			updatedAt: safeInspectionTimestamp(state.updatedAt),
-		};
-	});
-}
-
-function replayOfflineBaselines(
-	events: readonly EstimateFeedbackEvent[],
-): Record<EstimateField, OfflineFieldBaseline> {
-	const state = Object.fromEntries(
-		FIELDS.map((field) => [
-			field,
-			{
-				userOwned: false,
-				unlockedWithoutPrediction: false,
-				hasPrediction: false,
-				value: null,
-			},
-		]),
-	) as Record<EstimateField, OfflineFieldBaseline>;
-	for (const event of [...events].sort(compareEvents)) {
-		if (event.kind === "estimate-suggested") {
-			for (const field of event.appliedFields) {
-				if (state[field].userOwned) continue;
-				state[field] = {
-					userOwned: false,
-					unlockedWithoutPrediction: false,
-					hasPrediction: true,
-					value: suggestedFieldValue(event, field),
-				};
-			}
-			continue;
-		}
-		if (event.kind === "estimate-field-suggested") {
-			if (state[event.field].userOwned) continue;
-			state[event.field] = {
-				userOwned: false,
-				unlockedWithoutPrediction: false,
-				hasPrediction: true,
-				value: event.value,
-			};
-			continue;
-		}
-		if (
-			event.kind === "estimate-corrected" ||
-			event.kind === "estimate-manual" ||
-			event.kind === "scope-changed"
-		) {
-			state[event.field] = {
-				...state[event.field],
-				userOwned: true,
-				unlockedWithoutPrediction: false,
-				value: event.value,
-			};
-			continue;
-		}
-		if (event.kind === "field-unlocked") {
-			for (const field of event.fields) {
-				state[field] = {
-					...state[field],
-					userOwned: false,
-					unlockedWithoutPrediction: true,
-				};
-			}
-		}
-		if (event.kind === "field-locked") {
-			for (const field of event.fields) {
-				state[field] = {
-					...state[field],
-					userOwned: true,
-					unlockedWithoutPrediction: false,
-				};
-			}
-		}
-	}
-	return state;
-}
-
-function suggestedFieldValue(
-	event: EstimateSuggestedEvent,
-	field: EstimateField,
-): number | string | null {
-	switch (field) {
-		case "duration":
-			return event.values.durationMinutes;
-		case "cognitive":
-			return event.values.cognitiveIntensity;
-		case "emotional":
-			return event.values.emotionalIntensity;
-		case "physical":
-			return event.values.physicalIntensity;
-		case "scope":
-			return event.values.scopeId;
-	}
-}
-
 function taskFieldValue(task: Task, field: EstimateField): number | string | null {
 	switch (field) {
 		case "duration":
@@ -892,12 +542,6 @@ function taskFieldValue(task: Task, field: EstimateField): number | string | nul
 		case "scope":
 			return task.scopeId;
 	}
-}
-
-function compareEvents(left: EstimateFeedbackEvent, right: EstimateFeedbackEvent): number {
-	return (
-		Date.parse(left.createdAt) - Date.parse(right.createdAt) || left.id.localeCompare(right.id)
-	);
 }
 
 function safeId(value: string): string {

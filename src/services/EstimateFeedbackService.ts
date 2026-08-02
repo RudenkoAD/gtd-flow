@@ -377,9 +377,33 @@ export class EstimateFeedbackService {
 	}
 
 	async provenanceForTask(taskId: string, now: string): Promise<TaskEstimateProvenance> {
-		let provenance = emptyTaskProvenance(taskId, now);
-		const [events, outbox] = await Promise.all([this.eventsForTask(taskId), this.readOutbox()]);
+		return (
+			(await this.provenanceForTasks([taskId], now)).get(taskId) ??
+			emptyTaskProvenance(taskId, now)
+		);
+	}
+
+	/**
+	 * Replays one shared feedback/outbox snapshot for every requested task. Inbox
+	 * cards mount together, so this avoids one whole-vault history scan per card.
+	 */
+	async provenanceForTasks(
+		taskIds: readonly string[],
+		now: string,
+		feedbackSnapshot?: FeedbackReadResult,
+	): Promise<Map<string, TaskEstimateProvenance>> {
+		const ids = new Set(taskIds);
+		const result = new Map<string, TaskEstimateProvenance>();
+		for (const taskId of ids) result.set(taskId, emptyTaskProvenance(taskId, now));
+		if (ids.size === 0) return result;
+
+		const [{ events }, outbox] = await Promise.all([
+			feedbackSnapshot ?? this.readAll(),
+			this.readOutbox(),
+		]);
 		for (const event of events) {
+			let provenance = result.get(event.taskId);
+			if (provenance === undefined) continue;
 			switch (event.kind) {
 				case "estimate-suggested":
 					for (const field of event.appliedFields) {
@@ -411,7 +435,7 @@ export class EstimateFeedbackService {
 				case "scope-changed":
 					provenance = lockUserEditedFields({
 						provenance,
-						taskId,
+						taskId: event.taskId,
 						fields: [event.field],
 						now: event.createdAt,
 					});
@@ -419,7 +443,7 @@ export class EstimateFeedbackService {
 				case "field-locked":
 					provenance = lockUserEditedFields({
 						provenance,
-						taskId,
+						taskId: event.taskId,
 						fields: event.fields,
 						now: event.createdAt,
 					});
@@ -439,20 +463,25 @@ export class EstimateFeedbackService {
 					return exhaustive;
 				}
 			}
+			result.set(event.taskId, provenance);
 		}
 		// A retained conflict has no trustworthy label, but it is durable evidence
 		// that this field was touched outside a completed AI write. Keep it user
 		// owned until the record is explicitly resolved or cleared.
 		for (const record of outbox.records) {
-			if (record.state !== "conflict" || record.event.taskId !== taskId) continue;
+			if (record.state !== "conflict") continue;
+			const taskId = record.event.taskId;
+			let provenance = result.get(taskId);
+			if (provenance === undefined) continue;
 			provenance = lockUserEditedFields({
 				provenance,
 				taskId,
 				fields: record.mutations.map((mutation) => mutation.field),
 				now: record.updatedAt,
 			});
+			result.set(taskId, provenance);
 		}
-		return provenance;
+		return result;
 	}
 
 	async outboxHealth(): Promise<FeedbackOutboxHealth> {

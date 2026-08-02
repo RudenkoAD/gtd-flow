@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { type Infer, z } from "../../schema/zod";
 
 export const ProcessingRunStateSchema = z.enum([
 	"queued",
@@ -12,7 +12,7 @@ export const ProcessingRunStateSchema = z.enum([
 	"completed",
 	"superseded",
 ]);
-export type ProcessingRunState = z.infer<typeof ProcessingRunStateSchema>;
+export type ProcessingRunState = Infer<typeof ProcessingRunStateSchema>;
 
 export interface ProcessingRunStateSnapshot {
 	id: string;

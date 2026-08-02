@@ -54,7 +54,7 @@
 	// ТЗ §8: на телефоне кросс-видовой drag выключен — startDrag не инициируем,
 	// touch-action возвращается нативному скроллу, длинный тап открывает карточку
 	const draggable = $derived(
-		dnd !== null && dragPayload !== undefined && !Platform.isPhone && !editing,
+		dnd !== null && dragPayload !== undefined && !Platform.isMobileApp && !editing,
 	);
 
 	/**
@@ -80,7 +80,7 @@
 	function onCardPointerDown(e: PointerEvent): void {
 		if (editing) return; // во время инлайн-редактирования drag/long-press выключены
 		if (isControl(e.target)) return; // клики по контролам — не drag и не long-press
-		if (Platform.isPhone) {
+		if (Platform.isMobileApp) {
 			startLongPress(e);
 			return;
 		}
@@ -95,6 +95,7 @@
 	let lpTimer: number | null = null;
 	let lpX = 0;
 	let lpY = 0;
+	let suppressNextClick = false;
 
 	function startLongPress(e: PointerEvent): void {
 		cancelLongPress();
@@ -102,7 +103,12 @@
 		lpY = e.clientY;
 		lpTimer = window.setTimeout(() => {
 			lpTimer = null;
-			void openCard();
+			if (menuPorts?.cards != null) {
+				// A browser click follows the completed touch sequence. Consume that
+				// synthetic click so long-press opens the card, not the details modal too.
+				suppressNextClick = true;
+				void openCard();
+			}
 		}, LONG_TAP_MS);
 	}
 
@@ -116,6 +122,12 @@
 			window.clearTimeout(lpTimer);
 			lpTimer = null;
 		}
+	}
+
+	function finishPointerSequence(): void {
+		cancelLongPress();
+		// If this pointer sequence produces no click, do not consume a later tap.
+		if (suppressNextClick) window.setTimeout(() => (suppressNextClick = false), 0);
 	}
 
 	const isDone = $derived(task.statusChar === "x" || task.statusChar === "X");
@@ -231,6 +243,10 @@
 	 * DndService swallows the synthetic click after a completed drag.
 	 */
 	function onCardClick(e: MouseEvent): void {
+		if (suppressNextClick) {
+			suppressNextClick = false;
+			return;
+		}
 		if (editing || isControl(e.target) || isTaskTitle(e.target)) return;
 		openDetails();
 	}
@@ -278,11 +294,12 @@
 	class:is-done={isDone}
 	class:is-cancelled={isCancelled}
 	class:is-draggable={draggable}
+	class:is-phone={Platform.isMobileApp}
 	onpointerdown={onCardPointerDown}
 	onpointermove={onCardPointerMove}
-	onpointerup={cancelLongPress}
-	onpointercancel={cancelLongPress}
-	onpointerleave={cancelLongPress}
+	onpointerup={finishPointerSequence}
+	onpointercancel={finishPointerSequence}
+	onpointerleave={finishPointerSequence}
 	onclick={onCardClick}
 	ondblclick={onCardDblClick}
 >
@@ -376,6 +393,24 @@
 	}
 	.gtd-task-card.is-draggable:active {
 		cursor: grabbing;
+	}
+	.gtd-task-card.is-phone {
+		align-items: center;
+		min-height: 52px;
+		padding-block: 4px;
+	}
+	.gtd-task-card.is-phone .gtd-task-check {
+		width: 28px;
+		height: 28px;
+		margin-block: 8px;
+	}
+	.gtd-task-card.is-phone .gtd-task-progress,
+	.gtd-task-card.is-phone .gtd-task-details,
+	.gtd-task-card.is-phone .gtd-task-more {
+		min-width: 44px;
+		min-height: 44px;
+		padding-inline: 8px;
+		touch-action: manipulation;
 	}
 	.gtd-task-card.is-done .gtd-task-desc,
 	.gtd-task-card.is-cancelled .gtd-task-desc {

@@ -1,5 +1,6 @@
-import { Notice, Plugin, requestUrl, type WorkspaceLeaf } from "obsidian";
-import { VIEW_META, VIEW_TYPES, type GtdViewKind } from "./views/registry";
+import { Notice, Platform, Plugin, requestUrl, type WorkspaceLeaf } from "obsidian";
+import { VIEW_META, type GtdViewKind, type ViewMeta } from "./views/registry";
+import type { GtdView } from "./views/GtdView";
 import { DEFAULT_SETTINGS, type GtdFlowSettings } from "./settings/Settings";
 import { mergeSettingsWithDiagnostics } from "./settings/mergeSettings";
 import { GtdSettingsTab } from "./settings/SettingsTab";
@@ -14,13 +15,12 @@ import { PromoteService } from "./services/PromoteService";
 import { ProjectService } from "./services/ProjectService";
 import { CardService } from "./services/CardService";
 import { DayStatusService } from "./services/DayStatusService";
-import { SyncService, type SyncResult } from "./sync/SyncService";
+import type { SyncResult, SyncService } from "./sync/SyncService";
 import { registerCommands } from "./commands";
 import type { IsoDate } from "./core/model/Task";
 import { createTaskStore, type TaskStore } from "./stores/taskStore";
 import { createSettingsRevision } from "./stores/settingsRevision";
-import { createGtdView } from "./views/createView";
-import { DndService } from "./views/dnd/DndService";
+import type { DndService } from "./views/dnd/DndService";
 import { reportAsync } from "./views/common/runAction";
 import { createDemoVault, demoVaultNotice } from "./onboarding/demoVault";
 import { WelcomeModal } from "./onboarding/WelcomeModal";
@@ -46,10 +46,15 @@ import {
 	type NamespaceMigrationSettingsSnapshot,
 } from "./core/scope/namespaceMigration";
 import { isActiveScopeId } from "./core/scope/scope";
-import { AiPluginServices } from "./ai/integration/AiPluginServices";
+import type { DesktopAiServices } from "./ai/integration/DesktopAiServices";
 import type { AIViewController } from "./ai/integration/AIViewController";
 import type { TaskMetadataService } from "./services/TaskMetadataService";
+import { MetadataServices } from "./services/MetadataServices";
 import { openTaskInFile } from "./views/common/openTask";
+import { GTD_FLOW_PROTOCOL_ACTION } from "./protocol/gtdFlowProtocol";
+import { gtdFlowProtocolNavigation } from "./protocol/gtdFlowNavigation";
+import { runtimeFeaturePolicy } from "./platform/runtimeFeatures";
+import { activateGtdView } from "./views/activateView";
 
 export default class GtdFlowPlugin extends Plugin {
 	settings: GtdFlowSettings = DEFAULT_SETTINGS;
@@ -66,19 +71,20 @@ export default class GtdFlowPlugin extends Plugin {
 	taskStore!: TaskStore;
 	dispatcher!: WritebackService;
 	boards!: BoardService;
-	dnd!: DndService;
+	dnd: DndService | null = null;
 	recurrence!: RecurrenceService;
 	promote!: PromoteService;
 	projects!: ProjectService;
 	cards!: CardService;
 	dayStatus!: DayStatusService;
-	sync!: SyncService;
+	sync: SyncService | null = null;
 	scopes!: ScopeCatalogService;
 	/** Explicitly invoked one-time executor for legacy namespace → scope migration. */
 	namespaceMigration!: NamespaceMigrationService;
-	/** Desktop-only AI composition root and narrow view/menu ports. */
-	ai!: AiPluginServices;
-	aiViewPort!: AIViewController;
+	/** Mobile-safe metadata composition root plus optional desktop AI runtime. */
+	metadataServices!: MetadataServices;
+	ai: DesktopAiServices | null = null;
+	aiViewPort: AIViewController | null = null;
 	taskMetadata!: TaskMetadataService;
 	/** Compatibility-only input for the explicit namespace migration modal. */
 	private legacyNamespaceSettings: LegacyNamespaceSettings = {
@@ -92,9 +98,11 @@ export default class GtdFlowPlugin extends Plugin {
 	private legacyInboxPaths: () => string[] = () => [];
 	private legacyNamespaceOverride: (path: string) => string | null = () => null;
 	private indexReadyFlag = false;
+	private recurrenceIndexPassQueued = false;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
+		const features = runtimeFeaturePolicy(Platform.isDesktopApp);
 
 		const metadata = new MetadataAdapter(this);
 		// Гейт ленивого frontmatter-индекса: до резолва metadataCache он построился
@@ -121,11 +129,17 @@ export default class GtdFlowPlugin extends Plugin {
 			// Первый spawn-проход регулярных — строго после полной сборки индекса (ТЗ §6).
 			onReady: () => {
 				this.indexReadyFlag = true;
-				reportAsync("фоновый проход регулярных", () => this.recurrence.runPass());
+				if (features.recurrence) {
+					reportAsync("фоновый проход регулярных", () => this.recurrence.runPass());
+				}
 				// «Всплытие во входящие» пропущенных откатов дня (приложение было
 				// закрыто в момент наступления 🛫): при promoteTo="inbox" — не no-op.
-				reportAsync("фоновое возвращение отложенных", () => this.promote.runPass());
-				reportAsync("сверка владельцев AI-полей", () => this.ai.reconcileOwnership());
+				if (features.backgroundPromotion) {
+					reportAsync("фоновое возвращение отложенных", () => this.promote.runPass());
+				}
+				reportAsync("сверка владельцев полей оценки", () =>
+					this.metadataServices.reconcileOwnership(),
+				);
 			},
 		});
 		this.taskStore = createTaskStore(this.indexer);
@@ -183,7 +197,10 @@ export default class GtdFlowPlugin extends Plugin {
 			// on older mobile WebViews); BoardService adds the readable name slug.
 			genBoardIdSuffix: secureBoardIdSuffix,
 		});
-		this.dnd = new DndService(this);
+		if (features.crossViewDnd) {
+			const { DndService: DesktopDndService } = await import("./views/dnd/DndService");
+			this.dnd = new DesktopDndService(this);
+		}
 		this.recurrence = new RecurrenceService({
 			feed: this.indexer,
 			write: this.vaultAdapter,
@@ -198,9 +215,11 @@ export default class GtdFlowPlugin extends Plugin {
 				await ensureCaptureFile(this.vaultAdapter, path);
 			},
 		});
-		clock.onDayRollover(() =>
-			reportAsync("проход регулярных после смены дня", () => this.recurrence.runPass()),
-		);
+		if (features.recurrence) {
+			clock.onDayRollover(() =>
+				reportAsync("проход регулярных после смены дня", () => this.recurrence.runPass()),
+			);
+		}
 		// Deferred tasks promoted to inbox always land in the configured unified file.
 		this.promote = new PromoteService({
 			feed: this.indexer,
@@ -229,9 +248,11 @@ export default class GtdFlowPlugin extends Plugin {
 				await this.saveSettings();
 			},
 		});
-		clock.onDayRollover(() =>
-			reportAsync("возвращение отложенных после смены дня", () => this.promote.runPass()),
-		);
+		if (features.backgroundPromotion) {
+			clock.onDayRollover(() =>
+				reportAsync("возвращение отложенных после смены дня", () => this.promote.runPass()),
+			);
+		}
 		this.projects = new ProjectService({
 			feed: this.indexer,
 			write: this.vaultAdapter,
@@ -291,94 +312,115 @@ export default class GtdFlowPlugin extends Plugin {
 			},
 		});
 		this.dayStatus.start();
-		// Зеркалирование внешних iCal-календарей (§внешние календари). Порты — обёртки
-		// над obsidian (requestUrl — не fetch: CORS; vault для записи целиком). Таймер
-		// стартует ниже, после layout-ready (см. .then); чистится в onunload.
-		this.sync = new SyncService({
-			fetch: async (url, _signal) => {
-				// Obsidian's requestUrl has no AbortSignal support.  SyncService still
-				// applies a deadline and generation fence, so a late response cannot
-				// write a deleted/relocated mirror after its caller has timed out.
-				const res = await requestUrl({ url, method: "GET", throw: true });
-				return res.text;
-			},
-			vault: {
-				read: (path) => this.vaultAdapter.readFile(path),
-				write: async (path, content) => {
-					const existing = this.app.vault.getFileByPath(path);
-					if (existing === null) {
-						const dir = path.split("/").slice(0, -1).join("/");
-						if (dir !== "" && this.app.vault.getAbstractFileByPath(dir) === null)
-							await this.app.vault.createFolder(dir).catch(() => undefined);
-						await this.app.vault.create(path, content);
-					} else {
-						await this.app.vault.modify(existing, content);
-					}
+		// External iCal sync is composed only on desktop. Dynamic loading keeps its
+		// parser and timers out of Android startup entirely.
+		if (features.backgroundCalendarSync) {
+			const { SyncService: DesktopSyncService } = await import("./sync/SyncService");
+			this.sync = new DesktopSyncService({
+				fetch: async (url, _signal) => {
+					// Obsidian's requestUrl has no AbortSignal support.  SyncService still
+					// applies a deadline and generation fence, so a late response cannot
+					// write a deleted/relocated mirror after its caller has timed out.
+					const res = await requestUrl({ url, method: "GET", throw: true });
+					return res.text;
 				},
-				// удаление осиротевшего зеркала (подписку удалили/переименовали) — в
-				// СИСТЕМНУЮ корзину (trash второй аргумент true): удалили зря — восстановимо
-				delete: async (path) => {
-					const file = this.app.vault.getFileByPath(path);
-					if (file !== null) await this.app.vault.trash(file, true);
+				vault: {
+					read: (path) => this.vaultAdapter.readFile(path),
+					write: async (path, content) => {
+						const existing = this.app.vault.getFileByPath(path);
+						if (existing === null) {
+							const dir = path.split("/").slice(0, -1).join("/");
+							if (dir !== "" && this.app.vault.getAbstractFileByPath(dir) === null)
+								await this.app.vault.createFolder(dir).catch(() => undefined);
+							await this.app.vault.create(path, content);
+						} else {
+							await this.app.vault.modify(existing, content);
+						}
+					},
+					// удаление осиротевшего зеркала (подписку удалили/переименовали) — в
+					// СИСТЕМНУЮ корзину (trash второй аргумент true): удалили зря — восстановимо
+					delete: async (path) => {
+						const file = this.app.vault.getFileByPath(path);
+						if (file !== null) await this.app.vault.trash(file, true);
+					},
+					// metadata cache is fully resolved before SyncService.start().  We list
+					// only generated gtd-external files, never their private ICS content.
+					listManagedMirrors: async () =>
+						this.app.vault.getMarkdownFiles().flatMap((file) => {
+							const frontmatter = metadata.frontmatter(file.path);
+							if (frontmatter?.["gtd-external"] !== true) return [];
+							const rawId = frontmatter["gtd-external-id"];
+							return [
+								{
+									path: file.path,
+									subscriptionId: typeof rawId === "string" ? rawId : null,
+								},
+							];
+						}),
 				},
-				// metadata cache is fully resolved before SyncService.start().  We list
-				// only generated gtd-external files, never their private ICS content.
-				listManagedMirrors: async () =>
-					this.app.vault.getMarkdownFiles().flatMap((file) => {
-						const frontmatter = metadata.frontmatter(file.path);
-						if (frontmatter?.["gtd-external"] !== true) return [];
-						const rawId = frontmatter["gtd-external-id"];
-						return [
-							{
-								path: file.path,
-								subscriptionId: typeof rawId === "string" ? rawId : null,
-							},
-						];
-					}),
-			},
-			clock: { now: () => new Date() },
-			subscriptions: () => this.settings.externalCalendars,
-			inboxFile: () => this.settings.inboxFile,
-			intervalMin: () => this.settings.externalSyncIntervalMin,
-			onResult: (id, result) => this.recordSyncResult(id, result),
-			onLifecycleWarning: (message) => console.warn(`GTD Flow: ${message}`),
-		});
-		this.ai = new AiPluginServices({
-			app: this.app,
+				clock: { now: () => new Date() },
+				subscriptions: () => this.settings.externalCalendars,
+				inboxFile: () => this.settings.inboxFile,
+				intervalMin: () => this.settings.externalSyncIntervalMin,
+				onResult: (id, result) => this.recordSyncResult(id, result),
+				onLifecycleWarning: (message) => console.warn(`GTD Flow: ${message}`),
+			});
+		}
+		this.metadataServices = new MetadataServices({
 			vault: this.vaultAdapter,
 			dispatcher: this.dispatcher,
 			scopes: this.scopes,
-			projects: this.projects,
-			boards: this.boards,
 			allTasks: () => [...this.indexer.getIndex().all()],
-			inboxFile: () => this.settings.inboxFile,
-			ensureInbox: async (path) => {
-				if (!(await ensureCaptureFile(this.vaultAdapter, path))) {
-					throw new Error(`inbox-file-unavailable:${path}`);
-				}
-			},
-			enabled: () => this.settings.ai.enabled,
-			privacyPolicy: () =>
-				this.settings.ai.privacyPolicy === "unconfigured"
-					? null
-					: this.settings.ai.privacyPolicy,
-			credentialStorage: () =>
-				this.settings.ai.credentialStorage === "memory-only" ? "memory-only" : null,
 			durationLongStyle: () => this.settings.durationLongStyle,
-			openTask: (task) => openTaskInFile(this.app, task),
-			openAiView: async () => {
-				await this.activateView("ai");
-			},
 		});
-		this.aiViewPort = this.ai.view;
-		this.taskMetadata = this.ai.metadata;
-		this.register(this.indexer.onChange(() => this.ai.observeTasks()));
-		if (this.settings.ai.storageVersion !== 1) {
-			this.settings.ai.storageVersion = 1;
-			reportAsync("сохранение версии AI-хранилища", () => this.saveSettings());
+		this.taskMetadata = this.metadataServices.taskMetadata;
+		this.register(
+			this.indexer.onChange(() => {
+				this.metadataServices.observeTasks();
+				if (features.recurrence) this.scheduleRecurrenceIndexPass();
+			}),
+		);
+
+		if (features.desktopAi) {
+			const { DesktopAiServices } = await import("./ai/integration/DesktopAiServices");
+			this.ai = new DesktopAiServices({
+				app: this.app,
+				vault: this.vaultAdapter,
+				dispatcher: this.dispatcher,
+				scopes: this.scopes,
+				projects: this.projects,
+				boards: this.boards,
+				allTasks: () => [...this.indexer.getIndex().all()],
+				inboxFile: () => this.settings.inboxFile,
+				ensureInbox: async (path) => {
+					if (!(await ensureCaptureFile(this.vaultAdapter, path))) {
+						throw new Error(`inbox-file-unavailable:${path}`);
+					}
+				},
+				enabled: () => this.settings.ai.enabled,
+				privacyPolicy: () =>
+					this.settings.ai.privacyPolicy === "unconfigured"
+						? null
+						: this.settings.ai.privacyPolicy,
+				credentialStorage: () =>
+					this.settings.ai.credentialStorage === "memory-only" ? "memory-only" : null,
+				durationLongStyle: () => this.settings.durationLongStyle,
+				openTask: (task) => openTaskInFile(this.app, task),
+				openAiView: async () => {
+					await this.activateView("ai");
+				},
+				metadataServices: this.metadataServices,
+			});
+			this.aiViewPort = this.ai.view;
+			if (this.settings.ai.storageVersion !== 1) {
+				this.settings.ai.storageVersion = 1;
+				reportAsync("сохранение версии AI-хранилища", () => this.saveSettings());
+			}
 		}
-		registerCommands(this);
-		this.addSettingTab(new GtdSettingsTab(this.app, this));
+		registerCommands(this, { desktopFeatures: features.desktopAi });
+		this.addSettingTab(
+			new GtdSettingsTab(this.app, this, { desktopFeatures: features.desktopAi }),
+		);
 		// Первичная сборка — вне критического пути старта, строго после
 		// onLayoutReady И полного resolve кэша метаданных (ТЗ §2): до resolve
 		// getFileCache пуст, снапшоты вышли бы без задач и с неверным контекстом,
@@ -394,21 +436,43 @@ export default class GtdFlowPlugin extends Plugin {
 				// первичный refresh статусов дней — строго после резолва кэша (иначе
 				// findByFrontmatterValue закэширует пустой обратный индекс, см. start())
 				reportAsync("обновление статусов дней", () => this.dayStatus.refresh());
-				// онбординг — тоже строго после резолва кэша: обратный fm-индекс уже полон,
-				// иначе «чистое хранилище» ложно определилось бы на пустом кэше
-				this.maybeOnboard(metadata);
+				// Онбординг desktop-only для первого Android-релиза: открытие URI не
+				// должно создавать демо-файлы или менять layout на телефоне.
+				if (features.onboarding) this.maybeOnboard(metadata);
 				// поллинг внешних календарей — после layout-ready + резолва кэша (frontmatter
 				// зеркал уже читается для read-only-защиты); стартовая синхронизация внутри start()
-				this.sync.start();
+				if (features.backgroundCalendarSync) this.desktopCalendarSync().start();
 				return this.indexer.start();
 			})
 			.catch((e: unknown) => console.error("GTD Flow: сбой первичной сборки индекса", e));
 
-		for (const meta of Object.values(VIEW_META)) {
-			this.registerView(meta.type, (leaf) => createGtdView(leaf, this, meta));
+		let createView: (leaf: WorkspaceLeaf, plugin: GtdFlowPlugin, meta: ViewMeta) => GtdView;
+		if (features.desktopAi) {
+			({ createGtdView: createView } = await import("./views/createView"));
+		} else {
+			({ createMobileGtdView: createView } = await import("./views/mobileRegistry"));
+		}
+		const registeredViewMeta = features.viewKinds.map((kind) => VIEW_META[kind]);
+		for (const meta of registeredViewMeta) {
+			this.registerView(meta.type, (leaf) => createView(leaf, this, meta));
 		}
 
-		for (const meta of Object.values(VIEW_META)) {
+		this.registerObsidianProtocolHandler(GTD_FLOW_PROTOCOL_ACTION, (params) => {
+			const navigation = gtdFlowProtocolNavigation(params, this.app.vault.getName());
+			if (navigation === null) {
+				new Notice("GTD Flow: некорректная ссылка виджета");
+				return;
+			}
+			if (navigation.kind === "inbox") {
+				reportAsync("открытие входящих из виджета", () => this.activateView("inbox"));
+				return;
+			}
+			reportAsync("открытие дня календаря из виджета", () =>
+				this.activateView("calendar", "tab", navigation.state),
+			);
+		});
+
+		for (const meta of registeredViewMeta) {
 			this.addCommand({
 				id: `open-${meta.kind}`,
 				name: `Открыть: ${meta.displayText.replace(/^GTD: /, "")}`,
@@ -419,24 +483,27 @@ export default class GtdFlowPlugin extends Plugin {
 			});
 		}
 
-		this.addCommand({
-			id: "open-workspace",
-			name: "Открыть рабочее пространство GTD",
-			callback: () =>
-				reportAsync("открытие рабочего пространства", () => this.openGtdWorkspace()),
-		});
+		if (features.desktopAi) {
+			this.addCommand({
+				id: "open-workspace",
+				name: "Открыть рабочее пространство GTD",
+				callback: () =>
+					reportAsync("открытие рабочего пространства", () => this.openGtdWorkspace()),
+			});
 
-		// Демо-файлы доступны всегда (не только на первом запуске): удобно, если
-		// пользователь пропустил приветственный диалог или хочет пересоздать пример.
-		this.addCommand({
-			id: "create-demo-vault",
-			name: "Создать демо-файлы GTD",
-			callback: () => reportAsync("создание демо-файлов", () => this.runCreateDemoVault()),
-		});
+			// Демо-файлы доступны на desktop; Android URI не должен менять vault
+			// иначе чем через явные Inbox/Calendar/Recurring действия пользователя.
+			this.addCommand({
+				id: "create-demo-vault",
+				name: "Создать демо-файлы GTD",
+				callback: () =>
+					reportAsync("создание демо-файлов", () => this.runCreateDemoVault()),
+			});
+		}
 
 		// Ярлыки всех видов в ленте; порядок — как в VIEW_META (регистрация задаёт
 		// порядок иконок, пользователь может скрыть лишние через контекстное меню ленты).
-		for (const meta of Object.values(VIEW_META)) {
+		for (const meta of registeredViewMeta) {
 			this.addRibbonIcon(meta.icon, meta.displayText, () =>
 				reportAsync(`открытие вида «${meta.displayText}»`, () =>
 					this.activateView(meta.kind),
@@ -447,8 +514,26 @@ export default class GtdFlowPlugin extends Plugin {
 		// Ранний сброс отложенных позиций графа при закрытии приложения: onunload
 		// Obsidian не await'ит, а beforeunload даёт шанс успеть стартовать запись
 		// до смерти процесса (registerDomEvent снимет слушатель при выгрузке).
-		this.registerDomEvent(window, "beforeunload", () => {
-			reportAsync("сохранение позиций графа", () => this.projects.flushPending());
+		if (features.desktopAi) {
+			this.registerDomEvent(window, "beforeunload", () => {
+				reportAsync("сохранение позиций графа", () => this.projects.flushPending());
+			});
+		}
+	}
+
+	/** Coalesces reindex follow-ups after parent-ID injection or synced duplicates. */
+	private scheduleRecurrenceIndexPass(): void {
+		if (
+			this.recurrenceIndexPassQueued ||
+			!this.indexReadyFlag ||
+			!this.recurrence.needsIndexTriggeredPass()
+		)
+			return;
+		this.recurrenceIndexPassQueued = true;
+		void Promise.resolve().then(() => {
+			this.recurrenceIndexPassQueued = false;
+			if (!this.recurrence.needsIndexTriggeredPass()) return;
+			reportAsync("продолжение регулярных после индексации", () => this.recurrence.runPass());
 		});
 	}
 
@@ -457,11 +542,16 @@ export default class GtdFlowPlugin extends Plugin {
 		// flushPending здесь — best-effort: Obsidian не ждёт async-выгрузку. При
 		// ОТКЛЮЧЕНИИ плагина процесс жив и промис доедет; окно потери — только выход
 		// из приложения, его сужает ранний сброс по beforeunload (см. onload).
-		reportAsync("сохранение позиций графа", () => this.projects.flushPending());
-		this.taskStore.dispose();
-		this.indexer.dispose();
-		this.sync.dispose();
-		reportAsync("очистка локального AI-ключа", () => this.ai.dispose());
+		if (this.projects !== undefined) {
+			reportAsync("сохранение позиций графа", () => this.projects.flushPending());
+		}
+		this.taskStore?.dispose();
+		this.indexer?.dispose();
+		this.sync?.dispose();
+		const ai = this.ai;
+		if (ai !== null) {
+			reportAsync("очистка локального AI-ключа", () => ai.dispose());
+		}
 	}
 
 	/** Записать статус синхронизации подписки (SyncService.onResult) + персист, если
@@ -480,24 +570,20 @@ export default class GtdFlowPlugin extends Plugin {
 		reportAsync("сохранение статуса синхронизации", () => this.saveSettings());
 	}
 
+	/** Desktop-only accessor keeps the nullable Android composition boundary explicit. */
+	desktopCalendarSync(): SyncService {
+		const sync = this.sync;
+		if (sync === null) throw new Error("desktop-calendar-sync-unavailable");
+		return sync;
+	}
+
 	/** Открыть (или показать существующий) вид в основной области. */
 	async activateView(
 		kind: GtdViewKind,
 		pane: "tab" | "split" = "tab",
+		state?: Record<string, unknown>,
 	): Promise<WorkspaceLeaf | null> {
-		const { workspace } = this.app;
-		const type = VIEW_TYPES[kind];
-
-		const existing = workspace.getLeavesOfType(type)[0];
-		if (existing) {
-			await workspace.revealLeaf(existing);
-			return existing;
-		}
-
-		const leaf = workspace.getLeaf(pane);
-		await leaf.setViewState({ type, active: true });
-		await workspace.revealLeaf(leaf);
-		return leaf;
+		return activateGtdView(this.app.workspace, kind, pane, state);
 	}
 
 	/** Раскладка по умолчанию: Входящие | Доска | Отложенные — три сплита
@@ -579,7 +665,7 @@ export default class GtdFlowPlugin extends Plugin {
 	async exportAiLearningHistory(): Promise<string> {
 		const timestamp = new Date().toISOString().replace(/[:.]/gu, "-");
 		const path = `.gtd-flow/exports/learning-history-${timestamp}.json`;
-		await this.vaultAdapter.writeAtomic(path, await this.ai.exportFeedback());
+		await this.vaultAdapter.writeAtomic(path, await this.metadataServices.exportFeedback());
 		return path;
 	}
 

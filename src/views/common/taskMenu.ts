@@ -6,7 +6,7 @@
  *
  * Порты приходят опционально: нет сервиса — нет пункта (модель сама скрывает).
  */
-import { Menu, Notice, type App, type MenuItem } from "obsidian";
+import { Menu, Notice, Platform, type App, type MenuItem } from "obsidian";
 import type { Readable } from "svelte/store";
 import type { Intent } from "../../core/intents/Intent";
 import type { EstimatePatch, TaskEstimateProvenance } from "../../core/estimates/provenance";
@@ -110,29 +110,39 @@ export interface TaskMenuPorts {
  * Сборка портов из полей плагина — единая точка для всех *View.ts.
  * Поля читаются опционально (паттерн видов): чего нет — того нет в меню.
  */
-export function taskMenuPortsFromPlugin(plugin: GtdFlowPlugin): TaskMenuPorts {
+export function taskMenuPortsFromPlugin(
+	plugin: GtdFlowPlugin,
+	options: { desktopFeatures?: boolean } = {},
+): TaskMenuPorts {
 	const p = plugin as GtdFlowPlugin & {
 		cards?: CardPort;
 		taskMetadata?: TaskMetadataPort;
 	};
+	const desktop = options.desktopFeatures ?? Platform.isDesktopApp;
 	return {
-		boards: plugin.boards ?? null,
-		projects: plugin.projects ?? null,
-		cards: p.cards ?? null,
+		boards: desktop ? (plugin.boards ?? null) : null,
+		projects: desktop ? (plugin.projects ?? null) : null,
+		cards: desktop ? (p.cards ?? null) : null,
 		metadata: p.taskMetadata ?? null,
-		archive: {
-			ensureFile: (path) => plugin.vaultAdapter.ensureFile(path),
-			processFrontmatter: (path, fn) => plugin.vaultAdapter.processFrontmatter(path, fn),
-		},
-		template: {
-			recurringFiles: () => recurringFilePaths(plugin.taskStore.index().all()),
-			spawnTarget: () => plugin.settings.inboxFile,
-			vault: {
-				ensureFile: (path) => plugin.vaultAdapter.ensureFile(path),
-				processFrontmatter: (path, fn) => plugin.vaultAdapter.processFrontmatter(path, fn),
-			},
-		},
-		epoch: plugin.taskStore.epoch,
+		archive: desktop
+			? {
+					ensureFile: (path) => plugin.vaultAdapter.ensureFile(path),
+					processFrontmatter: (path, fn) =>
+						plugin.vaultAdapter.processFrontmatter(path, fn),
+				}
+			: null,
+		template: desktop
+			? {
+					recurringFiles: () => recurringFilePaths(plugin.taskStore.index().all()),
+					spawnTarget: () => plugin.settings.inboxFile,
+					vault: {
+						ensureFile: (path) => plugin.vaultAdapter.ensureFile(path),
+						processFrontmatter: (path, fn) =>
+							plugin.vaultAdapter.processFrontmatter(path, fn),
+					},
+				}
+			: null,
+		epoch: desktop ? plugin.taskStore.epoch : null,
 	};
 }
 

@@ -29,25 +29,42 @@ export class RuleEditModal extends Modal {
 		const wrap = this.contentEl.createDiv({ cls: "gtd-rule-edit" });
 		wrap.style.display = "flex";
 		wrap.style.flexDirection = "column";
-		wrap.style.gap = "8px";
+		wrap.style.gap = "10px";
+		wrap.style.minWidth = "0";
+		wrap.style.paddingBottom = "max(8px, env(safe-area-inset-bottom))";
 
+		const inputId = "gtd-rule-edit-value";
+		wrap.createEl("label", { text: "Правило повторения", attr: { for: inputId } });
 		const input = wrap.createEl("input", {
 			type: "text",
 			placeholder: "every …",
 			value: this.initial,
+			attr: { id: inputId },
 		});
 		input.style.width = "100%";
+		input.style.minHeight = "44px";
+		input.style.fontSize = "max(16px, 1em)";
 
 		const feedback = wrap.createDiv({ cls: "gtd-rule-feedback" });
 		feedback.style.minHeight = "1.5em";
 		feedback.style.fontSize = "var(--font-ui-smaller, 0.85em)";
 
 		const examplesEl = wrap.createDiv({ cls: "gtd-rule-examples" });
-		examplesEl.createSpan({ text: "Примеры: " }).style.color = "var(--text-muted)";
+		examplesEl.style.display = "flex";
+		examplesEl.style.flexWrap = "wrap";
+		examplesEl.style.gap = "6px";
+		examplesEl.createSpan({ text: "Примеры:" }).style.cssText =
+			"color: var(--text-muted); flex-basis: 100%";
 		for (const ex of RULE_EXAMPLES) {
-			const btn = examplesEl.createEl("button", { text: ex });
-			btn.style.margin = "2px 4px 2px 0";
+			const btn = examplesEl.createEl("button", {
+				text: ex,
+				attr: { type: "button" },
+			});
+			btn.style.flex = "1 1 min(100%, 14rem)";
+			btn.style.minWidth = "0";
+			btn.style.minHeight = "44px";
 			btn.style.fontSize = "var(--font-ui-smaller, 0.85em)";
+			btn.style.whiteSpace = "normal";
 			btn.addEventListener("click", () => {
 				input.value = ex;
 				validate();
@@ -58,7 +75,13 @@ export class RuleEditModal extends Modal {
 		const footer = wrap.createDiv();
 		footer.style.display = "flex";
 		footer.style.justifyContent = "flex-end";
-		const save = footer.createEl("button", { text: "Сохранить", cls: "mod-cta" });
+		const save = footer.createEl("button", {
+			text: "Сохранить",
+			cls: "mod-cta",
+			attr: { type: "button" },
+		});
+		save.style.minWidth = "min(100%, 10rem)";
+		save.style.minHeight = "44px";
 
 		const validate = (): boolean => {
 			const parsed = parseRule(input.value);
@@ -83,7 +106,10 @@ export class RuleEditModal extends Modal {
 
 		input.addEventListener("input", () => void validate());
 		input.addEventListener("keydown", (e) => {
-			if (e.key === "Enter") submit();
+			if (e.key === "Enter") {
+				e.preventDefault();
+				submit();
+			}
 		});
 		save.addEventListener("click", submit);
 

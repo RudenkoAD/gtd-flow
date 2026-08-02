@@ -151,6 +151,7 @@ function makePlugin(over?: {
 	aiCancelProcessing?: () => number;
 	aiRetryWaiting?: () => Promise<unknown[]>;
 	taskStoreTasks?: readonly unknown[];
+	desktopFeatures?: boolean;
 }) {
 	const commands = new Map<string, Cmd>();
 	const ensureFile = vi.fn(over?.ensureFile ?? (() => Promise.resolve()));
@@ -234,7 +235,9 @@ function makePlugin(over?: {
 		},
 		addCommand: (cmd: Cmd) => commands.set(cmd.id, cmd),
 	};
-	registerCommands(plugin as unknown as GtdFlowPlugin);
+	registerCommands(plugin as unknown as GtdFlowPlugin, {
+		desktopFeatures: over?.desktopFeatures ?? true,
+	});
 	return {
 		commands,
 		ensureFile,
@@ -266,6 +269,11 @@ beforeEach(() => {
 });
 
 describe("AI command registration", () => {
+	it("does not register desktop-only commands for the Android MVP", () => {
+		const { commands } = makePlugin({ desktopFeatures: false });
+		expect([...commands.keys()]).toEqual(["quick-capture", "run-recurrence-pass"]);
+	});
+
 	it("registers explicit processing, reprocessing, unlock, history, and retry commands", () => {
 		const { commands } = makePlugin();
 		expect([...commands.keys()]).toEqual(

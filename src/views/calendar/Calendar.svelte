@@ -15,6 +15,7 @@
 	import DayCell from "./DayCell.svelte";
 	import EventChip from "./EventChip.svelte";
 	import TimeGrid from "./TimeGrid.svelte";
+	import CalendarToolbar from "./CalendarToolbar.svelte";
 	import {
 		AGENDA_PAGE_DAYS,
 		DAYS3_PAGE_DAYS,
@@ -235,14 +236,6 @@
 		mode === "day" ? 1 : mode === "week" ? WEEK_DAYS : DAYS3_PAGE_DAYS,
 	);
 
-	const MODE_ORDER: readonly { id: CalendarMode; label: string }[] = [
-		{ id: "month", label: "Месяц" },
-		{ id: "week", label: "Неделя" },
-		{ id: "agenda", label: "Агенда" },
-		{ id: "3days", label: "3 дня" },
-		{ id: "day", label: "День" },
-	];
-
 	function persistNow(): void {
 		persist({ mode, anchor });
 	}
@@ -436,30 +429,15 @@
 </script>
 
 <div class="gtd-cal">
-	<div class="gtd-cal-header">
-		<div class="gtd-cal-nav">
-			<button aria-label="Назад" onclick={goPrev}>‹</button>
-			<button onclick={goToday}>Сегодня</button>
-			<button aria-label="Вперёд" onclick={goNext}>›</button>
-		</div>
-		<span class="gtd-cal-title">{title}</span>
-		{#if overdue.length > 0}
-			<button
-				class="gtd-cal-overdue"
-				title="Просроченных задач: {overdue.length} — показать в агенде"
-				onclick={() => setMode("agenda")}
-			>
-				⚠ {overdue.length}
-			</button>
-		{/if}
-		<div class="gtd-cal-modes">
-			{#each MODE_ORDER as m (m.id)}
-				<button class:is-active={mode === m.id} onclick={() => setMode(m.id)}
-					>{m.label}</button
-				>
-			{/each}
-		</div>
-	</div>
+	<CalendarToolbar
+		{title}
+		{mode}
+		overdueCount={overdue.length}
+		onPrev={goPrev}
+		onToday={goToday}
+		onNext={goNext}
+		onMode={setMode}
+	/>
 
 	{#if mode === "agenda"}
 		<div class="gtd-cal-agenda">
@@ -588,48 +566,6 @@
 		min-height: 0;
 		display: flex;
 		flex-direction: column;
-	}
-	.gtd-cal-header {
-		flex: none;
-		display: flex;
-		align-items: center;
-		gap: 8px;
-		padding: 6px 10px;
-		border-bottom: 1px solid var(--background-modifier-border);
-	}
-	.gtd-cal-nav {
-		display: flex;
-		gap: 2px;
-	}
-	.gtd-cal-title {
-		flex: 1 1 auto;
-		min-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		font-weight: 600;
-	}
-	.gtd-cal-overdue {
-		flex: none;
-		border: none;
-		box-shadow: none;
-		background: transparent;
-		color: var(--text-warning, var(--text-muted));
-		cursor: pointer;
-		padding: 1px 6px;
-		border-radius: var(--radius-s, 4px);
-	}
-	.gtd-cal-overdue:hover {
-		background: var(--background-modifier-hover);
-	}
-	.gtd-cal-modes {
-		flex: none;
-		display: flex;
-		gap: 2px;
-	}
-	.gtd-cal-modes button.is-active {
-		background: var(--interactive-accent);
-		color: var(--text-on-accent);
 	}
 	.gtd-cal-weekdays {
 		flex: none;

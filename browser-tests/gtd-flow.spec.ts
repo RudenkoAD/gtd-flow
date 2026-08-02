@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { devices, expect, test, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 
 async function expectNoAxeViolations(page: Page, selector: string): Promise<void> {
@@ -346,5 +346,101 @@ test.describe("mounted GTD Flow Svelte component gate", () => {
 		await expect(fixture.getByText("Delete task task-1")).toHaveCount(0);
 		await expect(fixture.getByLabel("Atomic task writeback")).toContainText("Task deleted no");
 		await expectNoAxeViolations(page, '[data-testid="ai-fixture"]');
+	});
+});
+
+test.describe("phone-sized GTD Flow UI", () => {
+	test("keeps calendar, recurring tasks, and the task editor touch-safe", async ({ browser }) => {
+		const context = await browser.newContext({ ...devices["Pixel 5"] });
+		const page = await context.newPage();
+		try {
+			await page.goto("/");
+
+			const calendar = page.getByTestId("mobile-calendar-toolbar-fixture");
+			const toolbar = calendar.locator(".gtd-cal-toolbar");
+			await expect(toolbar).toBeVisible();
+			expect(
+				await toolbar.evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
+			).toBe(true);
+			const calendarButtons = toolbar.getByRole("button");
+			for (let index = 0; index < (await calendarButtons.count()); index++) {
+				const box = await calendarButtons.nth(index).boundingBox();
+				expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+			}
+			await expect(
+				toolbar.getByRole("button", { name: "День", exact: true }),
+			).toHaveAttribute("aria-pressed", "true");
+			await toolbar.getByRole("button", { name: "Агенда", exact: true }).click();
+			await expect(calendar.getByTestId("mobile-calendar-mode")).toHaveText("agenda");
+
+			const recurring = page.getByTestId("mobile-recurring-fixture");
+			const recurringView = recurring.locator(".gtd-recurring");
+			await expect(recurring.getByText(/deliberately long recurring task/u)).toBeVisible();
+			expect(
+				await recurringView.evaluate(
+					(element) => element.scrollWidth <= element.clientWidth + 1,
+				),
+			).toBe(true);
+			const recurringButtons = recurring.getByRole("button");
+			for (let index = 0; index < (await recurringButtons.count()); index++) {
+				const box = await recurringButtons.nth(index).boundingBox();
+				expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+			}
+
+			const inbox = page.getByTestId("mobile-inbox-fixture");
+			const inboxView = inbox.locator(".gtd-inbox");
+			expect(
+				await inboxView.evaluate(
+					(element) => element.scrollWidth <= element.clientWidth + 1,
+				),
+			).toBe(true);
+			for (const label of ["Фильтр входящих", "Новая задача"] as const) {
+				const box = await inbox.getByLabel(label).boundingBox();
+				expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+			}
+
+			const detailsFixture = page.getByTestId("task-details-fixture");
+			const card = detailsFixture.locator(".gtd-task-card");
+			await expect(card).toHaveClass(/is-phone/u);
+			expect(
+				await card.evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
+			).toBe(true);
+			const detailsButton = detailsFixture.getByRole("button", {
+				name: "Открыть сведения и редактирование задачи",
+			});
+			const detailsButtonBox = await detailsButton.boundingBox();
+			expect(detailsButtonBox?.width ?? 0).toBeGreaterThanOrEqual(44);
+			expect(detailsButtonBox?.height ?? 0).toBeGreaterThanOrEqual(44);
+			const cardBox = await card.boundingBox();
+			expect(cardBox).not.toBeNull();
+			if (cardBox === null) throw new Error("phone task card is not visible");
+			await page.mouse.move(cardBox.x + 2, cardBox.y + cardBox.height - 2);
+			await page.mouse.down();
+			await page.waitForTimeout(500);
+			await page.mouse.up();
+			await expect(page.getByRole("dialog", { name: "Задача" })).toHaveCount(0);
+			await detailsButton.click();
+
+			const dialog = page.getByRole("dialog", { name: "Задача" });
+			await expect(dialog).toBeVisible();
+			expect(
+				await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth + 1),
+			).toBe(true);
+			const editorControls = dialog.locator(
+				'form input:not([type="checkbox"]), form select, form button',
+			);
+			for (let index = 0; index < (await editorControls.count()); index++) {
+				const box = await editorControls.nth(index).boundingBox();
+				expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+			}
+			const dueDateBox = await dialog.getByLabel("📅 Срок", { exact: true }).boundingBox();
+			const dueTimeBox = await dialog.getByLabel("📅 Срок: время").boundingBox();
+			expect(dueDateBox).not.toBeNull();
+			expect(dueTimeBox).not.toBeNull();
+			expect(dueTimeBox?.y).toBeGreaterThan((dueDateBox?.y ?? 0) + 1);
+			await expectNoAxeViolations(page, '[role="dialog"]');
+		} finally {
+			await context.close();
+		}
 	});
 });

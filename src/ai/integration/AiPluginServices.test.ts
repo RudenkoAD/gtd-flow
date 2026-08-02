@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ESTIMATE_FIELDS, type TaskEstimateProvenance } from "../../core/estimates/provenance";
 import type { Task } from "../../core/model/Task";
+import { MetadataServices } from "../../services/MetadataServices";
 import { AiPluginServices } from "./AiPluginServices";
 
 describe("AiPluginServices feedback health", () => {
@@ -106,7 +107,7 @@ describe("AiPluginServices feedback health", () => {
 			conflicts: 3,
 			invalidRecords: 4,
 		});
-		const services = Object.create(AiPluginServices.prototype) as AiPluginServices;
+		const services = Object.create(MetadataServices.prototype) as MetadataServices;
 		Object.defineProperty(services, "history", { value: { readAll, outboxHealth } });
 
 		await expect(services.feedbackSummary()).resolves.toEqual({
@@ -132,8 +133,10 @@ describe("AiPluginServices feedback health", () => {
 			text: `private question ${index}`,
 		}));
 		const readAll = vi.fn().mockResolvedValue({ events, invalidPaths: ["bad"] });
-		const provenanceForTask = vi.fn().mockResolvedValue(provenance("task-1"));
-		const services = inspectionServices({ readAll, provenanceForTask });
+		const provenanceForTasks = vi
+			.fn()
+			.mockResolvedValue(new Map([["task-1", provenance("task-1")]]));
+		const services = inspectionServices({ readAll, provenanceForTasks });
 
 		const result = await services.feedbackInspection(999);
 
@@ -157,7 +160,11 @@ describe("AiPluginServices feedback health", () => {
 			lastPredictionEventId: "event-prediction",
 			updatedAt: "2026-07-28T01:00:00.000Z",
 		});
-		expect(provenanceForTask).toHaveBeenCalledTimes(1);
+		expect(provenanceForTasks).toHaveBeenCalledTimes(1);
+		expect(provenanceForTasks).toHaveBeenCalledWith(["task-1"], "2026-07-28T02:00:00.000Z", {
+			events,
+			invalidPaths: ["bad"],
+		});
 		expect(JSON.stringify(result)).not.toContain("private question");
 	});
 
@@ -193,7 +200,7 @@ describe("AiPluginServices feedback health", () => {
 		}
 		const services = inspectionServices({
 			readAll,
-			provenanceForTask: vi.fn().mockResolvedValue(unsafe),
+			provenanceForTasks: vi.fn().mockResolvedValue(new Map([["access_token_LEAK", unsafe]])),
 		});
 
 		const result = await services.feedbackInspection();
@@ -415,9 +422,9 @@ describe("AiPluginServices chat metadata provenance", () => {
 
 function inspectionServices(history: {
 	readAll: ReturnType<typeof vi.fn>;
-	provenanceForTask: ReturnType<typeof vi.fn>;
-}): AiPluginServices {
-	const services = Object.create(AiPluginServices.prototype) as AiPluginServices;
+	provenanceForTasks: ReturnType<typeof vi.fn>;
+}): MetadataServices {
+	const services = Object.create(MetadataServices.prototype) as MetadataServices;
 	Object.defineProperty(services, "history", { value: history });
 	Object.defineProperty(services, "now", {
 		value: () => new Date("2026-07-28T02:00:00.000Z"),
@@ -442,6 +449,7 @@ function processingServices(
 		processor: { value: { process } },
 		processingControllers: { value: new Set<AbortController>() },
 		credentials: { value: { clear, get: vi.fn().mockResolvedValue(credential) } },
+		metadataServices: { value: { attachAiActions: vi.fn() } },
 	});
 	vi.spyOn(services, "reconcileOwnership").mockResolvedValue(undefined);
 	return services;

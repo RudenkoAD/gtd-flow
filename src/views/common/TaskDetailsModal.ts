@@ -85,12 +85,18 @@ export class TaskDetailsModal extends Modal {
 	override onOpen(): void {
 		this.savePending = false;
 		this.titleEl.setText("Задача");
+		this.modalEl.classList.add("gtd-task-details-modal");
+		this.modalEl.style.maxWidth = "min(42rem, calc(100vw - 16px))";
 		const initial = taskDetailsDraftFromTask(this.task);
 		const readOnly = this.task.external === true || this.options.readOnly === true;
 		const controls: FormControl[] = [];
 		const form = this.contentEl.createEl("form", { cls: "gtd-task-details" });
 		form.style.display = "grid";
 		form.style.gap = "12px";
+		form.style.minWidth = "0";
+		form.style.maxWidth = "100%";
+		form.style.overflowX = "hidden";
+		form.style.paddingBottom = "max(12px, env(safe-area-inset-bottom))";
 
 		if (readOnly) {
 			form.createDiv({
@@ -160,6 +166,7 @@ export class TaskDetailsModal extends Modal {
 			value: initial.metadata.durationMinutes,
 			attr: { id: durationId, min: "5", step: "5", inputmode: "numeric" },
 		});
+		this.styleEditorControl(duration);
 		controls.push(duration);
 		const durationPreview = durationRow.createDiv({ cls: "setting-item-description" });
 
@@ -201,8 +208,20 @@ export class TaskDetailsModal extends Modal {
 		feedback.setAttribute("role", "status");
 		feedback.setAttribute("aria-live", "polite");
 		feedback.style.minHeight = "1.5em";
+		feedback.style.overflowWrap = "anywhere";
 
 		const footer = form.createDiv({ cls: "modal-button-container" });
+		footer.style.position = "sticky";
+		footer.style.bottom = "0";
+		footer.style.zIndex = "1";
+		footer.style.display = "grid";
+		footer.style.gridTemplateColumns = readOnly
+			? "minmax(0, 1fr)"
+			: "repeat(2, minmax(0, 1fr))";
+		footer.style.gap = "8px";
+		footer.style.margin = "0";
+		footer.style.padding = "8px 0 max(4px, env(safe-area-inset-bottom))";
+		footer.style.background = "var(--background-primary)";
 		const cancel = footer.createEl("button", {
 			text: readOnly ? "Закрыть" : "Отмена",
 			attr: { type: "button" },
@@ -212,6 +231,11 @@ export class TaskDetailsModal extends Modal {
 			cls: "mod-cta",
 			attr: { type: "submit" },
 		});
+		for (const button of [cancel, save]) {
+			button.style.minWidth = "0";
+			button.style.minHeight = "44px";
+			button.style.whiteSpace = "normal";
+		}
 		save.disabled = readOnly;
 		if (readOnly) save.style.display = "none";
 
@@ -390,6 +414,7 @@ export class TaskDetailsModal extends Modal {
 		fieldset.style.padding = "10px";
 		fieldset.style.border = "1px solid var(--background-modifier-border)";
 		fieldset.style.borderRadius = "var(--radius-m, 8px)";
+		fieldset.style.minWidth = "0";
 		fieldset.createEl("legend", { text: title });
 		return fieldset;
 	}
@@ -398,6 +423,7 @@ export class TaskDetailsModal extends Modal {
 		const row = parent.createDiv();
 		row.style.display = "grid";
 		row.style.gap = "4px";
+		row.style.minWidth = "0";
 		return row;
 	}
 
@@ -418,6 +444,7 @@ export class TaskDetailsModal extends Modal {
 			attr: { id },
 		});
 		input.style.width = "100%";
+		this.styleEditorControl(input);
 		controls.push(input);
 		return input;
 	}
@@ -433,8 +460,12 @@ export class TaskDetailsModal extends Modal {
 		row.style.display = "flex";
 		row.style.alignItems = "center";
 		row.style.gap = "8px";
+		row.style.minHeight = "44px";
 		const input = row.createEl("input", { type: "checkbox", attr: { id } });
 		input.checked = checked;
+		input.style.width = "24px";
+		input.style.height = "24px";
+		input.style.flex = "none";
 		row.createEl("label", { text: label, attr: { for: id } });
 		controls.push(input);
 		return input;
@@ -455,6 +486,7 @@ export class TaskDetailsModal extends Modal {
 			select.createEl("option", { value: option.value, text: option.label });
 		}
 		select.value = value;
+		this.styleEditorControl(select);
 		controls.push(select);
 		return select;
 	}
@@ -472,8 +504,9 @@ export class TaskDetailsModal extends Modal {
 		row.createEl("label", { text: label, attr: { for: dateId } });
 		const pair = row.createDiv();
 		pair.style.display = "grid";
-		pair.style.gridTemplateColumns = "minmax(0, 1fr) minmax(0, 1fr)";
+		pair.style.gridTemplateColumns = "repeat(auto-fit, minmax(min(100%, 12rem), 1fr))";
 		pair.style.gap = "8px";
+		pair.style.minWidth = "0";
 		const date = pair.createEl("input", {
 			type: "date",
 			value: value.date,
@@ -485,6 +518,8 @@ export class TaskDetailsModal extends Modal {
 			placeholder: "HH:mm или HH:mm-HH:mm",
 			attr: { id: timeId, "aria-label": `${label}: время` },
 		});
+		this.styleEditorControl(date);
+		this.styleEditorControl(timeRange);
 		this.bindShowPicker(date);
 		controls.push(date, timeRange);
 		return { date, timeRange };
@@ -540,11 +575,20 @@ export class TaskDetailsModal extends Modal {
 	private addInfoRow(parent: HTMLElement, label: string, value: string): void {
 		const row = parent.createDiv();
 		row.style.display = "grid";
-		row.style.gridTemplateColumns = "minmax(7rem, auto) minmax(0, 1fr)";
+		row.style.gridTemplateColumns = "repeat(auto-fit, minmax(min(100%, 12rem), 1fr))";
 		row.style.gap = "8px";
+		row.style.minWidth = "0";
 		row.createEl("span", { text: label }).style.color = "var(--text-muted)";
 		const data = row.createEl("span", { text: value });
 		data.style.overflowWrap = "anywhere";
+	}
+
+	private styleEditorControl(control: FormControl): void {
+		control.style.width = "100%";
+		control.style.minWidth = "0";
+		control.style.minHeight = "44px";
+		// Prevent mobile Chromium/WebView from zooming the viewport while editing.
+		control.style.fontSize = "max(16px, 1em)";
 	}
 
 	private bindShowPicker(input: HTMLInputElement): void {

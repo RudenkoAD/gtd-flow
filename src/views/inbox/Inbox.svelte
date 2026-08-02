@@ -110,13 +110,20 @@
 		<span class="gtd-inbox-count" aria-label="Количество задач">
 			{filtered ? `${shown.length} / ${tasks.length}` : tasks.length}
 		</span>
-		<input class="gtd-inbox-filter" type="search" placeholder="Фильтр…" bind:value={query} />
+		<input
+			class="gtd-inbox-filter"
+			type="search"
+			placeholder="Фильтр…"
+			aria-label="Фильтр входящих"
+			bind:value={query}
+		/>
 	</div>
 	<div class="gtd-inbox-new">
 		<input
 			class="gtd-inbox-new-input"
 			type="text"
 			placeholder="Новая задача…"
+			aria-label="Новая задача"
 			bind:value={newTask}
 			onkeydown={onNewTaskKeydown}
 		/>
@@ -156,6 +163,8 @@
 		min-height: 0;
 		display: flex;
 		flex-direction: column;
+		overflow-x: hidden;
+		container-type: inline-size;
 	}
 	.gtd-inbox-header {
 		flex: none;
@@ -194,5 +203,28 @@
 		padding: 24px 10px;
 		text-align: center;
 		color: var(--text-muted);
+	}
+
+	@media (pointer: coarse) {
+		.gtd-inbox-filter,
+		.gtd-inbox-new-input {
+			min-height: 44px;
+			font-size: max(16px, 1em);
+			touch-action: manipulation;
+		}
+	}
+
+	@container (max-width: 34rem) {
+		.gtd-inbox-header,
+		.gtd-inbox-new {
+			padding: 8px;
+		}
+		.gtd-inbox-count {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			min-width: 44px;
+			min-height: 44px;
+		}
 	}
 </style>

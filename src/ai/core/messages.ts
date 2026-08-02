@@ -1,8 +1,8 @@
 /** Provider-neutral chat message contracts. */
-import { z } from "zod";
+import { type Infer, z } from "../../schema/zod";
 
 export const AgentMessageRoleSchema = z.enum(["system", "user", "assistant", "tool"]);
-export type AgentMessageRole = z.infer<typeof AgentMessageRoleSchema>;
+export type AgentMessageRole = Infer<typeof AgentMessageRoleSchema>;
 
 const MAX_TOOL_ARGUMENT_CHARS = 60_000;
 
@@ -87,7 +87,7 @@ export const AgentMessageSchema = z
 			}
 		}
 	});
-export type AgentMessage = z.infer<typeof AgentMessageSchema>;
+export type AgentMessage = Infer<typeof AgentMessageSchema>;
 
 /** A narrow tool contract for future validated application-tool adapters. */
 export interface AgentToolDefinition {

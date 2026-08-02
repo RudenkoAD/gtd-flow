@@ -92,7 +92,9 @@
 	const eventTooltip = $derived(locationText === null ? null : `${tooltip}\n📍 ${locationText}`);
 	/** Тянуть можно только блок тайм-сетки на десктопе (как чипы задач, ТЗ §8).
 	 *  Внешнее событие тянуть нельзя — перенос затёрся бы синхронизацией (read-only). */
-	const draggable = $derived(block !== null && dnd !== null && !Platform.isPhone && !external);
+	const draggable = $derived(
+		block !== null && dnd !== null && !Platform.isMobileApp && !external,
+	);
 
 	/** Начало drag блока-вхождения: призрак — весь блок, время при drop — по его верху. */
 	function onPointerDown(e: PointerEvent): void {

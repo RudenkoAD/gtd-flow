@@ -9,7 +9,7 @@ import {
 	AI_FEEDBACK_INSPECTION_LIMIT,
 	type AiFeedbackInspection,
 	type AiFeedbackInspectionEvent,
-} from "../ai/integration/AiPluginServices";
+} from "../services/MetadataServices";
 import type { CalendarField, ExternalCalendarSub } from "./Settings";
 import {
 	CALENDAR_FIELDS,
@@ -41,10 +41,12 @@ const WEEKDAYS: ReadonlyArray<{ value: number; label: string }> = [
 
 export class GtdSettingsTab extends PluginSettingTab {
 	private readonly plugin: GtdFlowPlugin;
+	private readonly desktopFeatures: boolean;
 
-	constructor(app: App, plugin: GtdFlowPlugin) {
+	constructor(app: App, plugin: GtdFlowPlugin, options: { desktopFeatures?: boolean } = {}) {
 		super(app, plugin);
 		this.plugin = plugin;
+		this.desktopFeatures = options.desktopFeatures ?? true;
 	}
 
 	display(): void {
@@ -52,14 +54,14 @@ export class GtdSettingsTab extends PluginSettingTab {
 		containerEl.empty();
 		this.sectionInbox(containerEl);
 		this.sectionScopes(containerEl);
-		this.sectionAi(containerEl);
-		this.sectionProjects(containerEl);
+		if (this.desktopFeatures) this.sectionAi(containerEl);
+		if (this.desktopFeatures) this.sectionProjects(containerEl);
 		this.sectionCalendar(containerEl);
-		this.sectionExternal(containerEl);
-		this.sectionDefer(containerEl);
+		if (this.desktopFeatures) this.sectionExternal(containerEl);
+		if (this.desktopFeatures) this.sectionDefer(containerEl);
 		this.sectionRecurring(containerEl);
-		this.sectionCards(containerEl);
-		this.sectionBoards(containerEl);
+		if (this.desktopFeatures) this.sectionCards(containerEl);
+		if (this.desktopFeatures) this.sectionBoards(containerEl);
 		this.sectionMisc(containerEl);
 	}
 
@@ -179,6 +181,13 @@ export class GtdSettingsTab extends PluginSettingTab {
 
 	private sectionAi(el: HTMLElement): void {
 		new Setting(el).setName("AI и оценки").setHeading();
+		const ai = this.plugin.ai;
+		if (ai === null) {
+			new Setting(el)
+				.setName("AI недоступен")
+				.setDesc("Desktop AI runtime не был инициализирован в этой сессии.");
+			return;
+		}
 
 		new Setting(el)
 			.setName("Включить AI")
@@ -252,7 +261,9 @@ export class GtdSettingsTab extends PluginSettingTab {
 			.addButton((button) =>
 				button.setButtonText("Подключить").onClick(() =>
 					this.reportAction("OpenRouter не подключён", async () => {
-						await this.plugin.aiViewPort.connect();
+						const port = this.plugin.aiViewPort;
+						if (port === null) throw new Error("desktop-ai-view-unavailable");
+						await port.connect();
 						this.display();
 					}),
 				),
@@ -260,14 +271,16 @@ export class GtdSettingsTab extends PluginSettingTab {
 			.addButton((button) =>
 				button.setButtonText("Отключить").onClick(() =>
 					this.reportAction("OpenRouter не отключён", async () => {
-						await this.plugin.aiViewPort.disconnect();
+						const port = this.plugin.aiViewPort;
+						if (port === null) throw new Error("desktop-ai-view-unavailable");
+						await port.disconnect();
 						this.display();
 					}),
 				),
 			);
 
 		const history = new Setting(el).setName("История обучения").setDesc("Загрузка…");
-		void this.plugin.ai.feedbackSummary().then(
+		void ai.feedbackSummary().then(
 			(summary) => {
 				history.setDesc(
 					`Синхронизированных событий: ${summary.events}; повреждённых событий: ${summary.invalidRecords}. Outbox: ожидают обработки — ${summary.pendingOutbox}, конфликтов — ${summary.conflictedOutbox}, повреждённых — ${summary.invalidOutboxRecords}. Экспорт содержит записи outbox для ручной диагностики.`,
@@ -281,7 +294,7 @@ export class GtdSettingsTab extends PluginSettingTab {
 			.addButton((button) =>
 				button.setButtonText("Просмотреть").onClick(() =>
 					this.reportAction("история не открыта", async () => {
-						const inspection = await this.plugin.ai.feedbackInspection();
+						const inspection = await ai.feedbackInspection();
 						new AiLearningHistoryModal(this.app, inspection).open();
 					}),
 				),
@@ -309,7 +322,7 @@ export class GtdSettingsTab extends PluginSettingTab {
 								))
 							)
 								return;
-							const count = await this.plugin.ai.clearFeedbackConfirmed();
+							const count = await ai.clearFeedbackConfirmed();
 							new Notice(`GTD Flow: удалено событий обучения: ${count}`);
 							this.display();
 						}),
@@ -341,7 +354,9 @@ export class GtdSettingsTab extends PluginSettingTab {
 						const path = value.trim();
 						if (path === "") return;
 						this.plugin.settings.inboxFile = path;
-						this.plugin.sync.configurationChanged();
+						if (this.desktopFeatures) {
+							this.plugin.desktopCalendarSync().configurationChanged();
+						}
 						await this.save();
 					}),
 				);
@@ -503,7 +518,7 @@ export class GtdSettingsTab extends PluginSettingTab {
 				get: () => this.plugin.settings.externalSyncIntervalMin,
 				set: (v) => {
 					this.plugin.settings.externalSyncIntervalMin = v;
-					this.plugin.sync.restart();
+					this.plugin.desktopCalendarSync().restart();
 				},
 			},
 		);
@@ -521,7 +536,7 @@ export class GtdSettingsTab extends PluginSettingTab {
 					.setDisabled(subs.length === 0)
 					.onClick(() =>
 						this.reportAction("не удалось синхронизировать календари", async () => {
-							await this.plugin.sync.syncAll();
+							await this.plugin.desktopCalendarSync().syncAll();
 							this.display();
 						}),
 					),
@@ -569,8 +584,9 @@ export class GtdSettingsTab extends PluginSettingTab {
 					deleteMirror: (oldName) => {
 						// Fence before the awaited trash operation: a fetch which resolves in
 						// that gap must not recreate the old-name mirror.
-						this.plugin.sync.configurationChanged();
-						return this.plugin.sync.deleteMirror({ ...sub, name: oldName });
+						const sync = this.plugin.desktopCalendarSync();
+						sync.configurationChanged();
+						return sync.deleteMirror({ ...sub, name: oldName });
 					},
 					save: () => this.save(),
 				});
@@ -585,7 +601,7 @@ export class GtdSettingsTab extends PluginSettingTab {
 				.setTooltip("Синхронизировать сейчас")
 				.onClick(() =>
 					this.reportAction("не удалось синхронизировать календарь", async () => {
-						await this.plugin.sync.syncById(sub.id);
+						await this.plugin.desktopCalendarSync().syncById(sub.id);
 						this.display();
 					}),
 				),
@@ -599,14 +615,15 @@ export class GtdSettingsTab extends PluginSettingTab {
 						// сперва убрать файл-зеркало (в корзину), пока подписка ещё в списке —
 						// путь считается от её id+имени; tombstone ставится ДО await, поэтому
 						// зависший fetch не сможет воскресить зеркало после удаления.
-						await this.plugin.sync.removeSubscription(sub);
+						const sync = this.plugin.desktopCalendarSync();
+						await sync.removeSubscription(sub);
 						const subs = this.plugin.settings.externalCalendars;
 						const i = subs.indexOf(sub);
 						if (i >= 0) {
 							subs.splice(i, 1);
 							// A prior interrupted migration can have left another path with the
 							// same stable id.  Reconcile after the id disappears from settings.
-							this.plugin.sync.configurationChanged();
+							sync.configurationChanged();
 						}
 						try {
 							await this.save();
@@ -616,7 +633,7 @@ export class GtdSettingsTab extends PluginSettingTab {
 							// cannot silently turn this failed deletion into a real one.
 							if (i >= 0) {
 								subs.splice(i, 0, sub);
-								this.plugin.sync.rollbackSubscriptionRemoval(sub.id);
+								sync.rollbackSubscriptionRemoval(sub.id);
 							}
 							throw error;
 						}
@@ -643,7 +660,7 @@ export class GtdSettingsTab extends PluginSettingTab {
 				t.setValue(next); // показать нормализованное значение (blur — фокус свободен)
 				if (next === sub.url) return; // без изменений — не будим saveData впустую
 				sub.url = next;
-				this.plugin.sync.configurationChanged();
+				this.plugin.desktopCalendarSync().configurationChanged();
 				await this.save();
 			});
 		});
@@ -826,25 +843,27 @@ export class GtdSettingsTab extends PluginSettingTab {
 			},
 		);
 
-		new Setting(el)
-			.setName("Возврат отложенной задачи")
-			.setDesc(
-				"Куда «всплывает» задача, когда наступает её дата старта. " +
-					"«В исходное место» — остаётся в своём файле и снова проходит запрос входящих. " +
-					"«Во входящие» (по умолчанию) — снимается 🛫, снимаются теги доски, а строка " +
-					"переносится в единый настроенный файл входящих.",
-			)
-			.addDropdown((dd) => {
-				dd.addOption("origin", "В исходное место");
-				dd.addOption("inbox", "Во входящие");
-				dd.setValue(this.plugin.settings.promoteTo);
-				dd.onChange((value) =>
-					this.reportChange(async () => {
-						this.plugin.settings.promoteTo = value === "inbox" ? "inbox" : "origin";
-						await this.save();
-					}),
-				);
-			});
+		if (this.desktopFeatures) {
+			new Setting(el)
+				.setName("Возврат отложенной задачи")
+				.setDesc(
+					"Куда «всплывает» задача, когда наступает её дата старта. " +
+						"«В исходное место» — остаётся в своём файле и снова проходит запрос входящих. " +
+						"«Во входящие» (по умолчанию) — снимается 🛫, снимаются теги доски, а строка " +
+						"переносится в единый настроенный файл входящих.",
+				)
+				.addDropdown((dd) => {
+					dd.addOption("origin", "В исходное место");
+					dd.addOption("inbox", "Во входящие");
+					dd.setValue(this.plugin.settings.promoteTo);
+					dd.onChange((value) =>
+						this.reportChange(async () => {
+							this.plugin.settings.promoteTo = value === "inbox" ? "inbox" : "origin";
+							await this.save();
+						}),
+					);
+				});
+		}
 
 		this.intSetting(
 			new Setting(el)

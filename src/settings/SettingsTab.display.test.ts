@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 const settingProbe = vi.hoisted(() => ({
 	thenCalls: 0,
 	descriptions: [] as string[],
+	names: [] as string[],
+	textChanges: [] as Array<{ name: string; handler: (value: string) => unknown }>,
 }));
 
 vi.mock("obsidian", () => {
@@ -34,10 +36,13 @@ vi.mock("obsidian", () => {
 
 	class Setting {
 		readonly settingEl = new FakeElement();
+		private name = "";
 
 		constructor(_container: unknown) {}
 
-		setName(): this {
+		setName(name: string): this {
+			this.name = name;
+			settingProbe.names.push(name);
 			return this;
 		}
 
@@ -54,7 +59,8 @@ vi.mock("obsidian", () => {
 			return this;
 		}
 
-		addText(): this {
+		addText(callback: (text: FakeText) => void): this {
+			callback(new FakeText(this.name));
 			return this;
 		}
 
@@ -82,6 +88,36 @@ vi.mock("obsidian", () => {
 		then(resolve: (value: undefined) => void): this {
 			settingProbe.thenCalls += 1;
 			resolve(undefined);
+			return this;
+		}
+	}
+
+	class FakeText {
+		readonly inputEl = {
+			addEventListener: vi.fn(),
+			blur: vi.fn(),
+			style: {},
+			type: "",
+		} as unknown as HTMLInputElement;
+		private value = "";
+
+		constructor(private readonly settingName: string) {}
+
+		setPlaceholder(_placeholder: string): this {
+			return this;
+		}
+
+		setValue(value: string): this {
+			this.value = value;
+			return this;
+		}
+
+		getValue(): string {
+			return this.value;
+		}
+
+		onChange(handler: (value: string) => unknown): this {
+			settingProbe.textChanges.push({ name: this.settingName, handler });
 			return this;
 		}
 	}
@@ -116,6 +152,8 @@ describe("GtdSettingsTab display", () => {
 		async ({ summary, description }) => {
 			settingProbe.thenCalls = 0;
 			settingProbe.descriptions = [];
+			settingProbe.names = [];
+			settingProbe.textChanges = [];
 			const plugin = {
 				settings: createDefaultSettings(),
 				scopes: {
@@ -135,4 +173,62 @@ describe("GtdSettingsTab display", () => {
 			expect(settingProbe.descriptions).toContainEqual(expect.stringContaining(description));
 		},
 	);
+
+	it("shows only Android-MVP settings when desktop features are disabled", () => {
+		settingProbe.names = [];
+		settingProbe.textChanges = [];
+		const plugin = {
+			settings: createDefaultSettings(),
+			scopes: {
+				current: () => ({ schemaVersion: 1, scopes: [] }),
+			},
+		};
+		const tab = new GtdSettingsTab({} as never, plugin as never, {
+			desktopFeatures: false,
+		});
+
+		tab.display();
+
+		expect(settingProbe.names).toContain("Входящие");
+		expect(settingProbe.names).toContain("Scopes");
+		expect(settingProbe.names).toContain("Календарь");
+		expect(settingProbe.names).toContain("Регулярные");
+		expect(settingProbe.names).not.toContain("AI и оценки");
+		expect(settingProbe.names).not.toContain("Внешние календари");
+		expect(settingProbe.names).not.toContain("Возврат отложенной задачи");
+	});
+
+	it("updates the inbox path on Android without touching desktop calendar sync", async () => {
+		settingProbe.names = [];
+		settingProbe.textChanges = [];
+		const settings = createDefaultSettings();
+		const saveSettings = vi.fn(async () => undefined);
+		const desktopCalendarSync = vi.fn(() => {
+			throw new Error("desktop sync must stay unavailable on Android");
+		});
+		const plugin = {
+			settings,
+			scopes: {
+				current: () => ({ schemaVersion: 1, scopes: [] }),
+			},
+			saveSettings,
+			desktopCalendarSync,
+		};
+		const tab = new GtdSettingsTab({} as never, plugin as never, {
+			desktopFeatures: false,
+		});
+		tab.display();
+		const inboxChange = settingProbe.textChanges.find(
+			(change) => change.name === "Файл входящих",
+		)?.handler;
+
+		expect(inboxChange).toBeTypeOf("function");
+		expect(() => inboxChange?.("  GTD/Mobile Inbox.md  ")).not.toThrow();
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(settings.inboxFile).toBe("GTD/Mobile Inbox.md");
+		expect(saveSettings).toHaveBeenCalledOnce();
+		expect(desktopCalendarSync).not.toHaveBeenCalled();
+	});
 });

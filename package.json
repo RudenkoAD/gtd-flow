@@ -74,6 +74,7 @@
   },
   "dependencies": {
     "@xyflow/svelte": "^1.6.0",
-    "ical.js": "^2.2.1"
+    "ical.js": "^2.2.1",
+    "saxes": "6.0.0"
   }
 }

@@ -89,6 +89,14 @@ export interface SyncVaultPort {
 export interface ManagedMirror {
 	path: string;
 	subscriptionId: string | null;
+	/**
+	 * Opaque caldav source marker read from the mirror's `gtd-external-source`
+	 * frontmatter (§4.4 CalDAV-заказа): host extracts it the same way it
+	 * extracts `subscriptionId`. Absent/null — ics mirror, or a caldav mirror
+	 * written before the marker existed (legacy) or by a host that does not
+	 * yet extract it; either way reconcileMirrors leaves it unchanged.
+	 */
+	sourceKey?: string | null;
 }
 
 export interface SyncClock {
@@ -130,6 +138,15 @@ export interface SyncDeps {
 	maxConcurrentFeeds?: () => number;
 	/** Обновление статуса подписки (lastSyncAt/lastError) — main персистит. */
 	onResult: (id: string, result: SyncResult) => void;
+	/**
+	 * Host persists `pendingRedaction = false` for this subscription (§4.3
+	 * privacy tightening). Idempotent: called again on a subscription that is
+	 * already clean should be harmless. If persisting fails (throws/rejects),
+	 * the durable `pendingRedaction` marker stays `true` and the NEXT pass
+	 * retries the whole cleanup (trash mirror + this callback) — no partially
+	 * redacted state is ever reported as done.
+	 */
+	onPendingRedactionCleared?: (id: string) => Promise<void> | void;
 	/** Non-fatal lifecycle diagnostics (for example an orphan removed at startup). */
 	onLifecycleWarning?: (message: string) => void;
 }
@@ -168,6 +185,23 @@ export function safeMirrorFileName(name: string): string {
 export function subIdSlug(id: string): string {
 	let h = 0x811c9dc5 >>> 0;
 	for (let i = 0; i < id.length; i++) h = Math.imul(h ^ id.charCodeAt(i), 0x01000193) >>> 0;
+	return (h % 2176782336).toString(36).padStart(6, "0"); // 36^6 = 2176782336 → ровно 6 символов
+}
+
+/**
+ * Детерминированный opaque-маркер идентичности caldav-источника (§4.4
+ * CalDAV-заказа): хэш от `${accountId}\0${collectionKey}`, тот же fnv-паттерн,
+ * что и subIdSlug. НЕ является identity-bearing сам по себе (это хэш, не
+ * account/collection в открытом виде) — используется ИСКЛЮЧИТЕЛЬНО чтобы
+ * reconcileMirrors мог заметить, что под тем же subscriptionId сменился
+ * аккаунт или коллекция, и убрать устаревшее зеркало ДО того, как новый
+ * источник будет представлен как текущий (даже если его первый fetch
+ * провалится). Записывается в frontmatter зеркала (mirrorBuilder.sourceKey).
+ */
+export function caldavSourceKey(accountId: string, collectionKey: string): string {
+	const base = `${accountId} ${collectionKey}`;
+	let h = 0x811c9dc5 >>> 0;
+	for (let i = 0; i < base.length; i++) h = Math.imul(h ^ base.charCodeAt(i), 0x01000193) >>> 0;
 	return (h % 2176782336).toString(36).padStart(6, "0"); // 36^6 = 2176782336 → ровно 6 символов
 }
 
@@ -453,6 +487,22 @@ export class SyncService {
 				if (mirror.path !== target) {
 					await this.deletePath(mirror.path);
 					this.warn(`Relocated external calendar mirror for subscription ${sub.id}`);
+				} else if (
+					sub.kind === "caldav" &&
+					mirror.sourceKey != null &&
+					mirror.sourceKey !== caldavSourceKey(sub.accountId, sub.collectionKey)
+				) {
+					// §4.4: the mirror's own source marker no longer matches this
+					// subscription's current account/collection (identity changed
+					// under the SAME subscriptionId). The stale source's mirror must
+					// go BEFORE the new source can be presented as current — even if
+					// the new source's very first fetch later fails. A null/absent
+					// marker (legacy pre-marker file) is left alone; the next
+					// successful sync overwrites it with the marker.
+					await this.deletePath(mirror.path);
+					this.warn(
+						`Removed mirror of a replaced caldav source for subscription ${sub.id}`,
+					);
 				} else {
 					this.knownMirrorPaths.set(sub.id, target);
 				}
@@ -469,6 +519,60 @@ export class SyncService {
 				await this.deletePath(path);
 				this.knownMirrorPaths.delete(id);
 			}
+		}
+	}
+
+	/**
+	 * Privacy-tightening cleanup (§4.3 CalDAV-заказа), zero network. Every
+	 * caldav subscription CURRENTLY flagged `pendingRedaction === true` loses
+	 * its (formerly detailed) mirror — recoverable-trash — and then the host
+	 * is asked to durably clear the marker. This runs BEFORE any sync attempt
+	 * (see reconcileAndSync) so a device that restarts still fails closed:
+	 * redaction is retried before the subscription is ever synced again, and
+	 * it does not consult credentials or scope at all (§4.2 precedence — a
+	 * missing secret or scope_missing must not block or bypass redaction).
+	 *
+	 * Generation fence: the subscription list and the fence are snapshotted
+	 * once at the start; a configuration change is checked BETWEEN
+	 * subscriptions (mid-subscription work is not interrupted) and stops the
+	 * remainder of this pass without touching it — the next pass (this method
+	 * is re-invoked by reconcileAndSync on every configuration change and at
+	 * every startup) picks up whatever is still pending.
+	 *
+	 * A trash failure or a onPendingRedactionCleared failure is logged and
+	 * this pass moves on to the NEXT subscription; the durable marker for the
+	 * failed one stays `true` (performCaldavSync keeps skipping it) so a later
+	 * pass retries the whole trash+callback sequence from scratch.
+	 */
+	async redactPendingSubscriptions(): Promise<void> {
+		if (this.disposed) return;
+		const generation = this.configGeneration;
+		const pending = this.deps
+			.subscriptions()
+			.filter(
+				(s): s is CalDavCalendarSub => s.kind === "caldav" && s.pendingRedaction === true,
+			)
+			.map((s) => ({ ...s }));
+		for (const s of pending) {
+			if (!this.isConfigurationCurrent(generation)) return;
+			if (this.tombstones.has(s.id)) continue;
+			try {
+				await this.deleteMirror(s);
+			} catch (e) {
+				this.warn(
+					`Could not redact mirror for privacy-tightened subscription ${s.id}: ${errMessage(e)}`,
+				);
+				continue;
+			}
+			try {
+				await this.deps.onPendingRedactionCleared?.(s.id);
+			} catch (e) {
+				this.warn(
+					`Could not persist cleared redaction for subscription ${s.id}: ${errMessage(e)}`,
+				);
+				continue;
+			}
+			this.warn(`Redacted mirror for privacy-tightened subscription ${s.id}`);
 		}
 	}
 
@@ -687,6 +791,7 @@ export class SyncService {
 				subscriptionId: sub.id,
 				idNamespace: `${sub.accountId} ${sub.collectionKey}`,
 				scopeId: sub.scopeId,
+				sourceKey: caldavSourceKey(sub.accountId, sub.collectionKey),
 			});
 			return await this.writeMirrorAndReport(context, content);
 		} catch (e) {
@@ -833,12 +938,24 @@ export class SyncService {
 		}, CONFIG_RECONCILE_DEBOUNCE_MS);
 	}
 
-	/** Lifecycle fire-and-forget boundary: both phases report and fulfil. */
+	/** Lifecycle fire-and-forget boundary: all three phases report and fulfil.
+	 * Redaction runs BETWEEN reconciliation and sync so both a fresh startup
+	 * and a configuration-change pass retry pending privacy cleanups before
+	 * any sync attempt (§4.3 step 3): the fence survives a restart because the
+	 * durable `pendingRedaction` marker itself is what drives this method, not
+	 * in-memory state. */
 	private async reconcileAndSync(): Promise<void> {
 		try {
 			await this.reconcileMirrors();
 		} catch (e) {
 			this.warn(`Could not reconcile external calendar mirrors: ${errMessage(e)}`);
+		}
+		try {
+			await this.redactPendingSubscriptions();
+		} catch (e) {
+			this.warn(
+				`Could not redact privacy-tightened external calendar mirrors: ${errMessage(e)}`,
+			);
 		}
 		try {
 			await this.syncAll();

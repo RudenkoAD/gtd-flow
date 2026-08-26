@@ -3,10 +3,18 @@
  * CRLF, лишние пробелы и частично невалидные строки — штатный вход.
  */
 import { describe, expect, it, vi } from "vitest";
-import { DEFAULT_SETTINGS, type IcsCalendarSub } from "./Settings";
+import {
+	DEFAULT_SETTINGS,
+	type CalDavAccount,
+	type CalDavCalendarSub,
+	type GtdFlowSettings,
+	type IcsCalendarSub,
+	type InvalidCalendarSub,
+} from "./Settings";
 import { EXTERNAL_SYNC_ERROR_CODES, NEVER_ATTEMPTED_STATUS } from "../sync/externalSyncStatus";
 import {
 	commitInboxFile,
+	commitPrivacyMode,
 	commitSubName,
 	formatDeferPresets,
 	formatPathList,
@@ -14,6 +22,7 @@ import {
 	parseIntInRange,
 	parsePathList,
 	planSubNameCommit,
+	removeCaldavAccount,
 	reorderCalendarPlacement,
 	applySyncResult,
 	describeSyncErrorCode,
@@ -358,5 +367,306 @@ describe("describeSyncErrorCode / formatSyncStatus — §9 состояния", 
 		);
 		expect(legacy).not.toContain("secret.example");
 		expect(legacy).toContain("⚠");
+	});
+});
+
+function freshCaldavSub(overrides: Partial<CalDavCalendarSub> = {}): CalDavCalendarSub {
+	return {
+		kind: "caldav",
+		id: "sub1",
+		name: "Работа",
+		accountId: "acc1",
+		collectionKey: "key1",
+		privacy: "unconfigured",
+		enabled: false,
+		scopeId: null,
+		pendingRedaction: false,
+		lastSyncAt: null,
+		lastError: null,
+		errorCode: null,
+		...overrides,
+	};
+}
+
+describe("commitPrivacyMode — §4.3 crash- и save-safe переход приватности", () => {
+	it("next === текущему privacy → unchanged: без fence, без save, без мутации", async () => {
+		const sub = freshCaldavSub({ privacy: "details" });
+		const fence = vi.fn();
+		const save = vi.fn(async () => undefined);
+
+		const result = await commitPrivacyMode(sub, "details", { fence, save });
+
+		expect(result).toBe("unchanged");
+		expect(fence).not.toHaveBeenCalled();
+		expect(save).not.toHaveBeenCalled();
+		expect(sub.privacy).toBe("details");
+	});
+
+	it("unconfigured→details: без fence, privacy применён, save раз, applied", async () => {
+		const sub = freshCaldavSub({ privacy: "unconfigured" });
+		const fence = vi.fn();
+		const save = vi.fn(async () => undefined);
+
+		const result = await commitPrivacyMode(sub, "details", { fence, save });
+
+		expect(result).toBe("applied");
+		expect(fence).not.toHaveBeenCalled();
+		expect(save).toHaveBeenCalledTimes(1);
+		expect(sub.privacy).toBe("details");
+	});
+
+	it("unconfigured→busy: без fence, pendingRedaction не трогается, applied", async () => {
+		const sub = freshCaldavSub({ privacy: "unconfigured", pendingRedaction: false });
+		const fence = vi.fn();
+		const save = vi.fn(async () => undefined);
+
+		const result = await commitPrivacyMode(sub, "busy", { fence, save });
+
+		expect(result).toBe("applied");
+		expect(fence).not.toHaveBeenCalled();
+		expect(sub.privacy).toBe("busy");
+		expect(sub.pendingRedaction).toBe(false); // не тронут: это не fail-closed сжатие
+	});
+
+	it("busy→details: без fence, pendingRedaction не трогается (остаётся как было), applied", async () => {
+		const sub = freshCaldavSub({ privacy: "busy", pendingRedaction: true });
+		const fence = vi.fn();
+		const save = vi.fn(async () => undefined);
+
+		const result = await commitPrivacyMode(sub, "details", { fence, save });
+
+		expect(result).toBe("applied");
+		expect(fence).not.toHaveBeenCalled();
+		expect(sub.privacy).toBe("details");
+		expect(sub.pendingRedaction).toBe(true); // §4.3: нечего больше делать здесь
+	});
+
+	it("ослабление: отказ save откатывает privacy в памяти и пробрасывает ошибку", async () => {
+		const sub = freshCaldavSub({ privacy: "unconfigured" });
+		const fence = vi.fn();
+		const boom = new Error("saveData упал");
+		const save = vi.fn(async () => {
+			throw boom;
+		});
+
+		await expect(commitPrivacyMode(sub, "details", { fence, save })).rejects.toThrow(boom);
+		expect(sub.privacy).toBe("unconfigured"); // откачено
+	});
+
+	it("сжатие details→busy: fence ДО мутации и ДО save, privacy+pendingRedaction, pending-redaction", async () => {
+		const sub = freshCaldavSub({ privacy: "details", pendingRedaction: false, enabled: true });
+		const order: string[] = [];
+		const fence = vi.fn(() => order.push("fence"));
+		const save = vi.fn(async () => {
+			order.push("save");
+			// на момент save мутация уже должна была случиться
+			expect(sub.privacy).toBe("busy");
+			expect(sub.pendingRedaction).toBe(true);
+		});
+
+		const result = await commitPrivacyMode(sub, "busy", { fence, save });
+
+		expect(result).toBe("pending-redaction");
+		expect(order).toEqual(["fence", "save"]);
+		expect(sub.privacy).toBe("busy");
+		expect(sub.pendingRedaction).toBe(true);
+		expect(sub.enabled).toBe(true); // sub.enabled НИКОГДА не трогается
+	});
+
+	it("сжатие details→busy: отказ save откатывает ОБА поля и пробрасывает ошибку", async () => {
+		const sub = freshCaldavSub({ privacy: "details", pendingRedaction: false });
+		const fence = vi.fn();
+		const boom = new Error("saveData упал");
+		const save = vi.fn(async () => {
+			throw boom;
+		});
+
+		await expect(commitPrivacyMode(sub, "busy", { fence, save })).rejects.toThrow(boom);
+		expect(fence).toHaveBeenCalledTimes(1);
+		expect(sub.privacy).toBe("details"); // откачено
+		expect(sub.pendingRedaction).toBe(false); // откачено
+	});
+});
+
+describe("removeCaldavAccount — §4.1 атомарное отключение аккаунта", () => {
+	const account = (overrides: Partial<CalDavAccount> = {}): CalDavAccount => ({
+		id: "acc1",
+		serverOrigin: "https://caldav.example",
+		secretRef: "acc1",
+		...overrides,
+	});
+	const ics = (id: string): IcsCalendarSub => ({
+		kind: "ics",
+		id,
+		name: `ics-${id}`,
+		url: "https://example/a.ics",
+		lastSyncAt: null,
+		lastError: null,
+		errorCode: null,
+	});
+	const invalid = (id: string): InvalidCalendarSub => ({ kind: "invalid", id, reason: "schema" });
+
+	const makePorts = () => ({
+		confirmCascade: vi.fn(async (): Promise<boolean> => true),
+		removeSubscription: vi.fn(
+			async (_sub: { id: string; name: string }): Promise<void> => undefined,
+		),
+		rollbackRemoval: vi.fn((_id: string): void => undefined),
+		save: vi.fn(async (): Promise<void> => undefined),
+	});
+
+	it("аккаунт не найден, ссылок нет → removed с пустым списком, БЕЗ save/confirm/removeSubscription", async () => {
+		const settings: Pick<GtdFlowSettings, "externalCalendars" | "caldavAccounts"> = {
+			externalCalendars: [ics("i1")],
+			caldavAccounts: [],
+		};
+		const ports = makePorts();
+
+		const result = await removeCaldavAccount(settings, "missing", ports);
+
+		expect(result).toEqual({ status: "removed", removedSubscriptionIds: [] });
+		expect(ports.confirmCascade).not.toHaveBeenCalled();
+		expect(ports.removeSubscription).not.toHaveBeenCalled();
+		expect(ports.save).not.toHaveBeenCalled();
+		expect(settings.externalCalendars).toEqual([ics("i1")]);
+		expect(settings.caldavAccounts).toEqual([]);
+	});
+
+	it("аккаунт найден, ссылок нет → confirmCascade НЕ вызывается, аккаунт всё равно удаляется", async () => {
+		const settings: Pick<GtdFlowSettings, "externalCalendars" | "caldavAccounts"> = {
+			externalCalendars: [ics("i1")],
+			caldavAccounts: [account()],
+		};
+		const ports = makePorts();
+
+		const result = await removeCaldavAccount(settings, "acc1", ports);
+
+		expect(result).toEqual({ status: "removed", removedSubscriptionIds: [] });
+		expect(ports.confirmCascade).not.toHaveBeenCalled();
+		expect(ports.removeSubscription).not.toHaveBeenCalled();
+		expect(ports.save).toHaveBeenCalledTimes(1);
+		expect(settings.caldavAccounts).toEqual([]);
+		expect(settings.externalCalendars).toEqual([ics("i1")]); // сосед не тронут
+	});
+
+	it("confirmCascade → false: отказ, БЕЗ мутации и БЕЗ save; sibling ics/другой аккаунт целы", async () => {
+		const otherSub = freshCaldavSub({ id: "other", accountId: "acc-other" });
+		const targetSub = freshCaldavSub({ id: "s1", accountId: "acc1" });
+		const settings: Pick<GtdFlowSettings, "externalCalendars" | "caldavAccounts"> = {
+			externalCalendars: [ics("i1"), otherSub, targetSub, invalid("bad1")],
+			caldavAccounts: [account(), account({ id: "acc-other" })],
+		};
+		const before = {
+			externalCalendars: [...settings.externalCalendars],
+			caldavAccounts: [...settings.caldavAccounts],
+		};
+		const ports = makePorts();
+		ports.confirmCascade.mockImplementation(async () => false);
+
+		const result = await removeCaldavAccount(settings, "acc1", ports);
+
+		expect(result).toEqual({ status: "refused-active-subscriptions", subscriptionIds: ["s1"] });
+		expect(ports.removeSubscription).not.toHaveBeenCalled();
+		expect(ports.save).not.toHaveBeenCalled();
+		expect(settings.externalCalendars).toEqual(before.externalCalendars);
+		expect(settings.caldavAccounts).toEqual(before.caldavAccounts);
+	});
+
+	it("подтверждённый каскад: removeSubscription для КАЖДОЙ ссылающейся подписки, затем splice+save, sibling целы", async () => {
+		const otherSub = freshCaldavSub({ id: "other", accountId: "acc-other", name: "Чужой" });
+		const s1 = freshCaldavSub({ id: "s1", accountId: "acc1", name: "Раз" });
+		const s2 = freshCaldavSub({ id: "s2", accountId: "acc1", name: "Два" });
+		const icsSub = ics("i1");
+		const invalidSub = invalid("bad1");
+		const settings: Pick<GtdFlowSettings, "externalCalendars" | "caldavAccounts"> = {
+			externalCalendars: [icsSub, otherSub, s1, invalidSub, s2],
+			caldavAccounts: [account(), account({ id: "acc-other" })],
+		};
+		const ports = makePorts();
+
+		const result = await removeCaldavAccount(settings, "acc1", ports);
+
+		expect(result).toEqual({ status: "removed", removedSubscriptionIds: ["s1", "s2"] });
+		expect(ports.confirmCascade).toHaveBeenCalledTimes(1);
+		expect(ports.removeSubscription).toHaveBeenCalledTimes(2);
+		expect(ports.removeSubscription).toHaveBeenNthCalledWith(1, { id: "s1", name: "Раз" });
+		expect(ports.removeSubscription).toHaveBeenNthCalledWith(2, { id: "s2", name: "Два" });
+		expect(ports.save).toHaveBeenCalledTimes(1);
+		expect(ports.rollbackRemoval).not.toHaveBeenCalled();
+		expect(settings.externalCalendars).toEqual([icsSub, otherSub, invalidSub]);
+		expect(settings.caldavAccounts).toEqual([account({ id: "acc-other" })]);
+	});
+
+	it("битые ссылки на ОТСУТСТВУЮЩИЙ аккаунт: тот же каскад, без записи аккаунта на вырезание", async () => {
+		const s1 = freshCaldavSub({ id: "s1", accountId: "ghost" });
+		const settings: Pick<GtdFlowSettings, "externalCalendars" | "caldavAccounts"> = {
+			externalCalendars: [s1],
+			caldavAccounts: [], // аккаунта уже нет — битая ссылка
+		};
+		const ports = makePorts();
+
+		const result = await removeCaldavAccount(settings, "ghost", ports);
+
+		expect(result).toEqual({ status: "removed", removedSubscriptionIds: ["s1"] });
+		expect(ports.confirmCascade).toHaveBeenCalledTimes(1);
+		expect(ports.removeSubscription).toHaveBeenCalledTimes(1);
+		expect(ports.save).toHaveBeenCalledTimes(1);
+		expect(settings.externalCalendars).toEqual([]);
+		expect(settings.caldavAccounts).toEqual([]);
+	});
+
+	it("removeSubscription падает на второй подписке: пробрасывает ДО любой mutации settings", async () => {
+		const s1 = freshCaldavSub({ id: "s1", accountId: "acc1", name: "Раз" });
+		const s2 = freshCaldavSub({ id: "s2", accountId: "acc1", name: "Два" });
+		const settings: Pick<GtdFlowSettings, "externalCalendars" | "caldavAccounts"> = {
+			externalCalendars: [s1, s2],
+			caldavAccounts: [account()],
+		};
+		const before = {
+			externalCalendars: [...settings.externalCalendars],
+			caldavAccounts: [...settings.caldavAccounts],
+		};
+		const boom = new Error("trash упал");
+		const ports = makePorts();
+		ports.removeSubscription.mockImplementation(async (sub: { id: string }) => {
+			if (sub.id === "s2") throw boom;
+		});
+
+		await expect(removeCaldavAccount(settings, "acc1", ports)).rejects.toThrow(boom);
+
+		expect(ports.save).not.toHaveBeenCalled();
+		expect(ports.rollbackRemoval).not.toHaveBeenCalled();
+		expect(settings.externalCalendars).toEqual(before.externalCalendars); // ничего не вырезано
+		expect(settings.caldavAccounts).toEqual(before.caldavAccounts);
+	});
+
+	it("save падает после splice: восстанавливает ТОЧНЫЙ исходный порядок массивов, rollbackRemoval для каждой, пробрасывает", async () => {
+		const other = freshCaldavSub({ id: "other", accountId: "acc-other" });
+		const s1 = freshCaldavSub({ id: "s1", accountId: "acc1" });
+		const icsSub = ics("i1");
+		const s2 = freshCaldavSub({ id: "s2", accountId: "acc1" });
+		const settings: Pick<GtdFlowSettings, "externalCalendars" | "caldavAccounts"> = {
+			// Ссылающиеся подписки НЕ соседние — перемежены посторонними записями,
+			// чтобы восстановление по индексам было настоящей проверкой порядка.
+			externalCalendars: [other, s1, icsSub, s2],
+			caldavAccounts: [account({ id: "acc-other" }), account()],
+		};
+		const before = {
+			externalCalendars: [...settings.externalCalendars],
+			caldavAccounts: [...settings.caldavAccounts],
+		};
+		const boom = new Error("saveData упал");
+		const ports = makePorts();
+		ports.save.mockImplementation(async () => {
+			throw boom;
+		});
+
+		await expect(removeCaldavAccount(settings, "acc1", ports)).rejects.toThrow(boom);
+
+		expect(settings.externalCalendars).toEqual(before.externalCalendars);
+		expect(settings.caldavAccounts).toEqual(before.caldavAccounts);
+		expect(ports.rollbackRemoval).toHaveBeenCalledTimes(2);
+		expect(ports.rollbackRemoval).toHaveBeenCalledWith("s1");
+		expect(ports.rollbackRemoval).toHaveBeenCalledWith("s2");
 	});
 });

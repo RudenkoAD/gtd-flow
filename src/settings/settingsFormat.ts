@@ -2,7 +2,13 @@
  * Чистые парсеры/форматтеры вкладки настроек: текст полей ↔ модель Settings.
  * Без obsidian — тестируется в node (см. settingsFormat.test.ts).
  */
-import type { ActiveCalendarSub, CalendarField, DeferPreset } from "./Settings";
+import type {
+	ActiveCalendarSub,
+	CalDavCalendarSub,
+	CalendarField,
+	DeferPreset,
+	GtdFlowSettings,
+} from "./Settings";
 import type { SyncResult } from "../sync/SyncService";
 import {
 	DEVICE_LOCAL_ERROR_CODES,
@@ -252,4 +258,173 @@ export function formatSyncStatus(
 	if (sub.lastError !== null) return `⚠ ${describeSyncErrorCode("unknown")}`;
 	if (sub.lastSyncAt === null) return "ещё не синхронизировалось";
 	return `обновлено ${stamp(sub.lastSyncAt)}`;
+}
+
+// ── CalDAV: приватность подписки и удаление аккаунта (§4.1/§4.3) ────────────
+
+export type PrivacyCommitResult = "unchanged" | "applied" | "pending-redaction";
+
+/**
+ * Коммит режима приватности CalDAV-подписки (§4.3 CalDAV-заказа): crash- и
+ * save-safe переход. "unconfigured" никогда не приходит в `next` — тип это
+ * гарантирует, из draft-состояния уходят только явным выбором "details"/"busy".
+ *
+ * - Совпадает с текущим privacy — no-op: без fence, без save, без мутации.
+ * - Ослабление или первый выбор ("unconfigured"→"details", "unconfigured"→
+ *   "busy", "busy"→"details") — обычный коммит: записать privacy, сохранить;
+ *   отказ save откатывает privacy в памяти и пробрасывает ошибку (изменение
+ *   не применено). pendingRedaction здесь не участвует: "busy"→"details"
+ *   лишь ждёт следующего успешного опроса, чтобы снова показывать детали —
+ *   больше здесь делать нечего.
+ * - Сжатие "details"→"busy" (fail-closed транзитивная точка отказа, §4.3
+ *   шаг 1): СНАЧАЛА ports.fence() — завершения зависшего детального fetch не
+ *   должны приземлиться ПОСЛЕ этого выбора; затем privacy="busy" И
+ *   pendingRedaction=true; затем durable save — ДО любой мутации зеркала.
+ *   Отказ save откатывает ОБА поля в памяти и пробрасывает ошибку: изменение
+ *   не применено, зачистка не начиналась. Успех → "pending-redaction" —
+ *   вызыватель запускает проход зачистки зеркала в sync-слое. sub.enabled
+ *   здесь НИКОГДА не трогается. Отката durable "busy" обратно в "details" в
+ *   этой функции нет и быть не может (§4.3 шаг 3).
+ */
+export async function commitPrivacyMode(
+	sub: CalDavCalendarSub,
+	next: "details" | "busy",
+	ports: {
+		/** Обесценить in-flight работу ДО первой durable-записи (fence поколения). */
+		fence: () => void;
+		/** Durable-сохранение настроек; reject — изменение НЕ применено. */
+		save: () => Promise<void>;
+	},
+): Promise<PrivacyCommitResult> {
+	if (next === sub.privacy) return "unchanged";
+
+	if (sub.privacy === "details" && next === "busy") {
+		ports.fence(); // ДО первой durable-записи — fence поколения
+		const prevPrivacy = sub.privacy;
+		const prevPendingRedaction = sub.pendingRedaction;
+		sub.privacy = "busy";
+		sub.pendingRedaction = true;
+		try {
+			await ports.save();
+		} catch (error) {
+			sub.privacy = prevPrivacy;
+			sub.pendingRedaction = prevPendingRedaction;
+			throw error;
+		}
+		return "pending-redaction";
+	}
+
+	const prevPrivacy = sub.privacy;
+	sub.privacy = next;
+	try {
+		await ports.save();
+	} catch (error) {
+		sub.privacy = prevPrivacy;
+		throw error;
+	}
+	return "applied";
+}
+
+export type AccountRemovalResult =
+	| { status: "removed"; removedSubscriptionIds: string[] }
+	| { status: "refused-active-subscriptions"; subscriptionIds: string[] };
+
+/**
+ * Атомарное отключение CalDAV-аккаунта (§4.1 CalDAV-заказа). Порты НЕ
+ * содержат ничего секрет-связанного — намеренно: SecretStorage-запись
+ * аккаунта эта функция никогда не трогает, осиротевший секрет удаляется
+ * только отдельным явным действием пользователя (§4.1).
+ *
+ * - Аккаунт не найден И ни одна подписка на него не ссылается → уже удалён:
+ *   {status:"removed", removedSubscriptionIds: []}, БЕЗ save (менять нечего).
+ *   Если ссылающиеся подписки ЕСТЬ, а записи аккаунта уже нет (битые ссылки
+ *   после прерванной операции) — это тот же каскад ниже, только без записи
+ *   аккаунта в списке на вырезание.
+ * - Есть ссылающиеся подписки и confirmCascade() → false: НИКАКОЙ мутации,
+ *   без save; {status:"refused-active-subscriptions", subscriptionIds}. Если
+ *   ничего не ссылается — confirmCascade вообще не вызывается.
+ * - Подтверждённый каскад, атомарный порядок:
+ *   1) для КАЖДОЙ ссылающейся подписки — await removeSubscription({id,name}):
+ *      зеркало в корзину ПЕРВЫМ, пока запись ещё есть в списке (тот же
+ *      порядок, что у ручного удаления одной подписки). Отказ ЛЮБОГО
+ *      removeSubscription — пробросить немедленно, БЕЗ мутации settings: уже
+ *      отправленные в корзину зеркала восстановимы, их подписки остаются в
+ *      списке и пересинкуются как ни в чём не бывало.
+ *   2) вырезать (splice) ВСЕ ссылающиеся подписки и запись аккаунта из
+ *      массивов settings — мутация на месте (объект settings общий с
+ *      вызывателем).
+ *   3) await save; отказ → восстановить вырезанные записи на их исходных
+ *      позициях, вызвать rollbackRemoval(id) для каждой удалённой подписки,
+ *      пробросить ошибку (зеркала ещё можно восстановить из корзины — §12,
+ *      последняя строка).
+ *   4) вернуть {status:"removed", removedSubscriptionIds}.
+ * - Подписки ДРУГИХ аккаунтов и ics-подписки не трогаются никогда.
+ */
+export async function removeCaldavAccount(
+	settings: Pick<GtdFlowSettings, "externalCalendars" | "caldavAccounts">,
+	accountId: string,
+	ports: {
+		/** true — пользователь явно подтвердил каскадное удаление подписок. */
+		confirmCascade: () => Promise<boolean>;
+		/** Tombstone+abort+recoverable-trash зеркала одной подписки (SyncService.removeSubscription). */
+		removeSubscription: (sub: { id: string; name: string }) => Promise<void>;
+		/** Откат tombstone при неудачном save (SyncService.rollbackSubscriptionRemoval). */
+		rollbackRemoval: (id: string) => void;
+		save: () => Promise<void>;
+	},
+): Promise<AccountRemovalResult> {
+	const referencing: { sub: CalDavCalendarSub; index: number }[] = [];
+	settings.externalCalendars.forEach((sub, index) => {
+		if (sub.kind === "caldav" && sub.accountId === accountId) referencing.push({ sub, index });
+	});
+	const accountIndex = settings.caldavAccounts.findIndex((a) => a.id === accountId);
+
+	if (accountIndex === -1 && referencing.length === 0) {
+		return { status: "removed", removedSubscriptionIds: [] };
+	}
+
+	if (referencing.length > 0) {
+		const confirmed = await ports.confirmCascade();
+		if (!confirmed) {
+			return {
+				status: "refused-active-subscriptions",
+				subscriptionIds: referencing.map((r) => r.sub.id),
+			};
+		}
+	}
+
+	// Зеркала в корзину ПЕРВЫМИ, пока подписки ещё в списке — как при удалении
+	// одной подписки вручную. Отказ пробрасывается ДО какой-либо мутации settings.
+	for (const { sub } of referencing) {
+		await ports.removeSubscription({ id: sub.id, name: sub.name });
+	}
+
+	// Вырезаем в порядке УБЫВАНИЯ индекса — иначе более ранние индексы съедут.
+	for (const { index } of [...referencing].reverse()) {
+		settings.externalCalendars.splice(index, 1);
+	}
+	const accountToRemove = accountIndex === -1 ? null : settings.caldavAccounts[accountIndex];
+	const removedAccount = accountToRemove
+		? { account: accountToRemove, index: accountIndex }
+		: null;
+	if (removedAccount) settings.caldavAccounts.splice(accountIndex, 1);
+
+	try {
+		await ports.save();
+	} catch (error) {
+		// Восстанавливаем в порядке ВОЗРАСТАНИЯ исходного индекса — иначе позиции разъедутся.
+		for (const { sub, index } of referencing) {
+			settings.externalCalendars.splice(index, 0, sub);
+		}
+		if (removedAccount) {
+			settings.caldavAccounts.splice(removedAccount.index, 0, removedAccount.account);
+		}
+		for (const { sub } of referencing) ports.rollbackRemoval(sub.id);
+		throw error;
+	}
+
+	return {
+		status: "removed",
+		removedSubscriptionIds: referencing.map((r) => r.sub.id),
+	};
 }

@@ -34,6 +34,16 @@ export interface MirrorFileOptions {
 	idNamespace?: string | null;
 	/** Канонический GTD-scope строк зеркала (🧭 после 🆔); null — глобально. */
 	scopeId?: string | null;
+	/**
+	 * Opaque-маркер идентичности caldav-источника (§4.4 CalDAV-заказа):
+	 * `caldavSourceKey(accountId, collectionKey)` из SyncService — НЕ сам
+	 * accountId/collectionKey (маркер — хэш, не identity-bearing). Непустая
+	 * строка добавляет ОДНУ строку `gtd-external-source` СРАЗУ ПОСЛЕ
+	 * `gtd-external-id` во frontmatter — reconcileMirrors сверяет её при
+	 * смене аккаунта/коллекции под тем же subscriptionId. Отсутствие/null/
+	 * пустая строка — прежний байт-в-байт вывод (ICS-зеркала не меняются).
+	 */
+	sourceKey?: string | null;
 }
 
 /**
@@ -129,6 +139,10 @@ export function buildMirrorFile(
 			: undefined;
 	const scopeId =
 		typeof opts.scopeId === "string" && opts.scopeId.trim() !== "" ? opts.scopeId.trim() : null;
+	const sourceKey =
+		typeof opts.sourceKey === "string" && opts.sourceKey.trim() !== ""
+			? opts.sourceKey.trim()
+			: null;
 
 	// 🆔 считаем один раз, дальше сортируем и печатаем
 	const rows = occurrences.map((occ) => ({ occ, id: externalOccurrenceId(occ, idNamespace) }));
@@ -147,6 +161,7 @@ export function buildMirrorFile(
 		`gtd-external-name: ${yamlString(name)}`,
 	];
 	if (subscriptionId !== null) front.push(`gtd-external-id: ${yamlString(subscriptionId)}`);
+	if (sourceKey !== null) front.push(`gtd-external-source: ${yamlString(sourceKey)}`);
 	front.push("---");
 
 	const header = `%% Зеркало внешнего календаря «${name}». Правки затираются синхронизацией — не редактируйте вручную. %%`;

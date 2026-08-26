@@ -4,6 +4,7 @@ import { ExternalSyncError } from "./externalSyncStatus";
 import type { MirrorOccurrence, MirrorWindow } from "./icsParse";
 import { buildMirrorFile } from "./mirrorBuilder";
 import {
+	caldavSourceKey,
 	mirrorPath,
 	SyncService,
 	safeMirrorFileName,
@@ -36,6 +37,7 @@ class FakeVault implements SyncVaultPort {
 			.map(([path, content]) => ({
 				path,
 				subscriptionId: content.match(/^gtd-external-id: "([^"]+)"$/m)?.[1] ?? null,
+				sourceKey: content.match(/^gtd-external-source: "([^"]+)"$/m)?.[1] ?? null,
 			}));
 	}
 }
@@ -70,6 +72,13 @@ interface Harness {
 	scopeExists?: (scopeId: string) => boolean;
 	/** Реестр CalDAV-аккаунтов, резолвящихся по CalDavCalendarSub.accountId. */
 	accounts?: CalDavAccount[];
+	/** Ids переданные в deps.onPendingRedactionCleared, записанные ДЕФОЛТНЫМ
+	 *  рекордером (см. ниже); заполняется, только если `onPendingRedactionCleared`
+	 *  сам не задан явно в `over` (тест-переопределение полностью заменяет запись). */
+	pendingRedactionCleared: string[];
+	/** Переопределение колбэка §4.3 (например, чтобы смоделировать сбой
+	 *  персиста): когда задано, ПОЛНОСТЬЮ заменяет дефолтный рекордер выше. */
+	onPendingRedactionCleared?: (id: string) => Promise<void> | void;
 }
 
 function makeService(over: Partial<Harness> = {}) {
@@ -81,6 +90,7 @@ function makeService(over: Partial<Harness> = {}) {
 		inertIds: [],
 		inboxFile: "GTD/Inbox.md",
 		warnings: [],
+		pendingRedactionCleared: [],
 		...over,
 	};
 	const svc = new SyncService({
@@ -109,6 +119,10 @@ function makeService(over: Partial<Harness> = {}) {
 				}
 			}
 			results.push({ id, result });
+		},
+		onPendingRedactionCleared: (id) => {
+			if (h.onPendingRedactionCleared !== undefined) return h.onPendingRedactionCleared(id);
+			h.pendingRedactionCleared.push(id);
 		},
 		onLifecycleWarning: (message) => h.warnings.push(message),
 	});
@@ -949,5 +963,234 @@ describe("SyncService — caldav-провайдер (этап 4)", () => {
 		expect(provider.beginPassCalls).toBe(1);
 		await svc.syncAll();
 		expect(provider.beginPassCalls).toBe(2);
+	});
+});
+
+describe("SyncService — fail-closed переходы (этап 6)", () => {
+	describe("redactPendingSubscriptions (§4.3 privacy tightening)", () => {
+		it("caldav-подписка с pendingRedaction=true теряет своё зеркало, колбэк вызывается, маркер логируется; повтор после сброса флага — no-op", async () => {
+			const s = caldavSub({ id: "cd-1", pendingRedaction: true });
+			const path = mirrorPath(s, "GTD/Inbox.md");
+			const preseeded = buildMirrorFile([occ()], {
+				name: s.name,
+				subscriptionId: s.id,
+				idNamespace: `${s.accountId} ${s.collectionKey}`,
+			});
+			const { svc, vault, h } = makeService({ subs: [s] as unknown as IcsCalendarSub[] });
+			vault.files.set(path, preseeded);
+
+			await svc.redactPendingSubscriptions();
+
+			expect(vault.deletes).toContain(path);
+			expect(vault.files.has(path)).toBe(false);
+			expect(h.pendingRedactionCleared).toEqual(["cd-1"]);
+			expect(h.warnings.join("\n")).toContain(
+				"Redacted mirror for privacy-tightened subscription cd-1",
+			);
+
+			// Хост сбросил флаг (как и должен после успешного колбэка) — повторный
+			// проход больше ничего не трогает.
+			s.pendingRedaction = false;
+			const deletesBefore = vault.deletes.length;
+			await svc.redactPendingSubscriptions();
+			expect(vault.deletes.length).toBe(deletesBefore);
+		});
+
+		it("не делает НИ ОДНОГО сетевого/provider-вызова: работает без provider, и провайдер не вызывается даже если scopeExists возвращает false (§4.2 precedence)", async () => {
+			const provider = new FakeCaldavProvider(async () => [occ()]);
+			const s = caldavSub({ id: "cd-1", pendingRedaction: true, scopeId: "gone" });
+			const path = mirrorPath(s, "GTD/Inbox.md");
+			const preseeded = buildMirrorFile([occ()], { name: s.name, subscriptionId: s.id });
+			const { svc, vault } = makeService({
+				subs: [s] as unknown as IcsCalendarSub[],
+				provider,
+				accounts: [account()],
+				scopeExists: () => false, // scope_missing блокировал бы обычный sync — редакцию не блокирует
+			});
+			vault.files.set(path, preseeded);
+
+			await svc.redactPendingSubscriptions();
+
+			expect(provider.calls).toHaveLength(0); // ни одного сетевого вызова
+			expect(vault.files.has(path)).toBe(false);
+			expect(vault.deletes).toContain(path);
+		});
+
+		it("работает и когда credential/провайдер вовсе отсутствует (был бы credential_missing при обычном sync)", async () => {
+			const s = caldavSub({ id: "cd-1", pendingRedaction: true });
+			const path = mirrorPath(s, "GTD/Inbox.md");
+			const preseeded = buildMirrorFile([occ()], { name: s.name, subscriptionId: s.id });
+			// Ни provider, ни accounts не заданы — обычный sync получил бы skipped/error.
+			const { svc, vault } = makeService({ subs: [s] as unknown as IcsCalendarSub[] });
+			vault.files.set(path, preseeded);
+
+			await svc.redactPendingSubscriptions();
+
+			expect(vault.files.has(path)).toBe(false);
+			expect(vault.deletes).toContain(path);
+		});
+
+		it("полный проход: reconcileMirrors → redactPendingSubscriptions → syncAll — редакция ДО любой записи sync; pendingRedaction-подписка остаётся skipped в отчёте", async () => {
+			const pending = caldavSub({ id: "cd-1", pendingRedaction: true });
+			const healthyIcs = sub({ id: "ics-1", name: "Здоровый" });
+			const path = mirrorPath(pending, "GTD/Inbox.md");
+			const preseeded = buildMirrorFile([occ()], {
+				name: pending.name,
+				subscriptionId: pending.id,
+			});
+			const { svc, vault } = makeService({
+				subs: [healthyIcs, pending] as unknown as IcsCalendarSub[],
+			});
+			vault.files.set(path, preseeded);
+
+			await svc.reconcileMirrors();
+			await svc.redactPendingSubscriptions();
+			// Редакция уже случилась — ДО любой записи следующего syncAll().
+			expect(vault.files.has(path)).toBe(false);
+			expect(vault.writes).toBe(0);
+
+			const report = await svc.syncAll();
+			expect(report.subscriptions).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ id: "cd-1", status: "skipped" }),
+					expect.objectContaining({ id: "ics-1", status: "ok" }),
+				]),
+			);
+			expect(vault.writes).toBe(1); // только здоровая ics-подписка пишет
+			expect(vault.files.has(path)).toBe(false); // caldav-зеркало не воскресло
+		});
+
+		it("сбой onPendingRedactionCleared: маркер остаётся (нет краша, есть warn); повтор ретраит и trash, и колбэк", async () => {
+			const s = caldavSub({ id: "cd-1", pendingRedaction: true });
+			const path = mirrorPath(s, "GTD/Inbox.md");
+			const preseeded = buildMirrorFile([occ()], { name: s.name, subscriptionId: s.id });
+			let callbackCalls = 0;
+			const { svc, vault, h } = makeService({
+				subs: [s] as unknown as IcsCalendarSub[],
+				onPendingRedactionCleared: () => {
+					callbackCalls++;
+					throw new Error("persist failed");
+				},
+			});
+			vault.files.set(path, preseeded);
+
+			await expect(svc.redactPendingSubscriptions()).resolves.toBeUndefined();
+			expect(callbackCalls).toBe(1);
+			expect(vault.deletes).toContain(path); // trash уже произошёл, несмотря на сбой колбэка
+			expect(h.warnings.some((w) => w.includes("cd-1"))).toBe(true);
+
+			// Повтор: маркер (pendingRedaction) в этом тесте не меняется хостом (колбэк
+			// упал) — следующий проход снова пытается trash+callback с нуля.
+			vault.files.set(path, preseeded); // ре-сидим, чтобы доказать повторный trash
+			await svc.redactPendingSubscriptions();
+			expect(callbackCalls).toBe(2);
+			expect(vault.files.has(path)).toBe(false);
+		});
+	});
+
+	describe("caldavSourceKey", () => {
+		it("детерминирован, различается между парами (account, collection); не содержит подстрок входа", () => {
+			const k1 = caldavSourceKey("acc-1", "col-1");
+			expect(k1).toBe(caldavSourceKey("acc-1", "col-1"));
+			expect(k1).not.toBe(caldavSourceKey("acc-1", "col-2"));
+			expect(k1).not.toBe(caldavSourceKey("acc-2", "col-1"));
+			expect(k1).toMatch(/^[0-9a-z]{6,12}$/);
+			expect(k1).not.toContain("acc-1");
+			expect(k1).not.toContain("col-1");
+			expect(k1).not.toContain("col-2");
+			expect(k1).not.toContain("acc-2");
+		});
+	});
+
+	describe("reconcileMirrors — смена идентичности caldav-источника (§4.4)", () => {
+		it("mirror с ДРУГИМ gtd-external-source (сменился account/collection под тем же subscriptionId) — trashed + warn", async () => {
+			const s = caldavSub({ id: "cd-1", accountId: "acc-1", collectionKey: "col-1" });
+			const path = mirrorPath(s, "GTD/Inbox.md");
+			const oldKey = "differentkey"; // заведомо не равен caldavSourceKey(s.accountId, s.collectionKey)
+			expect(oldKey).not.toBe(caldavSourceKey(s.accountId, s.collectionKey));
+			const content =
+				'---\ngtd-events: true\ngtd-external: true\ngtd-external-name: "Работа"\n' +
+				`gtd-external-id: "cd-1"\ngtd-external-source: "${oldKey}"\n---\nold\n`;
+			const { svc, vault, h } = makeService({ subs: [s] as unknown as IcsCalendarSub[] });
+			vault.files.set(path, content);
+
+			await svc.reconcileMirrors();
+
+			expect(vault.files.has(path)).toBe(false);
+			expect(vault.deletes).toContain(path);
+			expect(h.warnings.join("\n")).toContain(
+				"Removed mirror of a replaced caldav source for subscription cd-1",
+			);
+		});
+
+		it("mirror с СОВПАДАЮЩИМ gtd-external-source — не трогается", async () => {
+			const s = caldavSub({ id: "cd-1", accountId: "acc-1", collectionKey: "col-1" });
+			const path = mirrorPath(s, "GTD/Inbox.md");
+			const key = caldavSourceKey(s.accountId, s.collectionKey);
+			const content =
+				'---\ngtd-events: true\ngtd-external: true\ngtd-external-name: "Работа"\n' +
+				`gtd-external-id: "cd-1"\ngtd-external-source: "${key}"\n---\nold\n`;
+			const { svc, vault } = makeService({ subs: [s] as unknown as IcsCalendarSub[] });
+			vault.files.set(path, content);
+
+			await svc.reconcileMirrors();
+
+			expect(vault.files.has(path)).toBe(true);
+			expect(vault.deletes).toEqual([]);
+		});
+
+		it("mirror БЕЗ строки gtd-external-source (legacy, до маркера) — не трогается", async () => {
+			const s = caldavSub({ id: "cd-1" });
+			const path = mirrorPath(s, "GTD/Inbox.md");
+			const content =
+				'---\ngtd-events: true\ngtd-external: true\ngtd-external-name: "Работа"\n' +
+				'gtd-external-id: "cd-1"\n---\nold\n';
+			const { svc, vault } = makeService({ subs: [s] as unknown as IcsCalendarSub[] });
+			vault.files.set(path, content);
+
+			await svc.reconcileMirrors();
+
+			expect(vault.files.has(path)).toBe(true);
+			expect(vault.deletes).toEqual([]);
+		});
+
+		it("ICS-подписка не проверяется по sourceKey вовсе (ожидаемый sourceKey для ics — null)", async () => {
+			const s = sub({ id: "ics-1", name: "Личный" });
+			const path = mirrorPath(s, "GTD/Inbox.md");
+			// Гипотетическая строка gtd-external-source на ics-зеркале (не должно
+			// такого быть в реальности) — reconcileMirrors всё равно её игнорирует,
+			// потому что подписка не caldav.
+			const content =
+				'---\ngtd-events: true\ngtd-external: true\ngtd-external-name: "Личный"\n' +
+				'gtd-external-id: "ics-1"\ngtd-external-source: "whatever"\n---\nold\n';
+			const { svc, vault } = makeService({ subs: [s] });
+			vault.files.set(path, content);
+
+			await svc.reconcileMirrors();
+
+			expect(vault.files.has(path)).toBe(true);
+			expect(vault.deletes).toEqual([]);
+		});
+	});
+
+	describe("performCaldavSync записывает gtd-external-source (§4.4)", () => {
+		it("happy path: зеркало содержит gtd-external-source с ожидаемым caldavSourceKey(accountId, collectionKey)", async () => {
+			const provider = new FakeCaldavProvider(async () => [occ()]);
+			const s = caldavSub({ id: "cd-1", accountId: "acc-1", collectionKey: "col-1" });
+			const { svc, vault } = makeService({
+				subs: [s] as unknown as IcsCalendarSub[],
+				provider,
+				accounts: [account()],
+			});
+			await svc.syncAll();
+			const path = mirrorPath(s, "GTD/Inbox.md");
+			const content = vault.files.get(path)!;
+			const expectedKey = caldavSourceKey(s.accountId, s.collectionKey);
+			expect(content).toContain(`gtd-external-source: "${expectedKey}"`);
+			// Порядок закреплён mirrorBuilder: сразу после gtd-external-id.
+			const lines = content.split("\n");
+			const idIdx = lines.findIndex((l) => l.startsWith("gtd-external-id:"));
+			expect(lines[idIdx + 1]).toBe(`gtd-external-source: "${expectedKey}"`);
+		});
 	});
 });

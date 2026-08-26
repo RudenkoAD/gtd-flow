@@ -390,10 +390,14 @@ export default class GtdFlowPlugin extends Plugin {
 							const frontmatter = metadata.frontmatter(file.path);
 							if (frontmatter?.["gtd-external"] !== true) return [];
 							const rawId = frontmatter["gtd-external-id"];
+							const rawSource = frontmatter["gtd-external-source"];
 							return [
 								{
 									path: file.path,
 									subscriptionId: typeof rawId === "string" ? rawId : null,
+									// Маркер идентичности caldav-источника (§4.4): reconcile
+									// сверяет его со текущим accountId/collectionKey подписки.
+									sourceKey: typeof rawSource === "string" ? rawSource : null,
 								},
 							];
 						}),
@@ -411,6 +415,16 @@ export default class GtdFlowPlugin extends Plugin {
 				inboxFile: () => this.settings.inboxFile,
 				intervalMin: () => this.settings.externalSyncIntervalMin,
 				onResult: (id, result) => this.recordSyncResult(id, result),
+				// Снятие durable-маркера pendingRedaction ПОСЛЕ успешной зачистки
+				// детального зеркала (§4.3 шаг 3). Идемпотентно; ошибка сохранения
+				// пробрасывается — SyncService оставит маркер и повторит на
+				// следующем проходе.
+				onPendingRedactionCleared: async (id) => {
+					const sub = this.settings.externalCalendars.find((s) => s.id === id);
+					if (sub === undefined || sub.kind !== "caldav" || !sub.pendingRedaction) return;
+					sub.pendingRedaction = false;
+					await this.saveSettings();
+				},
 				onLifecycleWarning: (message) => console.warn(`GTD Flow: ${message}`),
 			});
 		}

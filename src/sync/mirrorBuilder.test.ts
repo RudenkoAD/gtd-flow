@@ -244,3 +244,53 @@ describe("идентичность и scope v5 (CalDAV)", () => {
 		expect(taskLines(text)).toEqual([]);
 	});
 });
+
+describe("gtd-external-source — маркер идентичности caldav-источника (§4.4)", () => {
+	// Те же фиксированные вхождения, что и в регрессии байт-стабильности выше.
+	const legacyA = occ({ uid: "fixed-uid-A", recurrenceKey: "2026-07-06T10:00:00" });
+	const legacyB = occ({
+		uid: "fixed-uid-B",
+		recurrenceKey: "2026-07-13T09:00:00",
+		date: "2026-07-13",
+		startTime: "09:00",
+		endTime: "09:30",
+	});
+
+	it("непустой sourceKey добавляет ОДНУ строку gtd-external-source СРАЗУ ПОСЛЕ gtd-external-id", () => {
+		const text = buildMirrorFile([], {
+			name: "Работа",
+			subscriptionId: "cd-1",
+			sourceKey: "abc123",
+		});
+		const lines = text.split("\n");
+		const idIdx = lines.findIndex((l) => l.startsWith("gtd-external-id:"));
+		expect(idIdx).toBeGreaterThanOrEqual(0);
+		expect(lines[idIdx + 1]).toBe('gtd-external-source: "abc123"');
+		// ровно одна строка gtd-external-source во всём файле
+		expect(lines.filter((l) => l.startsWith("gtd-external-source:"))).toHaveLength(1);
+	});
+
+	it("РЕГРЕССИЯ БАЙТ-СТАБИЛЬНОСТИ: отсутствующий/null/пустой/пробельный sourceKey — байт-в-байт как без него (ICS-зеркала не перечитываются)", () => {
+		const legacy = buildMirrorFile([legacyA, legacyB], { name: "Работа" });
+		for (const sourceKey of [undefined, null, "", "   "]) {
+			const text = buildMirrorFile([legacyA, legacyB], { name: "Работа", sourceKey });
+			expect(text).not.toContain("gtd-external-source");
+			expect(text).toBe(legacy);
+		}
+	});
+
+	it("sourceKey экранируется как YAML-строка (кавычки/бэкслеши)", () => {
+		const text = buildMirrorFile([], {
+			name: "X",
+			subscriptionId: "cd-1",
+			sourceKey: 'a"b\\c',
+		});
+		expect(text).toContain('gtd-external-source: "a\\"b\\\\c"');
+	});
+
+	it("sourceKey без subscriptionId — не ломает сборку (id-строки нет, source по-прежнему валиден)", () => {
+		const text = buildMirrorFile([], { name: "X", sourceKey: "abc123" });
+		expect(text).not.toContain("gtd-external-id");
+		expect(text).toContain('gtd-external-source: "abc123"');
+	});
+});

@@ -20,6 +20,7 @@ import { ProjectService } from "./services/ProjectService";
 import { CardService } from "./services/CardService";
 import { DayStatusService } from "./services/DayStatusService";
 import type { SyncResult, SyncService } from "./sync/SyncService";
+import type { SecretStorageCredentials } from "./adapters/SecretStorageCredentials";
 import { applySyncResult } from "./settings/settingsFormat";
 import { registerCommands } from "./commands";
 import type { IsoDate } from "./core/model/Task";
@@ -83,6 +84,9 @@ export default class GtdFlowPlugin extends Plugin {
 	cards!: CardService;
 	dayStatus!: DayStatusService;
 	sync: SyncService | null = null;
+	/** Порт учётных данных CalDAV (SecretStorage); null на mobile и до composition.
+	 *  Нужен вкладке настроек (создание/обновление секрета, кэш href при discovery). */
+	caldavCredentials: SecretStorageCredentials | null = null;
 	scopes!: ScopeCatalogService;
 	/** Explicitly invoked one-time executor for legacy namespace → scope migration. */
 	namespaceMigration!: NamespaceMigrationService;
@@ -331,7 +335,28 @@ export default class GtdFlowPlugin extends Plugin {
 		// parser and timers out of Android startup entirely.
 		if (features.backgroundCalendarSync) {
 			const { SyncService: DesktopSyncService } = await import("./sync/SyncService");
+			// CalDAV-композиция: транспорт (node:http(s) с ручными редиректами),
+			// SecretStorage-порт учётных данных и провайдер вхождений — всё за тем
+			// же desktop-гейтом; на Android ни один из модулей не выполняется.
+			const [{ CalDavProvider }, { createNodeHttpAdapter }, secretsModule] =
+				await Promise.all([
+					import("./sync/caldav/caldavProvider"),
+					import("./sync/caldav/nodeHttpAdapter"),
+					import("./adapters/SecretStorageCredentials"),
+				]);
+			this.caldavCredentials = new secretsModule.SecretStorageCredentials(
+				secretsModule.secretStorageOf(this.app),
+				() => this.settings.caldavAccounts,
+			);
+			const caldavProvider = new CalDavProvider({
+				http: createNodeHttpAdapter(),
+				credentials: this.caldavCredentials,
+			});
 			this.sync = new DesktopSyncService({
+				caldavProvider,
+				// Гейт scope_missing (§4.2): архивный/удалённый scope блокирует
+				// обновление подписки, никогда не «расскоупливает» её молча.
+				scopeExists: (scopeId) => isActiveScopeId(this.scopes.current(), scopeId),
 				fetch: async (url, _signal) => {
 					// Obsidian's requestUrl has no AbortSignal support.  SyncService still
 					// applies a deadline and generation fence, so a late response cannot

@@ -2,6 +2,7 @@
 //  • src/core and src/services must not import Obsidian.
 //  • src/mcp must not import Obsidian.
 //  • src/widget must import neither Obsidian nor Node built-ins.
+//  • src/sync must not import Obsidian (network/vault arrive as ports).
 //
 // Import discovery uses the TypeScript parser rather than regular expressions so
 // side-effect imports, re-exports, require(), and dynamic import() are all covered.
@@ -30,6 +31,9 @@ const CHECKED = [
 	{ label: "services", dir: toDir("../src/services"), node: false },
 	{ label: "mcp", dir: toDir("../src/mcp"), node: false },
 	{ label: "widget", dir: toDir("../src/widget"), node: true },
+	// src/sync держит сетевую/парсинговую логику за структурными портами:
+	// Obsidian-адаптеры живут в composition root (main.ts), не здесь.
+	{ label: "sync", dir: toDir("../src/sync"), node: false },
 ];
 
 const NODE_NAMES = new Set(

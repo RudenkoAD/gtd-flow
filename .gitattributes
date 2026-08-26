@@ -3,3 +3,4 @@
 *.jpg binary
 src/sync/SyncService.ts text diff
 src/sync/mirrorBuilder.ts text diff
+src/sync/** text diff

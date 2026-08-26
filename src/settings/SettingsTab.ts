@@ -45,11 +45,19 @@ const WEEKDAYS: ReadonlyArray<{ value: number; label: string }> = [
 export class GtdSettingsTab extends PluginSettingTab {
 	private readonly plugin: GtdFlowPlugin;
 	private readonly desktopFeatures: boolean;
+	// Гейт секции внешних календарей: отдельный от desktopFeatures, чтобы
+	// календарная синхронизация не зависела от политики AI/desktop-видов.
+	private readonly calendarSync: boolean;
 
-	constructor(app: App, plugin: GtdFlowPlugin, options: { desktopFeatures?: boolean } = {}) {
+	constructor(
+		app: App,
+		plugin: GtdFlowPlugin,
+		options: { desktopFeatures?: boolean; calendarSync?: boolean } = {},
+	) {
 		super(app, plugin);
 		this.plugin = plugin;
 		this.desktopFeatures = options.desktopFeatures ?? true;
+		this.calendarSync = options.calendarSync ?? this.desktopFeatures;
 	}
 
 	display(): void {
@@ -60,7 +68,7 @@ export class GtdSettingsTab extends PluginSettingTab {
 		if (this.desktopFeatures) this.sectionAi(containerEl);
 		if (this.desktopFeatures) this.sectionProjects(containerEl);
 		this.sectionCalendar(containerEl);
-		if (this.desktopFeatures) this.sectionExternal(containerEl);
+		if (this.calendarSync) this.sectionExternal(containerEl);
 		if (this.desktopFeatures) this.sectionDefer(containerEl);
 		this.sectionRecurring(containerEl);
 		if (this.desktopFeatures) this.sectionCards(containerEl);
@@ -384,7 +392,7 @@ export class GtdSettingsTab extends PluginSettingTab {
 				commitOnBlur(text.inputEl, async () => {
 					const changed = await commitInboxFile(this.plugin.settings, text.getValue(), {
 						reconcile: () => {
-							if (this.desktopFeatures) {
+							if (this.calendarSync) {
 								this.plugin.desktopCalendarSync().configurationChanged();
 							}
 						},

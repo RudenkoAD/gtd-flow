@@ -29,10 +29,11 @@
     "check:svelte": "node scripts/check-svelte.mjs",
     "check:svelte:semantic": "svelte-check --tsconfig ./tsconfig.svelte.json",
     "check:packaged-plugin": "node scripts/check-packaged-plugin.mjs",
+    "check:secrets": "node scripts/check-secret-hygiene.mjs",
     "check:bundle-size": "node scripts/check-bundle-size.mjs",
     "verify:release": "node scripts/verify-release.mjs",
     "prepare:release": "node scripts/prepare-release.mjs",
-    "verify": "npm run lint && npm run format:check && npm run check:svelte && npm run check:svelte:semantic && npm run test:coverage && npm run test:browser && npm run build && npm run check:packaged-plugin && npm run check:bundle-size && npm run verify:release -- --artifacts",
+    "verify": "npm run lint && npm run format:check && npm run check:svelte && npm run check:svelte:semantic && npm run test:coverage && npm run test:browser && npm run build && npm run check:packaged-plugin && npm run check:secrets && npm run check:bundle-size && npm run verify:release -- --artifacts",
     "version": "node version-bump.mjs && git add manifest.json versions.json"
   },
   "keywords": [

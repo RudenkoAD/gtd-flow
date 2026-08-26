@@ -427,9 +427,15 @@ export default class GtdFlowPlugin extends Plugin {
 				reportAsync("сохранение версии AI-хранилища", () => this.saveSettings());
 			}
 		}
-		registerCommands(this, { desktopFeatures: features.desktopAi });
+		registerCommands(this, {
+			desktopFeatures: features.desktopAi,
+			calendarSync: features.backgroundCalendarSync,
+		});
 		this.addSettingTab(
-			new GtdSettingsTab(this.app, this, { desktopFeatures: features.desktopAi }),
+			new GtdSettingsTab(this.app, this, {
+				desktopFeatures: features.desktopAi,
+				calendarSync: features.backgroundCalendarSync,
+			}),
 		);
 		// Первичная сборка — вне критического пути старта, строго после
 		// onLayoutReady И полного resolve кэша метаданных (ТЗ §2): до resolve

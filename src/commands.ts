@@ -29,6 +29,12 @@ import type { ProcessInboxSummary } from "./ai/processing/InboxProcessor";
 
 export interface CommandRegistrationOptions {
 	desktopFeatures?: boolean;
+	/**
+	 * Гейт внешней синхронизации календарей. Отдельно от desktopFeatures,
+	 * чтобы календарная синхронизация не зависела от политики AI-фич;
+	 * по умолчанию наследует desktopFeatures.
+	 */
+	calendarSync?: boolean;
 }
 
 export function registerCommands(
@@ -62,19 +68,21 @@ export function registerCommands(
 			}),
 	});
 
+	if ((options.calendarSync ?? options.desktopFeatures) !== false) {
+		plugin.addCommand({
+			id: "sync-external-calendars",
+			name: "Синхронизировать внешние календари",
+			callback: () =>
+				reportAsync("синхронизация внешних календарей не выполнена", () =>
+					syncExternalCalendars(plugin),
+				),
+		});
+	}
+
 	// Android MVP intentionally exposes only commands backed by its registered
 	// Inbox/Calendar/Recurring surface. In particular, no AI callback is ever
 	// registered against the absent desktop composition root.
 	if (options.desktopFeatures === false) return;
-
-	plugin.addCommand({
-		id: "sync-external-calendars",
-		name: "Синхронизировать внешние календари",
-		callback: () =>
-			reportAsync("синхронизация внешних календарей не выполнена", () =>
-				syncExternalCalendars(plugin),
-			),
-	});
 
 	plugin.addCommand({
 		id: "migrate-legacy-namespaces",

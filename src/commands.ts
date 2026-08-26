@@ -563,8 +563,22 @@ async function syncExternalCalendars(plugin: GtdFlowPlugin): Promise<void> {
 		return;
 	}
 	new Notice("GTD Flow: синхронизация внешних календарей…");
-	await plugin.desktopCalendarSync().syncAll();
-	new Notice("GTD Flow: синхронизация внешних календарей завершена");
+	// Терминальный отчёт (§10): dispatch не есть успех — уведомление обязано
+	// различать ok/partial/error и не имеет права показывать сырые ошибки.
+	const report = await plugin.desktopCalendarSync().syncAll();
+	const failed = report.subscriptions.filter((s) => s.status === "error").length;
+	const attempted = report.subscriptions.filter((s) => s.status !== "skipped").length;
+	if (report.status === "ok") {
+		new Notice(
+			`GTD Flow: синхронизация завершена (обновлено зеркал: ${report.changedMirrors})`,
+		);
+	} else if (report.status === "partial") {
+		new Notice(
+			`GTD Flow: синхронизация выполнена частично — с ошибкой ${failed} из ${attempted} подписок (см. настройки)`,
+		);
+	} else {
+		new Notice("GTD Flow: синхронизация не удалась — все подписки с ошибками (см. настройки)");
+	}
 }
 
 async function resumeNamespaceMigration(plugin: GtdFlowPlugin, id: string): Promise<void> {

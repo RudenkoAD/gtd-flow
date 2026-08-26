@@ -22,10 +22,12 @@ import {
 	commitInboxFile,
 	commitSubName,
 	formatDeferPresets,
+	formatSyncStatus,
 	parseDeferPresets,
 	parseIntInRange,
 	reorderCalendarPlacement,
 } from "./settingsFormat";
+import { NEVER_ATTEMPTED_STATUS } from "../sync/externalSyncStatus";
 import { reportAsync } from "../views/common/runAction";
 import { confirm } from "../views/common/ConfirmModal";
 import { recreateScopeCatalogWithConfirm } from "../views/common/scopeRecovery";
@@ -613,6 +615,14 @@ export class GtdSettingsTab extends PluginSettingTab {
 			);
 	}
 
+	/** Runtime-статус подписки текущего процесса (или «не было попыток», когда
+	 *  сервис синхронизации не составлен — секция тогда и не рендерится). */
+	private syncRuntime(sub: ActiveCalendarSub) {
+		return this.calendarSync
+			? this.plugin.desktopCalendarSync().runtimeStatus(sub.id)
+			: NEVER_ATTEMPTED_STATUS;
+	}
+
 	/**
 	 * Повреждённая запись подписки (не прошла схему при загрузке): не синкается
 	 * и не активируется; пользователь может только удалить её. Зеркало записи
@@ -647,7 +657,7 @@ export class GtdSettingsTab extends PluginSettingTab {
 	private renderCaldavSubStub(el: HTMLElement, sub: CalDavCalendarSub): void {
 		new Setting(el)
 			.setName(sub.name.trim() === "" ? "(без имени)" : sub.name)
-			.setDesc(`CalDAV-коллекция: ${formatSyncStatus(sub)}`);
+			.setDesc(`CalDAV-коллекция: ${formatSyncStatus(sub, this.syncRuntime(sub))}`);
 	}
 
 	/** One subscription: name, status, and controls; feed URL is on the next row.
@@ -655,7 +665,7 @@ export class GtdSettingsTab extends PluginSettingTab {
 	private renderExternalSub(el: HTMLElement, sub: IcsCalendarSub): void {
 		const row = new Setting(el)
 			.setName(sub.name.trim() === "" ? "(без имени)" : sub.name)
-			.setDesc(formatSyncStatus(sub));
+			.setDesc(formatSyncStatus(sub, this.syncRuntime(sub)));
 
 		row.addText((t) => {
 			t.setPlaceholder("Имя");
@@ -1044,14 +1054,6 @@ function commitOnBlur(inputEl: HTMLInputElement, commit: () => void | Promise<vo
 }
 
 /** Человекочитаемый статус подписки для описания строки. */
-function formatSyncStatus(sub: ActiveCalendarSub): string {
-	if (sub.errorCode !== null) return `⚠ ошибка: ${sub.errorCode}`;
-	if (sub.lastError !== null) return `⚠ ошибка: ${sub.lastError}`;
-	if (sub.lastSyncAt === null) return "ещё не синхронизировалось";
-	const d = new Date(sub.lastSyncAt);
-	const p = (n: number): string => String(n).padStart(2, "0");
-	return `обновлено ${p(d.getHours())}:${p(d.getMinutes())} ${p(d.getDate())}.${p(d.getMonth() + 1)}`;
-}
 
 /**
  * Read-only, bounded view over the service-sanitized learning history. The

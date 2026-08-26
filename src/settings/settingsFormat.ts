@@ -2,7 +2,13 @@
  * Чистые парсеры/форматтеры вкладки настроек: текст полей ↔ модель Settings.
  * Без obsidian — тестируется в node (см. settingsFormat.test.ts).
  */
-import type { CalendarField, DeferPreset } from "./Settings";
+import type { ActiveCalendarSub, CalendarField, DeferPreset } from "./Settings";
+import type { SyncResult } from "../sync/SyncService";
+import {
+	DEVICE_LOCAL_ERROR_CODES,
+	type ExternalRuntimeStatus,
+	type ExternalSyncErrorCode,
+} from "../sync/externalSyncStatus";
 
 /** Путь-на-строку → список путей: обрезка пробелов, пустые строки отбрасываются. */
 export function parsePathList(text: string): string[] {
@@ -154,4 +160,96 @@ export async function commitSubName(
 	sub.name = value;
 	await ports.save();
 	return true;
+}
+
+// ── Статус внешней синхронизации (v5, санитизированный) ─────────────────────
+
+/**
+ * Применить итог синхронизации к персистентному статусу подписки.
+ * Возвращает true, когда статус изменился и требуется сохранение.
+ *
+ * Инварианты §5.1/§5.2 CalDAV-заказа:
+ * - сырой текст (detail) НИКОГДА не персистится — только код;
+ * - device-local коды (credential_missing и т.п.) не пишутся в общий
+ *   data.json вовсе: локальная проблема этого устройства не имеет права
+ *   затирать durable-статус успешной синхронизации другого устройства;
+ * - lastError (легаси до v5) всегда обнуляется.
+ */
+export function applySyncResult(sub: ActiveCalendarSub, result: SyncResult): boolean {
+	if (result.ok) {
+		if (sub.lastSyncAt === result.at && sub.lastError === null && sub.errorCode === null)
+			return false;
+		sub.lastSyncAt = result.at;
+		sub.lastError = null;
+		sub.errorCode = null;
+		return true;
+	}
+	if (DEVICE_LOCAL_ERROR_CODES.has(result.code)) return false;
+	if (sub.errorCode === result.code && sub.lastError === null) return false;
+	sub.errorCode = result.code;
+	sub.lastError = null;
+	return true;
+}
+
+/** Короткая безопасная подсказка по коду ошибки (без сырых данных). */
+export function describeSyncErrorCode(code: ExternalSyncErrorCode): string {
+	switch (code) {
+		case "credential_missing":
+			return "нет учётных данных на этом устройстве — настройте секрет";
+		case "authentication_failed":
+			return "авторизация отклонена — переподключите аккаунт";
+		case "forbidden":
+			return "доступ запрещён сервером";
+		case "discovery_failed":
+			return "не удалось обнаружить календари на сервере";
+		case "collection_missing":
+			return "коллекция не найдена — выполните повторное обнаружение";
+		case "scope_missing":
+			return "настроенный scope недоступен — обновление заблокировано";
+		case "rate_limited":
+			return "сервер ограничил частоту запросов — повтор в следующем проходе";
+		case "network_error":
+			return "сетевая ошибка — повтор в следующем проходе";
+		case "timeout":
+			return "тайм-аут запроса";
+		case "invalid_xml":
+			return "некорректный ответ сервера (XML)";
+		case "invalid_calendar_data":
+			return "некорректные данные календаря";
+		case "response_too_large":
+			return "ответ сервера превышает лимит";
+		case "unsupported_server":
+			return "сервер не поддерживает требуемые операции CalDAV";
+		case "unknown":
+			return "ошибка синхронизации (подробности в консоли разработчика)";
+	}
+}
+
+/**
+ * Текст статуса подписки для вкладки настроек (§9: различимые состояния).
+ * Runtime-статус текущего процесса приоритетнее персистентного: он видит
+ * «синхронизируется…» и device-local коды, которых в data.json нет.
+ */
+export function formatSyncStatus(
+	sub: Pick<ActiveCalendarSub, "lastSyncAt" | "lastError" | "errorCode">,
+	runtime: ExternalRuntimeStatus,
+): string {
+	if (runtime.state === "syncing") return "синхронизируется…";
+	if (runtime.state === "error")
+		return `⚠ ${describeSyncErrorCode(runtime.errorCode ?? "unknown")}`;
+	const stamp = (at: number): string => {
+		const d = new Date(at);
+		const p = (n: number): string => String(n).padStart(2, "0");
+		return `${p(d.getHours())}:${p(d.getMinutes())} ${p(d.getDate())}.${p(d.getMonth() + 1)}`;
+	};
+	if (runtime.state === "okChanged" && sub.lastSyncAt !== null)
+		return `обновлено ${stamp(sub.lastSyncAt)}`;
+	if (runtime.state === "okUnchanged" && sub.lastSyncAt !== null)
+		return `обновлено ${stamp(sub.lastSyncAt)} (без изменений)`;
+	// neverAttempted в этом процессе — показываем персистентный статус.
+	if (sub.errorCode !== null) return `⚠ ${describeSyncErrorCode(sub.errorCode)}`;
+	// Легаси-текст ошибки (до v5) не рендерится сырым — только безопасная фраза.
+	if (sub.lastError !== null) return `⚠ ${describeSyncErrorCode("unknown")}`;
+	if (sub.lastSyncAt === null) return "ещё не синхронизировалось";
+	return `обновлено ${stamp(sub.lastSyncAt)}`;
 }

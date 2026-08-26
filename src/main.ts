@@ -20,6 +20,7 @@ import { ProjectService } from "./services/ProjectService";
 import { CardService } from "./services/CardService";
 import { DayStatusService } from "./services/DayStatusService";
 import type { SyncResult, SyncService } from "./sync/SyncService";
+import { applySyncResult } from "./settings/settingsFormat";
 import { registerCommands } from "./commands";
 import type { IsoDate } from "./core/model/Task";
 import { createTaskStore, type TaskStore } from "./stores/taskStore";
@@ -583,20 +584,13 @@ export default class GtdFlowPlugin extends Plugin {
 	}
 
 	/** Записать статус синхронизации подписки (SyncService.onResult) + персист, если
-	 *  что-то изменилось (лишний saveData будит sync-клиент data.json впустую). */
+	 *  что-то изменилось (лишний saveData будит sync-клиент data.json впустую).
+	 *  Персистится ТОЛЬКО санитизированный код: сырой detail остаётся в
+	 *  console-диагностике SyncService, device-local коды не персистятся вовсе. */
 	private recordSyncResult(id: string, result: SyncResult): void {
 		const sub = this.settings.externalCalendars.find((s) => s.id === id);
 		if (sub === undefined || sub.kind === "invalid") return;
-		if (result.ok) {
-			if (sub.lastSyncAt === result.at && sub.lastError === null && sub.errorCode === null)
-				return;
-			sub.lastSyncAt = result.at;
-			sub.lastError = null;
-			sub.errorCode = null;
-		} else {
-			if (sub.lastError === result.error) return;
-			sub.lastError = result.error;
-		}
+		if (!applySyncResult(sub, result)) return;
 		reportAsync("сохранение статуса синхронизации", () => this.saveSettings());
 	}
 

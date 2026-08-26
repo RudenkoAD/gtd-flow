@@ -11,7 +11,15 @@
  */
 import type { ActiveCalendarSub, CalDavAccount } from "../settings/Settings";
 import { buildMirrorFile } from "./mirrorBuilder";
-import { mirrorWindow, parseIcs } from "./icsParse";
+import { IcsBudgetError, mirrorWindow, parseIcs } from "./icsParse";
+import {
+	ExternalSyncError,
+	NEVER_ATTEMPTED_STATUS,
+	type ExternalRuntimeStatus,
+	type ExternalSubscriptionReport,
+	type ExternalSyncErrorCode,
+	type ExternalSyncReport,
+} from "./externalSyncStatus";
 
 /** Минимум, от которого детерминирован путь зеркала: стабильный id + имя. */
 export interface MirrorPathSource {
@@ -19,8 +27,14 @@ export interface MirrorPathSource {
 	name: string;
 }
 
-/** Итог синхронизации одной подписки (пишется в статус). */
-export type SyncResult = { ok: true; at: number } | { ok: false; error: string };
+/**
+ * Итог синхронизации одной подписки (пишется в статус).
+ * `detail` — сырой текст ТОЛЬКО для console-диагностики: main обязан
+ * персистить исключительно `code` (см. applySyncResult), а detail никогда не
+ * попадает в data.json/Notice/UI.
+ */
+export type SyncResult =
+	{ ok: true; at: number } | { ok: false; code: ExternalSyncErrorCode; detail: string };
 
 /** Порт хранилища: чтение и создание-или-перезапись файла целиком. */
 export interface SyncVaultPort {
@@ -140,8 +154,15 @@ function underInboxParent(inboxFile: string, child: string): string {
 
 function errMessage(e: unknown): string {
 	const msg = e instanceof Error ? e.message : String(e);
-	// статус — короткая строка в настройках; длинные тела ответов не тащим
+	// console-диагностика — короткая строка; длинные тела ответов не тащим
 	return msg.length > 200 ? msg.slice(0, 197) + "…" : msg;
+}
+
+/** Классификация нетипизированных исключений legacy-ICS-пути. */
+function classifyCode(e: unknown): ExternalSyncErrorCode {
+	if (e instanceof ExternalSyncError) return e.code;
+	if (e instanceof IcsBudgetError) return "invalid_calendar_data";
+	return "unknown";
 }
 
 /** Убрать все \r (для сравнения диска и генерируемого контента без CRLF-шума). */
@@ -155,18 +176,53 @@ interface SyncContext {
 	inboxFile: string;
 }
 
+/** Внутренний итог одной подписки в проходе; агрегируется в ExternalSyncReport. */
+interface SubOutcome extends ExternalSubscriptionReport {
+	changed: boolean;
+}
+
+function emptyReport(at: number): ExternalSyncReport {
+	return { status: "ok", startedAt: at, finishedAt: at, changedMirrors: 0, subscriptions: [] };
+}
+
+/** Агрегация §10: error — все затронутые подписки упали; partial — часть. */
+function buildReport(
+	startedAt: number,
+	finishedAt: number,
+	outcomes: SubOutcome[],
+): ExternalSyncReport {
+	const attempted = outcomes.filter((o) => o.status !== "skipped");
+	const failed = attempted.filter((o) => o.status === "error");
+	const status =
+		failed.length === 0 ? "ok" : failed.length === attempted.length ? "error" : "partial";
+	return {
+		status,
+		startedAt,
+		finishedAt,
+		changedMirrors: outcomes.filter((o) => o.changed).length,
+		subscriptions: outcomes.map(({ changed: _changed, ...report }) => report),
+	};
+}
+
 export class SyncService {
 	private timer: ReturnType<typeof setTimeout> | null = null;
 	private reconcileTimer: ReturnType<typeof setTimeout> | null = null;
-	private activeSyncAll: Promise<void> | null = null;
+	private activeSyncAll: Promise<ExternalSyncReport> | null = null;
 	private disposed = false;
+	/** Runtime-статусы подписок ЭТОГО процесса (§9 UI-состояния; не персистятся).
+	 *  Сюда попадают и device-local коды (credential_missing), которым запрещён
+	 *  путь в общий data.json. */
+	private readonly runtime = new Map<string, ExternalRuntimeStatus>();
 	/** Any settings/path mutation bumps this fence.  A stale async operation can
 	 * finish, but cannot write or report success after the fence moved. */
 	private configGeneration = 0;
 	/** Deleted ids stay fenced even if their old object remains temporarily in a
 	 * settings array while the vault trash operation awaits. */
 	private readonly tombstones = new Set<string>();
-	private readonly inFlight = new Map<string, { generation: number; promise: Promise<void> }>();
+	private readonly inFlight = new Map<
+		string,
+		{ generation: number; promise: Promise<SubOutcome> }
+	>();
 	private readonly aborters = new Map<string, AbortController>();
 	/** Fallback reconciliation for hosts that cannot enumerate managed mirrors. */
 	private readonly knownMirrorPaths = new Map<string, string>();
@@ -196,16 +252,27 @@ export class SyncService {
 		this.aborters.clear();
 	}
 
+	/** Санитизированный runtime-статус подписки для UI/автоматизации: только
+	 *  состояние + код, никаких сырых строк. */
+	runtimeStatus(id: string): ExternalRuntimeStatus {
+		return this.runtime.get(id) ?? NEVER_ATTEMPTED_STATUS;
+	}
+
 	/** Синхронизировать ВСЕ подписки (команда палитры / кнопка «Синхронизировать сейчас»).
 	 *  Перекрывающиеся вызовы разделяют ОДИН и тот же Promise: второй вызывающий
-	 *  действительно ждёт результат, а не получает ложный «no-op». */
-	async syncAll(): Promise<void> {
-		if (this.disposed) return;
+	 *  действительно ждёт результат, а не получает ложный «no-op».
+	 *  Возвращает ТЕРМИНАЛЬНЫЙ отчёт (§10): отчёт описывает финальный проход
+	 *  последнего стабильного поколения конфигурации — dispatch не есть успех. */
+	async syncAll(): Promise<ExternalSyncReport> {
+		if (this.disposed) return emptyReport(this.deps.clock.now().getTime());
 		if (this.activeSyncAll !== null) return this.activeSyncAll;
+		const startedAt = this.deps.clock.now().getTime();
 		// One shared run drains configuration generations: if settings change
 		// while an old snapshot is syncing, callers keep awaiting this same
 		// promise until a fresh current-generation pass has also completed.
-		const run = this.runAllUntilCurrentConfiguration();
+		const run = this.runAllUntilCurrentConfiguration().then((outcomes) =>
+			buildReport(startedAt, this.deps.clock.now().getTime(), outcomes),
+		);
 		this.activeSyncAll = run;
 		const clearActive = (): void => {
 			if (this.activeSyncAll === run) this.activeSyncAll = null;
@@ -217,10 +284,13 @@ export class SyncService {
 	}
 
 	/** Синхронизировать ОДНУ подписку по id (кнопка per-подписка в настройках).
-	 *  Гонки с тиком/повторным кликом снимает per-sub гейт внутри syncOne. */
-	async syncById(id: string): Promise<void> {
+	 *  Гонки с тиком/повторным кликом снимает per-sub гейт внутри syncOne.
+	 *  Возвращает терминальную запись отчёта; null — подписка неизвестна/удалена. */
+	async syncById(id: string): Promise<ExternalSubscriptionReport | null> {
 		const sub = this.deps.subscriptions().find((s) => s.id === id);
-		if (sub !== undefined && !this.tombstones.has(id)) await this.syncOne({ ...sub });
+		if (sub === undefined || this.tombstones.has(id)) return null;
+		const { changed: _changed, ...report } = await this.syncOne({ ...sub });
+		return report;
 	}
 
 	/** Call after any setting that can change a mirror target or feed identity.
@@ -359,7 +429,7 @@ export class SyncService {
 		}
 	}
 
-	private async runAll(): Promise<void> {
+	private async runAll(): Promise<SubOutcome[]> {
 		const subs = this.deps.subscriptions().map((sub) => ({ ...sub }));
 		const requested = Math.floor(
 			this.deps.maxConcurrentFeeds?.() ?? DEFAULT_MAX_CONCURRENT_FEEDS,
@@ -368,29 +438,44 @@ export class SyncService {
 			? Math.max(1, Math.min(8, requested))
 			: DEFAULT_MAX_CONCURRENT_FEEDS;
 		let cursor = 0;
+		const outcomes: SubOutcome[] = [];
 		const worker = async (): Promise<void> => {
 			while (!this.disposed) {
 				const sub = subs[cursor++];
 				if (sub === undefined) return;
-				await this.syncOne(sub);
+				outcomes.push(await this.syncOne(sub));
 			}
 		};
 		await Promise.allSettled(
 			Array.from({ length: Math.min(limit, subs.length) }, () => worker()),
 		);
+		return outcomes;
 	}
 
-	/** Complete at least one pass for the latest stable configuration. */
-	private async runAllUntilCurrentConfiguration(): Promise<void> {
+	/** Complete at least one pass for the latest stable configuration. Отчёт
+	 * строится по ФИНАЛЬНОМУ проходу: устаревшие поколения дренируются молча. */
+	private async runAllUntilCurrentConfiguration(): Promise<SubOutcome[]> {
 		while (!this.disposed) {
 			const generation = this.configGeneration;
-			await this.runAll();
-			if (generation === this.configGeneration) return;
+			const outcomes = await this.runAll();
+			if (generation === this.configGeneration) return outcomes;
 		}
+		return [];
 	}
 
-	private syncOne(sub: ActiveCalendarSub): Promise<void> {
-		if (this.disposed || this.tombstones.has(sub.id)) return Promise.resolve();
+	private skippedOutcome(sub: ActiveCalendarSub): SubOutcome {
+		return {
+			id: sub.id,
+			status: "skipped",
+			lastSuccessAt: sub.lastSyncAt,
+			errorCode: null,
+			changed: false,
+		};
+	}
+
+	private syncOne(sub: ActiveCalendarSub): Promise<SubOutcome> {
+		if (this.disposed || this.tombstones.has(sub.id))
+			return Promise.resolve(this.skippedOutcome(sub));
 		const existing = this.inFlight.get(sub.id);
 		if (existing !== undefined && existing.generation === this.configGeneration)
 			return existing.promise;
@@ -399,7 +484,18 @@ export class SyncService {
 			generation: this.configGeneration,
 			inboxFile: this.deps.inboxFile(),
 		};
-		const promise = this.performSync(context);
+		// «syncing» выставляется только при реальном запуске; skipped-исход
+		// возвращает прежнее состояние, чтобы не затирать последний результат.
+		const previous = this.runtime.get(sub.id) ?? null;
+		this.runtime.set(sub.id, {
+			state: "syncing",
+			errorCode: null,
+			lastAttemptAt: this.deps.clock.now().getTime(),
+		});
+		const promise = this.performSync(context).then((outcome) => {
+			this.applyRuntimeOutcome(sub.id, outcome, previous);
+			return outcome;
+		});
 		this.inFlight.set(sub.id, { generation: context.generation, promise });
 		const clearInFlight = (): void => {
 			if (this.inFlight.get(sub.id)?.promise === promise) this.inFlight.delete(sub.id);
@@ -408,43 +504,101 @@ export class SyncService {
 		return promise;
 	}
 
-	private async performSync(context: SyncContext): Promise<void> {
+	private applyRuntimeOutcome(
+		id: string,
+		outcome: SubOutcome,
+		previous: ExternalRuntimeStatus | null,
+	): void {
+		const current = this.runtime.get(id);
+		const lastAttemptAt = current?.lastAttemptAt ?? this.deps.clock.now().getTime();
+		if (outcome.status === "skipped") {
+			// Пропуск (fence/провайдер ещё не поддержан) не является попыткой:
+			// вернуть прежнее наблюдаемое состояние.
+			if (previous === null) this.runtime.delete(id);
+			else this.runtime.set(id, previous);
+			return;
+		}
+		if (outcome.status === "error") {
+			this.runtime.set(id, { state: "error", errorCode: outcome.errorCode, lastAttemptAt });
+			return;
+		}
+		this.runtime.set(id, {
+			state: outcome.status === "ok" ? "okChanged" : "okUnchanged",
+			errorCode: null,
+			lastAttemptAt,
+		});
+	}
+
+	private async performSync(context: SyncContext): Promise<SubOutcome> {
 		const { sub } = context;
 		// CalDAV-провайдер появляется на этапе 4; до него caldav-подписка не
-		// делает ни сетевых запросов, ни записей (этап 2 даст ей отчёт "skipped").
-		if (sub.kind === "caldav") return;
+		// делает ни сетевых запросов, ни записей и отчитывается "skipped".
+		if (sub.kind === "caldav") return this.skippedOutcome(sub);
 		try {
 			const raw = sub.url.trim();
-			if (raw === "") throw new Error("не задан адрес ленты");
+			if (raw === "") throw new ExternalSyncError("unknown", "не задан адрес ленты");
 			// webcal:// — тот же HTTP(S)-ресурс под iCal-схемой «Подписаться» (Apple/Google):
 			// нормализуем к https перед сетевым запросом (requestUrl схему webcal не понимает).
 			const url = raw.replace(/^webcal:\/\//i, "https://");
-			const text = await this.fetchWithDeadline(sub.id, url);
-			if (!this.isCurrent(context)) return;
-			const occurrences = parseIcs(text, mirrorWindow(this.deps.clock.now()));
-			if (!this.isCurrent(context)) return;
+			const text = await this.fetchWithDeadline(sub.id, url).catch((e: unknown) => {
+				throw e instanceof ExternalSyncError
+					? e
+					: new ExternalSyncError("network_error", errMessage(e));
+			});
+			if (!this.isCurrent(context)) return this.skippedOutcome(sub);
+			let occurrences;
+			try {
+				occurrences = parseIcs(text, mirrorWindow(this.deps.clock.now()));
+			} catch (e) {
+				throw new ExternalSyncError("invalid_calendar_data", errMessage(e));
+			}
+			if (!this.isCurrent(context)) return this.skippedOutcome(sub);
 			const content = buildMirrorFile(occurrences, {
 				name: sub.name,
 				subscriptionId: sub.id,
 			});
 			const path = mirrorPath(sub, context.inboxFile);
 			const current = await this.deps.vault.read(path);
-			if (!this.isCurrent(context)) return;
+			if (!this.isCurrent(context)) return this.skippedOutcome(sub);
 			// запись ТОЛЬКО при изменении — не будим Remotely Save на неизменной ленте.
 			// Сравниваем без \r: диск мог прийти с CRLF (другой клиент/устройство), а мы
 			// всегда пишем LF — иначе бесконечная «перезапись» эквивалентного контента.
-			if (current === null || stripCr(current) !== stripCr(content)) {
+			const changed = current === null || stripCr(current) !== stripCr(content);
+			if (changed) {
 				await this.deps.vault.write(path, content);
 			}
 			if (!this.isCurrent(context)) {
 				await this.cleanupStaleWrite(sub.id, path);
-				return;
+				return this.skippedOutcome(sub);
 			}
 			this.knownMirrorPaths.set(sub.id, path);
-			this.deps.onResult(sub.id, { ok: true, at: this.deps.clock.now().getTime() });
+			const at = this.deps.clock.now().getTime();
+			this.deps.onResult(sub.id, { ok: true, at });
+			return {
+				id: sub.id,
+				status: changed ? "ok" : "unchanged",
+				lastSuccessAt: at,
+				errorCode: null,
+				changed,
+			};
 		} catch (e) {
-			if (!this.isCurrent(context)) return;
-			this.deps.onResult(sub.id, { ok: false, error: errMessage(e) });
+			if (!this.isCurrent(context)) return this.skippedOutcome(sub);
+			const error =
+				e instanceof ExternalSyncError
+					? e
+					: new ExternalSyncError(classifyCode(e), errMessage(e));
+			// Сырой текст — только в console-диагностику; персист и UI видят код.
+			this.warn(
+				`external sync failed for subscription ${sub.id} [${error.code}]: ${error.message}`,
+			);
+			this.deps.onResult(sub.id, { ok: false, code: error.code, detail: error.message });
+			return {
+				id: sub.id,
+				status: "error",
+				lastSuccessAt: sub.lastSyncAt,
+				errorCode: error.code,
+				changed: false,
+			};
 		}
 	}
 
@@ -493,7 +647,12 @@ export class SyncService {
 			return await new Promise<string>((resolve, reject) => {
 				timer = setTimeout(() => {
 					controller.abort();
-					reject(new Error(`calendar feed timed out after ${requestedTimeout}ms`));
+					reject(
+						new ExternalSyncError(
+							"timeout",
+							`calendar feed timed out after ${requestedTimeout}ms`,
+						),
+					);
 				}, requestedTimeout);
 				requested.then(resolve, reject);
 			});

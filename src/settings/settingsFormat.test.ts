@@ -3,7 +3,8 @@
  * CRLF, лишние пробелы и частично невалидные строки — штатный вход.
  */
 import { describe, expect, it, vi } from "vitest";
-import { DEFAULT_SETTINGS } from "./Settings";
+import { DEFAULT_SETTINGS, type IcsCalendarSub } from "./Settings";
+import { EXTERNAL_SYNC_ERROR_CODES, NEVER_ATTEMPTED_STATUS } from "../sync/externalSyncStatus";
 import {
 	commitInboxFile,
 	commitSubName,
@@ -14,6 +15,9 @@ import {
 	parsePathList,
 	planSubNameCommit,
 	reorderCalendarPlacement,
+	applySyncResult,
+	describeSyncErrorCode,
+	formatSyncStatus,
 } from "./settingsFormat";
 
 describe("parsePathList / formatPathList", () => {
@@ -259,5 +263,100 @@ describe("commitInboxFile", () => {
 		expect(settings.inboxFile).toBe("GTD/Inbox.md");
 		expect(reconcile).not.toHaveBeenCalled();
 		expect(save).not.toHaveBeenCalled();
+	});
+});
+
+describe("applySyncResult — санитизированный персист статуса (§5.1/§5.2)", () => {
+	const freshSub = (): IcsCalendarSub => ({
+		id: "s1",
+		name: "X",
+		url: "https://example/a.ics",
+		lastSyncAt: null,
+		lastError: "легаси текст со старой версии",
+		errorCode: null,
+	});
+
+	it("успех: ставит lastSyncAt, чистит errorCode и легаси lastError", () => {
+		const sub = freshSub();
+		expect(applySyncResult(sub, { ok: true, at: 42 })).toBe(true);
+		expect(sub).toMatchObject({ lastSyncAt: 42, lastError: null, errorCode: null });
+		// Повтор того же успеха — сохранение не нужно.
+		expect(applySyncResult(sub, { ok: true, at: 42 })).toBe(false);
+	});
+
+	it("ошибка: персистится ТОЛЬКО код; сырой detail не попадает в подписку", () => {
+		const sub = freshSub();
+		const changed = applySyncResult(sub, {
+			ok: false,
+			code: "network_error",
+			detail: "https://secret.example/token?x=1 500 Internal",
+		});
+		expect(changed).toBe(true);
+		expect(sub.errorCode).toBe("network_error");
+		expect(sub.lastError).toBeNull();
+		expect(JSON.stringify(sub)).not.toContain("secret.example");
+		// Тот же код повторно — без сохранения.
+		expect(
+			applySyncResult(sub, { ok: false, code: "network_error", detail: "другой текст" }),
+		).toBe(false);
+	});
+
+	it("device-local коды не персистятся и не затирают durable-статус", () => {
+		const sub = freshSub();
+		sub.lastSyncAt = 100;
+		sub.lastError = null;
+		for (const code of ["credential_missing", "authentication_failed"] as const) {
+			expect(applySyncResult(sub, { ok: false, code, detail: "" })).toBe(false);
+			expect(sub.errorCode).toBeNull();
+			expect(sub.lastSyncAt).toBe(100);
+		}
+	});
+});
+
+describe("describeSyncErrorCode / formatSyncStatus — §9 состояния", () => {
+	it("каждый код замкнутого списка имеет непустую безопасную подсказку", () => {
+		for (const code of EXTERNAL_SYNC_ERROR_CODES) {
+			const hint = describeSyncErrorCode(code);
+			expect(hint.length).toBeGreaterThan(3);
+			expect(hint).not.toContain("http");
+		}
+	});
+
+	it("runtime-состояния приоритетнее персистентного статуса", () => {
+		const sub = { lastSyncAt: null, lastError: null, errorCode: null };
+		expect(formatSyncStatus(sub, NEVER_ATTEMPTED_STATUS)).toBe("ещё не синхронизировалось");
+		expect(formatSyncStatus(sub, { state: "syncing", errorCode: null, lastAttemptAt: 1 })).toBe(
+			"синхронизируется…",
+		);
+		expect(
+			formatSyncStatus(sub, {
+				state: "error",
+				errorCode: "credential_missing",
+				lastAttemptAt: 1,
+			}),
+		).toContain("нет учётных данных");
+		const at = new Date(2026, 6, 15, 9, 5).getTime();
+		const synced = { lastSyncAt: at, lastError: null, errorCode: null };
+		expect(
+			formatSyncStatus(synced, { state: "okChanged", errorCode: null, lastAttemptAt: at }),
+		).toBe("обновлено 09:05 15.07");
+		expect(
+			formatSyncStatus(synced, { state: "okUnchanged", errorCode: null, lastAttemptAt: at }),
+		).toBe("обновлено 09:05 15.07 (без изменений)");
+	});
+
+	it("персистентный errorCode и легаси lastError рендерятся без сырого текста", () => {
+		expect(
+			formatSyncStatus(
+				{ lastSyncAt: null, lastError: null, errorCode: "forbidden" },
+				NEVER_ATTEMPTED_STATUS,
+			),
+		).toContain("доступ запрещён");
+		const legacy = formatSyncStatus(
+			{ lastSyncAt: null, lastError: "https://secret.example/x упал", errorCode: null },
+			NEVER_ATTEMPTED_STATUS,
+		);
+		expect(legacy).not.toContain("secret.example");
+		expect(legacy).toContain("⚠");
 	});
 });

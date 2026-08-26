@@ -82,13 +82,17 @@ function makeService(over: Partial<Harness> = {}) {
 		intervalMin: () => 5,
 		feedTimeoutMs: () => h.feedTimeoutMs ?? 30_000,
 		onResult: (id, result) => {
-			// как main: пишем статус в саму подписку
+			// как main (applySyncResult): персистится только санитизированный код
 			const s = h.subs.find((x) => x.id === id);
 			if (s !== undefined) {
 				if (result.ok) {
 					s.lastSyncAt = result.at;
 					s.lastError = null;
-				} else s.lastError = result.error;
+					s.errorCode = null;
+				} else {
+					s.errorCode = result.code;
+					s.lastError = null;
+				}
 			}
 			results.push({ id, result });
 		},
@@ -139,22 +143,25 @@ describe("SyncService — статус и устойчивость", () => {
 				throw new Error("сеть недоступна");
 			},
 		});
-		await expect(svc.syncAll()).resolves.toBeUndefined(); // не бросает
+		// не бросает; терминальный отчёт честно говорит «error», а не молчит
+		await expect(svc.syncAll()).resolves.toMatchObject({ status: "error" });
 		expect(vault.writes).toBe(0);
 		expect(results[0]!.result).toMatchObject({ ok: false });
-		expect(h.subs[0]!.lastError).toContain("сеть недоступна");
+		expect(h.subs[0]!.errorCode).toBe("network_error");
+		expect(h.subs[0]!.lastError).toBeNull(); // сырой текст не персистится
+		expect(results[0]!.result).toMatchObject({ ok: false, code: "network_error" });
 	});
 
 	it("битая лента (не ICS) → статус ошибки, без записи", async () => {
 		const { svc, vault, h } = makeService({ fetchImpl: async () => "это не ICS" });
 		await svc.syncAll();
 		expect(vault.writes).toBe(0);
-		expect(h.subs[0]!.lastError).not.toBeNull();
+		expect(h.subs[0]!.errorCode).toBe("invalid_calendar_data");
 	});
 
 	it("пустой URL → ошибка статуса, сети не касаемся", async () => {
 		let fetched = false;
-		const { svc, h } = makeService({
+		const { svc, h, results } = makeService({
 			subs: [sub({ url: "  " })],
 			fetchImpl: async () => {
 				fetched = true;
@@ -163,7 +170,9 @@ describe("SyncService — статус и устойчивость", () => {
 		});
 		await svc.syncAll();
 		expect(fetched).toBe(false);
-		expect(h.subs[0]!.lastError).toContain("адрес");
+		expect(h.subs[0]!.errorCode).toBe("unknown");
+		const failed = results[0]!.result;
+		expect(failed.ok === false && failed.detail).toContain("адрес");
 	});
 
 	it("syncById синхронизирует одну подписку по id", async () => {
@@ -366,7 +375,8 @@ describe("SyncService — deadlines and mirror lifecycle hardening", () => {
 		expect(vault.files.has(`GTD/External/Healthy-${subIdSlug("fast")}.md`)).toBe(true);
 		expect(results.find((r) => r.id === "slow")!.result).toMatchObject({ ok: false });
 		expect(results.find((r) => r.id === "slow")!.result).toMatchObject({
-			error: expect.stringContaining("timed out"),
+			code: "timeout",
+			detail: expect.stringContaining("timed out"),
 		});
 		expect(results.find((r) => r.id === "fast")!.result).toMatchObject({ ok: true });
 	});
@@ -496,5 +506,99 @@ describe("SyncService — инертные (повреждённые) запис
 		expect(fetches).toBe(0);
 		expect(vault.writes).toBe(0);
 		expect(results).toEqual([]);
+	});
+});
+
+describe("SyncService — терминальный отчёт (§10) и runtime-статусы (§9)", () => {
+	it("ok/partial/error агрегируются честно; changedMirrors считает записи", async () => {
+		const good = sub({ id: "a", name: "A" });
+		const bad = sub({ id: "b", name: "B", url: "https://example/b.ics" });
+		const { svc, h } = makeService({ subs: [good, bad] });
+		h.fetchImpl = async (url) => {
+			if (url.endsWith("b.ics")) throw new Error("сеть недоступна");
+			return ICS_ONE_EVENT;
+		};
+		const partial = await svc.syncAll();
+		expect(partial.status).toBe("partial");
+		expect(partial.changedMirrors).toBe(1);
+		expect(partial.subscriptions).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ id: "a", status: "ok", errorCode: null }),
+				expect.objectContaining({ id: "b", status: "error", errorCode: "network_error" }),
+			]),
+		);
+		expect(partial.finishedAt).toBeGreaterThanOrEqual(partial.startedAt);
+
+		h.fetchImpl = async () => {
+			throw new Error("всё лежит");
+		};
+		expect((await svc.syncAll()).status).toBe("error");
+
+		h.fetchImpl = async () => ICS_ONE_EVENT;
+		const ok = await svc.syncAll();
+		expect(ok.status).toBe("ok");
+		// Повторный идентичный проход: без записей, статусы unchanged.
+		const idle = await svc.syncAll();
+		expect(idle.status).toBe("ok");
+		expect(idle.changedMirrors).toBe(0);
+		expect(idle.subscriptions.every((s) => s.status === "unchanged")).toBe(true);
+	});
+
+	it("caldav-подписка получает skipped-запись отчёта, не считаясь ошибкой", async () => {
+		const caldavSub = {
+			kind: "caldav" as const,
+			id: "cd-1",
+			name: "Работа",
+			accountId: "acc-1",
+			collectionKey: "col-1",
+			privacy: "details" as const,
+			enabled: true,
+			scopeId: null,
+			pendingRedaction: false,
+			lastSyncAt: 777,
+			lastError: null,
+			errorCode: null,
+		};
+		const { svc, h } = makeService();
+		h.subs = [sub(), caldavSub as unknown as ReturnType<typeof sub>];
+		const report = await svc.syncAll();
+		expect(report.status).toBe("ok");
+		expect(report.subscriptions).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ id: "cd-1", status: "skipped", lastSuccessAt: 777 }),
+			]),
+		);
+	});
+
+	it("совпадающие вызовы syncAll разделяют ОДИН отчёт; syncById отдаёт запись", async () => {
+		const { svc } = makeService();
+		const [r1, r2] = await Promise.all([svc.syncAll(), svc.syncAll()]);
+		expect(r1).toBe(r2);
+		const entry = await svc.syncById("s1");
+		expect(entry).toMatchObject({ id: "s1", status: "unchanged", errorCode: null });
+		expect(await svc.syncById("no-such")).toBeNull();
+	});
+
+	it("runtime-статусы: neverAttempted → syncing → okChanged/okUnchanged/error", async () => {
+		let release: (v: string) => void = () => undefined;
+		const gate = new Promise<string>((resolve) => (release = resolve));
+		const { svc, h } = makeService({ fetchImpl: () => gate });
+		expect(svc.runtimeStatus("s1").state).toBe("neverAttempted");
+		const pass = svc.syncAll();
+		await Promise.resolve();
+		expect(svc.runtimeStatus("s1").state).toBe("syncing");
+		release(ICS_ONE_EVENT);
+		await pass;
+		expect(svc.runtimeStatus("s1")).toMatchObject({ state: "okChanged", errorCode: null });
+		await svc.syncAll();
+		expect(svc.runtimeStatus("s1").state).toBe("okUnchanged");
+		h.fetchImpl = async () => {
+			throw new Error("сеть недоступна");
+		};
+		await svc.syncAll();
+		expect(svc.runtimeStatus("s1")).toMatchObject({
+			state: "error",
+			errorCode: "network_error",
+		});
 	});
 });

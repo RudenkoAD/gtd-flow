@@ -2,7 +2,7 @@
 
 Плагин Obsidian для GTD поверх обычных Markdown-задач: **входящие**, **kanban-доски**, **календарь**, **отложенный ящик** (tickler), **регулярные задачи** и **проекты-графы** с зависимостями.
 
-> **0.14.0 / Android core + desktop AI.** GTD Flow now uses one configurable
+> **0.14.x / Android core + desktop AI.** GTD Flow now uses one configurable
 > inbox and explicit task scopes instead of runtime namespaces. Inbox, Calendar,
 > task editing and Recurring are supported in Obsidian for Android; the embedded AI,
 > OAuth, graph/DnD and the remaining views stay available only in Obsidian Desktop.
@@ -67,7 +67,8 @@ AI-поля сохраняют своё прежнее владение; вер�
 
 ## Установка
 
-Требуется Obsidian **1.7.2 или новее**. Manifest универсальный
+Требуется Obsidian **1.11.4 или новее** (нужен SecretStorage; последняя версия
+плагина для более старых Obsidian — 0.14.1). Manifest универсальный
 (`isDesktopOnly: false`): на Android поддержаны Входящие, Календарь, редактор
 задачи и Регулярные. Desktop сохраняет полный набор видов, AI/OpenRouter,
 внешнюю синхронизацию, DnD и pop-out. iOS пока не входит в проверенную матрицу.

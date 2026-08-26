@@ -1,6 +1,6 @@
 {
   "name": "gtd-flow",
-  "version": "0.14.1",
+  "version": "0.15.0-dev.0",
   "private": true,
   "description": "GTD workflow plugin for Obsidian: inbox, kanban, calendar, tickler, recurring tasks, and project graphs over plain Markdown tasks.",
   "main": "main.js",
@@ -57,7 +57,7 @@
     "eslint": "10.8.0",
     "eslint-plugin-svelte": "3.22.0",
     "fast-check": "^3.23.0",
-    "obsidian": "1.7.2",
+    "obsidian": "1.11.4",
     "prettier": "3.9.6",
     "prettier-plugin-svelte": "4.1.1",
     "svelte": "^5.16.0",

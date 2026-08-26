@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
-import type { IcsCalendarSub } from "../settings/Settings";
+import type { CalDavAccount, CalDavCalendarSub, IcsCalendarSub } from "../settings/Settings";
+import { ExternalSyncError } from "./externalSyncStatus";
+import type { MirrorOccurrence, MirrorWindow } from "./icsParse";
+import { buildMirrorFile } from "./mirrorBuilder";
 import {
 	mirrorPath,
 	SyncService,
 	safeMirrorFileName,
 	subIdSlug,
+	type CalDavSourceRef,
+	type ExternalOccurrenceProvider,
 	type ManagedMirror,
 	type SyncResult,
 	type SyncVaultPort,
@@ -59,6 +64,12 @@ interface Harness {
 	inboxFile: string;
 	feedTimeoutMs?: number;
 	warnings: string[];
+	/** CalDAV-провайдер (этап 4); отсутствует — caldav-подписки остаются skipped. */
+	provider?: ExternalOccurrenceProvider;
+	/** Гейт §4.2: существует ли активный scope; отсутствие деп — как «не существует». */
+	scopeExists?: (scopeId: string) => boolean;
+	/** Реестр CalDAV-аккаунтов, резолвящихся по CalDavCalendarSub.accountId. */
+	accounts?: CalDavAccount[];
 }
 
 function makeService(over: Partial<Harness> = {}) {
@@ -77,6 +88,9 @@ function makeService(over: Partial<Harness> = {}) {
 		vault,
 		clock: { now: () => new Date(2026, 6, 15) }, // фикс: окно и даты детерминированы
 		subscriptions: () => h.subs,
+		accounts: () => h.accounts ?? [],
+		caldavProvider: h.provider,
+		scopeExists: h.scopeExists,
 		inertSubscriptionIds: () => h.inertIds,
 		inboxFile: () => h.inboxFile,
 		intervalMin: () => 5,
@@ -99,6 +113,77 @@ function makeService(over: Partial<Harness> = {}) {
 		onLifecycleWarning: (message) => h.warnings.push(message),
 	});
 	return { svc, vault, results, h };
+}
+
+function caldavSub(over: Partial<CalDavCalendarSub> = {}): CalDavCalendarSub {
+	return {
+		kind: "caldav",
+		id: "cd-1",
+		name: "Работа",
+		accountId: "acc-1",
+		collectionKey: "col-1",
+		privacy: "details",
+		enabled: true,
+		scopeId: null,
+		pendingRedaction: false,
+		lastSyncAt: null,
+		lastError: null,
+		errorCode: null,
+		...over,
+	};
+}
+
+function account(over: Partial<CalDavAccount> = {}): CalDavAccount {
+	return {
+		id: "acc-1",
+		serverOrigin: "https://caldav.example",
+		secretRef: "acc-1",
+		...over,
+	};
+}
+
+function occ(over: Partial<MirrorOccurrence> = {}): MirrorOccurrence {
+	return {
+		uid: "uid-1",
+		recurrenceKey: "20260720T100000",
+		date: "2026-07-20",
+		allDay: false,
+		startTime: "10:00",
+		endTime: "11:00",
+		title: "Встреча",
+		location: "Zoom",
+		dayIndex: 0,
+		dayCount: 1,
+		...over,
+	};
+}
+
+/** Фейковый CalDAV-провайдер (§7 CalDAV-заказа): скриптуемый `load`, счётчик
+ *  beginPass, и запись каждого вызова (источник + сигнал) для ассертов фенса. */
+class FakeCaldavProvider implements ExternalOccurrenceProvider {
+	beginPassCalls = 0;
+	calls: Array<{ source: CalDavSourceRef; window: MirrorWindow; signal: AbortSignal }> = [];
+
+	constructor(
+		private readonly impl: (
+			source: CalDavSourceRef,
+			callIndex: number,
+		) => Promise<readonly MirrorOccurrence[]>,
+	) {}
+
+	beginPass(): void {
+		this.beginPassCalls++;
+	}
+
+	async load(
+		source: CalDavSourceRef,
+		window: MirrorWindow,
+		opts: { deadlineAt: number; signal: AbortSignal },
+	): Promise<readonly MirrorOccurrence[]> {
+		const callIndex = this.calls.length;
+		this.calls.push({ source, window, signal: opts.signal });
+		return this.impl(source, callIndex);
+	}
 }
 
 describe("SyncService — запись только при изменении", () => {
@@ -600,5 +685,269 @@ describe("SyncService — терминальный отчёт (§10) и runtime-
 			state: "error",
 			errorCode: "network_error",
 		});
+	});
+});
+
+describe("SyncService — caldav-провайдер (этап 4)", () => {
+	it("draft/disabled/redaction гейты: провайдер не вызывается, запись не идёт (включая полный проход syncAll())", async () => {
+		const patches: Array<Partial<CalDavCalendarSub>> = [
+			{ enabled: false },
+			{ privacy: "unconfigured" },
+			{ pendingRedaction: true },
+		];
+		for (const patch of patches) {
+			const provider = new FakeCaldavProvider(async () => [occ()]);
+			const s = caldavSub(patch);
+			const { svc, vault, results } = makeService({
+				subs: [s] as unknown as IcsCalendarSub[],
+				provider,
+				accounts: [account()],
+				scopeExists: () => true,
+			});
+			const report = await svc.syncAll();
+			expect(provider.calls).toHaveLength(0);
+			expect(vault.writes).toBe(0);
+			expect(results).toEqual([]); // skipped — не попытка, onResult не зовётся
+			expect(report.subscriptions).toEqual(
+				expect.arrayContaining([expect.objectContaining({ id: s.id, status: "skipped" })]),
+			);
+		}
+	});
+
+	it("happy path (details): вхождения проецируются, санируются и получают 🆔/🧭", async () => {
+		const provider = new FakeCaldavProvider(async () => [
+			occ({ uid: "u1", date: "2026-07-20", title: "Встреча https://zoom.example/j/1" }),
+			occ({
+				uid: "u2",
+				date: "2026-07-21",
+				recurrenceKey: "20260721T090000",
+				title: "Планёрка",
+			}),
+		]);
+		const s = caldavSub({ id: "cd-1", scopeId: "work" });
+		const { svc, vault, results } = makeService({
+			subs: [s] as unknown as IcsCalendarSub[],
+			provider,
+			accounts: [account()],
+			scopeExists: (id) => id === "work",
+		});
+		const report = await svc.syncAll();
+		expect(provider.calls).toHaveLength(1);
+		expect(vault.writes).toBe(1);
+		const path = mirrorPath(s, "GTD/Inbox.md");
+		const content = vault.files.get(path)!;
+		expect(content).toContain("Встреча");
+		expect(content).not.toContain("zoom.example");
+		const bodyLines = content.split("\n").filter((l) => l.startsWith("- [ ]"));
+		expect(bodyLines).toHaveLength(2);
+		for (const line of bodyLines) {
+			expect(line).toMatch(/🆔 [0-9a-z]{10}/);
+			expect(line).toMatch(/🧭 work$/);
+		}
+		expect(report.changedMirrors).toBe(1);
+		expect(report.subscriptions).toEqual(
+			expect.arrayContaining([expect.objectContaining({ id: "cd-1", status: "ok" })]),
+		);
+		expect(results.find((r) => r.id === "cd-1")?.result).toMatchObject({ ok: true });
+	});
+
+	it("busy: обобщённый заголовок, без 📍 и без исходного текста", async () => {
+		const provider = new FakeCaldavProvider(async () => [
+			occ({ title: "Секретная встреча", location: "Zoom Room", date: "2026-07-20" }),
+		]);
+		const s = caldavSub({ id: "cd-1", privacy: "busy" });
+		const { svc, vault } = makeService({
+			subs: [s] as unknown as IcsCalendarSub[],
+			provider,
+			accounts: [account()],
+		});
+		await svc.syncAll();
+		const path = mirrorPath(s, "GTD/Inbox.md");
+		const content = vault.files.get(path)!;
+		expect(content).toContain("Рабочая встреча");
+		expect(content).not.toContain("Секретная встреча");
+		expect(content).not.toContain("📍");
+	});
+
+	it("один UID в двух коллекциях одного аккаунта → разные 🆔 (namespace); load дважды, beginPass один раз за проход", async () => {
+		const sharedOccurrences = [occ({ uid: "shared-uid", date: "2026-07-20" })];
+		const provider = new FakeCaldavProvider(async () => sharedOccurrences);
+		const s1 = caldavSub({ id: "cd-1", collectionKey: "col-a", name: "Календарь A" });
+		const s2 = caldavSub({ id: "cd-2", collectionKey: "col-b", name: "Календарь B" });
+		const { svc, vault } = makeService({
+			subs: [s1, s2] as unknown as IcsCalendarSub[],
+			provider,
+			accounts: [account()],
+		});
+		await svc.syncAll();
+		expect(provider.calls).toHaveLength(2);
+		expect(provider.beginPassCalls).toBe(1);
+		const c1 = vault.files.get(mirrorPath(s1, "GTD/Inbox.md"))!;
+		const c2 = vault.files.get(mirrorPath(s2, "GTD/Inbox.md"))!;
+		const id1 = c1.match(/🆔 ([0-9a-z]{10})/)?.[1];
+		const id2 = c2.match(/🆔 ([0-9a-z]{10})/)?.[1];
+		expect(id1).toBeDefined();
+		expect(id2).toBeDefined();
+		expect(id1).not.toBe(id2);
+	});
+
+	it("scope_missing: провайдер не вызывается, отчёт error, зеркало сохраняется байт-в-байт", async () => {
+		const s = caldavSub({ id: "cd-1", scopeId: "gone" });
+		const provider = new FakeCaldavProvider(async () => [occ()]);
+		const path = mirrorPath(s, "GTD/Inbox.md");
+		const preseeded =
+			'---\ngtd-events: true\ngtd-external: true\ngtd-external-id: "cd-1"\n---\nold\n';
+		const { svc, vault, h, results } = makeService({
+			subs: [s] as unknown as IcsCalendarSub[],
+			provider,
+			accounts: [account()],
+			scopeExists: () => false,
+		});
+		vault.files.set(path, preseeded);
+		const report = await svc.syncAll();
+		expect(provider.calls).toHaveLength(0);
+		expect(vault.files.get(path)).toBe(preseeded); // байт-в-байт, без записи
+		expect(report.subscriptions).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					id: "cd-1",
+					status: "error",
+					errorCode: "scope_missing",
+				}),
+			]),
+		);
+		expect(results.find((r) => r.id === "cd-1")?.result).toMatchObject({
+			ok: false,
+			code: "scope_missing",
+		});
+		expect(h.subs.find((x) => x.id === "cd-1")?.errorCode).toBe("scope_missing");
+	});
+
+	it("валидный пустой результат зачищает тело зеркала (§12)", async () => {
+		const s = caldavSub({ id: "cd-1" });
+		const path = mirrorPath(s, "GTD/Inbox.md");
+		const provider = new FakeCaldavProvider(async () => []);
+		const { svc, vault } = makeService({
+			subs: [s] as unknown as IcsCalendarSub[],
+			provider,
+			accounts: [account()],
+		});
+		vault.files.set(
+			path,
+			buildMirrorFile([occ()], {
+				name: s.name,
+				subscriptionId: s.id,
+				idNamespace: `${s.accountId} ${s.collectionKey}`,
+			}),
+		);
+		expect(vault.files.get(path)).toContain("- [ ]");
+		const report = await svc.syncAll();
+		expect(vault.files.get(path)).not.toContain("- [ ]");
+		expect(report.changedMirrors).toBe(1);
+		expect(report.subscriptions).toEqual(
+			expect.arrayContaining([expect.objectContaining({ id: "cd-1", status: "ok" })]),
+		);
+	});
+
+	it("сбой провайдера (authentication_failed) → зеркало сохраняется байт-в-байт, отчёт error, runtime error", async () => {
+		const s = caldavSub({ id: "cd-1" });
+		const path = mirrorPath(s, "GTD/Inbox.md");
+		const provider = new FakeCaldavProvider(async () => {
+			throw new ExternalSyncError("authentication_failed", "bad credentials");
+		});
+		const { svc, vault } = makeService({
+			subs: [s] as unknown as IcsCalendarSub[],
+			provider,
+			accounts: [account()],
+		});
+		const preseeded = buildMirrorFile([occ()], { name: s.name, subscriptionId: s.id });
+		vault.files.set(path, preseeded);
+		const report = await svc.syncAll();
+		expect(vault.files.get(path)).toBe(preseeded);
+		expect(report.subscriptions).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					id: "cd-1",
+					status: "error",
+					errorCode: "authentication_failed",
+				}),
+			]),
+		);
+		expect(svc.runtimeStatus("cd-1")).toMatchObject({
+			state: "error",
+			errorCode: "authentication_failed",
+		});
+	});
+
+	it("fence: смена конфигурации во время висящего provider.load отменяет запись; controller абортится; свежий проход синкает новый fingerprint", async () => {
+		let release!: (occs: readonly MirrorOccurrence[]) => void;
+		const gate = new Promise<readonly MirrorOccurrence[]>((resolve) => {
+			release = resolve;
+		});
+		const provider = new FakeCaldavProvider(async () => gate);
+		const s = caldavSub({ id: "cd-1", privacy: "details" });
+		const { svc, vault, h } = makeService({
+			subs: [s] as unknown as IcsCalendarSub[],
+			provider,
+			accounts: [account()],
+		});
+
+		const pending = svc.syncById("cd-1");
+		await Promise.resolve();
+		expect(provider.calls).toHaveLength(1);
+		const signal = provider.calls[0]!.signal;
+		expect(signal.aborted).toBe(false);
+
+		(h.subs[0] as unknown as CalDavCalendarSub).privacy = "busy";
+		svc.configurationChanged();
+		expect(signal.aborted).toBe(true); // весь caldav-поток абортится одним контроллером
+
+		release([occ({ title: "Детали" })]);
+		const outcome = await pending;
+		expect(outcome?.status).toBe("skipped");
+		expect(vault.writes).toBe(0); // detailed-контент НЕ приземлился (fence)
+
+		const fresh = await svc.syncAll();
+		expect(fresh.subscriptions).toEqual(
+			expect.arrayContaining([expect.objectContaining({ id: "cd-1", status: "ok" })]),
+		);
+		const path = mirrorPath(s, "GTD/Inbox.md");
+		expect(vault.files.get(path)).toContain("Рабочая встреча"); // новый fingerprint → busy
+		svc.dispose();
+	});
+
+	it("dispose() во время висящего provider.load — ни записи, ни onResult", async () => {
+		let release!: (occs: readonly MirrorOccurrence[]) => void;
+		const gate = new Promise<readonly MirrorOccurrence[]>((resolve) => {
+			release = resolve;
+		});
+		const provider = new FakeCaldavProvider(async () => gate);
+		const s = caldavSub({ id: "cd-1" });
+		const { svc, vault, results } = makeService({
+			subs: [s] as unknown as IcsCalendarSub[],
+			provider,
+			accounts: [account()],
+		});
+		const pending = svc.syncById("cd-1");
+		svc.dispose();
+		release([occ()]);
+		await pending;
+		expect(vault.writes).toBe(0);
+		expect(results).toHaveLength(0);
+	});
+
+	it("beginPass вызывается ровно один раз за проход syncAll(); повторный проход — ещё раз", async () => {
+		const provider = new FakeCaldavProvider(async () => [occ()]);
+		const s1 = caldavSub({ id: "cd-1", collectionKey: "col-a" });
+		const s2 = caldavSub({ id: "cd-2", collectionKey: "col-b" });
+		const { svc } = makeService({
+			subs: [s1, s2] as unknown as IcsCalendarSub[],
+			provider,
+			accounts: [account()],
+		});
+		await svc.syncAll();
+		expect(provider.beginPassCalls).toBe(1);
+		await svc.syncAll();
+		expect(provider.beginPassCalls).toBe(2);
 	});
 });

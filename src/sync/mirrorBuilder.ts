@@ -16,7 +16,7 @@
  * Живёт в src/sync (не core): импортирует ядро-сериализатор, но не obsidian —
  * тестируется в node.
  */
-import { setValueField } from "../core/parser/serializeTaskLine";
+import { setScopeId, setValueField } from "../core/parser/serializeTaskLine";
 import type { MirrorOccurrence } from "./icsParse";
 
 /** Parameters for one generated mirror file. */
@@ -25,6 +25,15 @@ export interface MirrorFileOptions {
 	name: string;
 	/** Stable subscription identity. SyncService uses it for reconciliation. */
 	subscriptionId?: string | null;
+	/**
+	 * Пространство имён 🆔 (§4.5 CalDAV-заказа): для caldav-источников —
+	 * opaque `accountId\0collectionKey`, чтобы один и тот же UID в двух
+	 * коллекциях давал РАЗНЫЕ глобальные id. ОТСУТСТВИЕ/пустая строка —
+	 * legacy-алгоритм БАЙТ-В-БАЙТ (ICS-зеркала не перечитываются никогда).
+	 */
+	idNamespace?: string | null;
+	/** Канонический GTD-scope строк зеркала (🧭 после 🆔); null — глобально. */
+	scopeId?: string | null;
 }
 
 /**
@@ -32,13 +41,19 @@ export interface MirrorFileOptions {
  * Два независимых FNV-1a (разные сиды) конкатенируются → ~10 символов; для
  * идентификаторов календаря коллизии практически исключены, а длина скромная.
  * Экспортирован для тестов идемпотентности.
+ *
+ * `namespace` (непустой) добавляется префиксом в строку-базу: включает
+ * идентичность источника в id (§4.5). Отсутствие/пустая строка — прежняя
+ * база, существующие ICS-🆔 не меняются (закреплено регрессионным тестом).
  */
 export function externalOccurrenceId(
 	occ: Pick<MirrorOccurrence, "uid" | "recurrenceKey" | "dayIndex" | "dayCount">,
+	namespace?: string,
 ): string {
 	// суффикс дня — только у многодневных (иначе однодневные не «утяжеляем»)
 	const daySuffix = occ.dayCount > 1 ? `\x00d${occ.dayIndex}` : "";
-	const base = `${occ.uid}\x00${occ.recurrenceKey}${daySuffix}`;
+	const nsPrefix = namespace !== undefined && namespace !== "" ? `${namespace}\x00` : "";
+	const base = `${nsPrefix}${occ.uid}\x00${occ.recurrenceKey}${daySuffix}`;
 	const h1 = fnv1a(base, 0x811c9dc5);
 	const h2 = fnv1a(base, 0x27d4eb2f);
 	const s = (h1 >>> 0).toString(36).padStart(6, "0") + (h2 >>> 0).toString(36).padStart(6, "0");
@@ -54,8 +69,10 @@ function fnv1a(text: string, seed: number): number {
 	return h >>> 0;
 }
 
-/** Строка-зеркало одного вхождения (наш формат события) с детерминированным 🆔. */
-function mirrorLine(occ: MirrorOccurrence, id: string): string {
+/** Строка-зеркало одного вхождения (наш формат события) с детерминированным 🆔.
+ *  Порядок хвостовых полей ЗАКРЕПЛЁН: … 🆔 <id> [🧭 <scope>] — изменение
+ *  порядка перечитало бы каждое зеркало (см. mirrorBuilder.test). */
+function mirrorLine(occ: MirrorOccurrence, id: string, scopeId: string | null): string {
 	const timeTail =
 		occ.allDay || occ.startTime === null
 			? ""
@@ -69,7 +86,15 @@ function mirrorLine(occ: MirrorOccurrence, id: string): string {
 			// место с эмодзи-поля/тегом сериализатор бы отверг — строка без 📍, а не отказ
 		}
 	}
-	return setValueField(line, "id", id);
+	line = setValueField(line, "id", id);
+	if (scopeId !== null) {
+		try {
+			line = setScopeId(line, scopeId);
+		} catch {
+			// невалидный scope сюда не доходит (fail-closed выше); оставить строку без 🧭
+		}
+	}
+	return line;
 }
 
 /** Ключ сортировки времени: all-day (без времени) — вперёд (""), иначе "HH:mm". */
@@ -98,8 +123,15 @@ export function buildMirrorFile(
 			? opts.subscriptionId.trim()
 			: null;
 
+	const idNamespace =
+		typeof opts.idNamespace === "string" && opts.idNamespace !== ""
+			? opts.idNamespace
+			: undefined;
+	const scopeId =
+		typeof opts.scopeId === "string" && opts.scopeId.trim() !== "" ? opts.scopeId.trim() : null;
+
 	// 🆔 считаем один раз, дальше сортируем и печатаем
-	const rows = occurrences.map((occ) => ({ occ, id: externalOccurrenceId(occ) }));
+	const rows = occurrences.map((occ) => ({ occ, id: externalOccurrenceId(occ, idNamespace) }));
 	rows.sort((a, b) => {
 		if (a.occ.date !== b.occ.date) return a.occ.date < b.occ.date ? -1 : 1;
 		const ta = timeKey(a.occ);
@@ -119,6 +151,6 @@ export function buildMirrorFile(
 
 	const header = `%% Зеркало внешнего календаря «${name}». Правки затираются синхронизацией — не редактируйте вручную. %%`;
 
-	const body = rows.map((r) => mirrorLine(r.occ, r.id));
+	const body = rows.map((r) => mirrorLine(r.occ, r.id, scopeId));
 	return [...front, header, "", ...body].join("\n") + "\n";
 }

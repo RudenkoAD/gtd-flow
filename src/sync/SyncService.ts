@@ -9,9 +9,16 @@
  * фейковыми портами. Ошибки сети/разбора НЕ роняют плагин: они ловятся и
  * пишутся в статус подписки (onResult), таймер продолжает жить.
  */
-import type { ActiveCalendarSub, CalDavAccount } from "../settings/Settings";
+import type { ActiveCalendarSub, CalDavAccount, CalDavCalendarSub } from "../settings/Settings";
+import { projectOccurrences, type MirrorPrivacyMode } from "./caldav/projection";
 import { buildMirrorFile } from "./mirrorBuilder";
-import { IcsBudgetError, mirrorWindow, parseIcs } from "./icsParse";
+import {
+	IcsBudgetError,
+	mirrorWindow,
+	parseIcs,
+	type MirrorOccurrence,
+	type MirrorWindow,
+} from "./icsParse";
 import {
 	ExternalSyncError,
 	NEVER_ATTEMPTED_STATUS,
@@ -25,6 +32,31 @@ import {
 export interface MirrorPathSource {
 	id: string;
 	name: string;
+}
+
+/** Одна caldav-подписка вместе с её аккаунтом (резолвится из настроек). */
+export interface CalDavSourceRef {
+	sub: CalDavCalendarSub;
+	account: CalDavAccount;
+}
+
+/**
+ * Порт провайдера вхождений внешнего источника (§7 CalDAV-заказа).
+ * Реализация (CalDavProvider) живёт в src/sync/caldav и получает http и
+ * credential-порты; SyncService не знает ни XML, ни Authorization, ни
+ * SecretStorage. Отсутствие провайдера в deps — caldav-подписки skipped.
+ */
+export interface ExternalOccurrenceProvider {
+	/** Начало прохода: сброс per-pass мемоизации (discovery по аккаунту
+	 *  выполняется максимум один раз на проход и разделяется коллекциями). */
+	beginPass(): void;
+	/** Загрузить вхождения одной коллекции. Ошибки — ТОЛЬКО ExternalSyncError
+	 *  с безопасным сообщением; сырые URL/тела сюда не попадают. */
+	load(
+		source: CalDavSourceRef,
+		window: MirrorWindow,
+		opts: { deadlineAt: number; signal: AbortSignal },
+	): Promise<readonly MirrorOccurrence[]>;
 }
 
 /**
@@ -78,6 +110,15 @@ export interface SyncDeps {
 	/** Id инертных (повреждённых) записей подписок: их зеркала нельзя трогать
 	 *  orphan-очисткой, пока запись существует в настройках. */
 	inertSubscriptionIds?: () => readonly string[];
+	/** Провайдер caldav-вхождений; отсутствует на этапах до композиции —
+	 *  caldav-подписки тогда получают отчёт "skipped". */
+	caldavProvider?: ExternalOccurrenceProvider;
+	/** Существует ли активный (не архивный) GTD-scope с данным id — гейт
+	 *  scope_missing (§4.2): неизвестный/архивный scope блокирует обновление. */
+	scopeExists?: (scopeId: string) => boolean;
+	/** Дедлайн ПОЛНОГО caldav-потока одной подписки (discovery+REPORT вместе,
+	 *  §6.3: без сброса по шагам); default 120 c. */
+	caldavFlowTimeoutMs?: () => number;
 	/** Unified inbox determines the sibling folder for generated mirrors. */
 	inboxFile: () => string;
 	/** Интервал поллинга в минутах (min 1); читается при планировании. */
@@ -98,6 +139,8 @@ const EXTERNAL_DIR = "External";
 export const DEFAULT_SYNC_FEED_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_CONCURRENT_FEEDS = 3;
 const CONFIG_RECONCILE_DEBOUNCE_MS = 300;
+/** Дедлайн ПОЛНОГО caldav-потока подписки (discovery+REPORT вместе, §6.3). */
+const DEFAULT_CALDAV_FLOW_TIMEOUT_MS = 120_000;
 
 /**
  * Безопасное имя файла из имени подписки: недопустимые для файловой системы
@@ -430,6 +473,10 @@ export class SyncService {
 	}
 
 	private async runAll(): Promise<SubOutcome[]> {
+		// Один сброс per-account discovery-мемоизации на КАЖДЫЙ проход (§6.3):
+		// сиблинг-коллекции одного аккаунта делят один discovery внутри прохода,
+		// а конкурентный лимит прохода не размывается между проходами.
+		this.deps.caldavProvider?.beginPass();
 		const subs = this.deps.subscriptions().map((sub) => ({ ...sub }));
 		const requested = Math.floor(
 			this.deps.maxConcurrentFeeds?.() ?? DEFAULT_MAX_CONCURRENT_FEEDS,
@@ -531,9 +578,7 @@ export class SyncService {
 
 	private async performSync(context: SyncContext): Promise<SubOutcome> {
 		const { sub } = context;
-		// CalDAV-провайдер появляется на этапе 4; до него caldav-подписка не
-		// делает ни сетевых запросов, ни записей и отчитывается "skipped".
-		if (sub.kind === "caldav") return this.skippedOutcome(sub);
+		if (sub.kind === "caldav") return this.performCaldavSync({ ...context, sub });
 		try {
 			const raw = sub.url.trim();
 			if (raw === "") throw new ExternalSyncError("unknown", "не задан адрес ленты");
@@ -557,49 +602,153 @@ export class SyncService {
 				name: sub.name,
 				subscriptionId: sub.id,
 			});
-			const path = mirrorPath(sub, context.inboxFile);
-			const current = await this.deps.vault.read(path);
-			if (!this.isCurrent(context)) return this.skippedOutcome(sub);
-			// запись ТОЛЬКО при изменении — не будим Remotely Save на неизменной ленте.
-			// Сравниваем без \r: диск мог прийти с CRLF (другой клиент/устройство), а мы
-			// всегда пишем LF — иначе бесконечная «перезапись» эквивалентного контента.
-			const changed = current === null || stripCr(current) !== stripCr(content);
-			if (changed) {
-				await this.deps.vault.write(path, content);
-			}
-			if (!this.isCurrent(context)) {
-				await this.cleanupStaleWrite(sub.id, path);
-				return this.skippedOutcome(sub);
-			}
-			this.knownMirrorPaths.set(sub.id, path);
-			const at = this.deps.clock.now().getTime();
-			this.deps.onResult(sub.id, { ok: true, at });
-			return {
-				id: sub.id,
-				status: changed ? "ok" : "unchanged",
-				lastSuccessAt: at,
-				errorCode: null,
-				changed,
-			};
+			return await this.writeMirrorAndReport(context, content);
 		} catch (e) {
-			if (!this.isCurrent(context)) return this.skippedOutcome(sub);
-			const error =
-				e instanceof ExternalSyncError
-					? e
-					: new ExternalSyncError(classifyCode(e), errMessage(e));
-			// Сырой текст — только в console-диагностику; персист и UI видят код.
-			this.warn(
-				`external sync failed for subscription ${sub.id} [${error.code}]: ${error.message}`,
-			);
-			this.deps.onResult(sub.id, { ok: false, code: error.code, detail: error.message });
-			return {
-				id: sub.id,
-				status: "error",
-				lastSuccessAt: sub.lastSyncAt,
-				errorCode: error.code,
-				changed: false,
-			};
+			return this.handleSyncFailure(context, e);
 		}
+	}
+
+	/**
+	 * CalDAV-ветвь performSync (§7 CalDAV-заказа). Гейты §4.2/§4.3 fail-closed
+	 * ДО любой сети: провайдер не собран/подписка draft-disabled/redaction ещё
+	 * не зачищена → skipped БЕЗ попытки (не считается ошибкой, см. §10). Каждая
+	 * последующая причина (scope_missing, отсутствующий аккаунт, сбой
+	 * провайдера) бросается ВНУТРИ try — тот же классификатор/отчёт, что и у
+	 * ics-ветки (handleSyncFailure), персистит код и сохраняет зеркало (без записи).
+	 */
+	private async performCaldavSync(
+		context: SyncContext & { sub: CalDavCalendarSub },
+	): Promise<SubOutcome> {
+		const { sub } = context;
+		const provider = this.deps.caldavProvider;
+		// Провайдер появляется в композиции на этапе 4/5; до него caldav-подписка
+		// не делает ни сетевых запросов, ни записей.
+		if (provider === undefined) return this.skippedOutcome(sub);
+		// Draft/выключенные/зафенсированные redaction-состояния никогда не
+		// синкаются — ни по таймеру, ни по syncAll(), оба идут через performSync.
+		if (
+			sub.enabled === false ||
+			sub.privacy === "unconfigured" ||
+			sub.pendingRedaction === true
+		)
+			return this.skippedOutcome(sub);
+		// sub.privacy сужен к MirrorPrivacyMode копированием в локальную const:
+		// "unconfigured" уже отсечён гейтом выше.
+		const privacy: MirrorPrivacyMode = sub.privacy === "busy" ? "busy" : "details";
+		try {
+			if (
+				sub.scopeId !== null &&
+				(this.deps.scopeExists === undefined || !this.deps.scopeExists(sub.scopeId))
+			) {
+				// Неизвестный/архивный scope блокирует обновление зеркала (§4.2):
+				// никогда не расскоупливаем молча — существующее зеркало остаётся.
+				throw new ExternalSyncError("scope_missing", "scope missing");
+			}
+			const account = this.deps.accounts?.().find((a) => a.id === sub.accountId);
+			if (account === undefined) {
+				throw new ExternalSyncError("unknown", "account record missing");
+			}
+
+			// Один AbortController на ВЕСЬ caldav-поток (discovery+REPORT вместе):
+			// configurationChanged()/dispose()/removeSubscription() обходят
+			// this.aborters и абортят его целиком (та же конвенция, что и у
+			// fetchWithDeadline — регистрация при старте, снятие в finally, только
+			// если контроллер всё ещё «наш»).
+			const controller = new AbortController();
+			this.aborters.set(sub.id, controller);
+			let occurrences: readonly MirrorOccurrence[];
+			try {
+				const requested = Math.floor(
+					this.deps.caldavFlowTimeoutMs?.() ?? DEFAULT_CALDAV_FLOW_TIMEOUT_MS,
+				);
+				const flowTimeoutMs = Number.isFinite(requested)
+					? Math.max(1, Math.min(600_000, requested))
+					: DEFAULT_CALDAV_FLOW_TIMEOUT_MS;
+				const deadlineAt = this.deps.clock.now().getTime() + flowTimeoutMs;
+				occurrences = await provider
+					.load({ sub, account }, mirrorWindow(this.deps.clock.now()), {
+						deadlineAt,
+						signal: controller.signal,
+					})
+					.catch((e: unknown) => {
+						throw e instanceof ExternalSyncError
+							? e
+							: new ExternalSyncError("unknown", errMessage(e));
+					});
+			} finally {
+				if (this.aborters.get(sub.id) === controller) this.aborters.delete(sub.id);
+			}
+
+			if (!this.isCurrent(context)) return this.skippedOutcome(sub);
+
+			const projected = projectOccurrences(occurrences, privacy);
+			const content = buildMirrorFile(projected, {
+				name: sub.name,
+				subscriptionId: sub.id,
+				idNamespace: `${sub.accountId} ${sub.collectionKey}`,
+				scopeId: sub.scopeId,
+			});
+			return await this.writeMirrorAndReport(context, content);
+		} catch (e) {
+			return this.handleSyncFailure(context, e);
+		}
+	}
+
+	/**
+	 * Общий хвост записи (после успешного получения контента, оба вида
+	 * источника): запись ТОЛЬКО при изменении, generation-fence вокруг чтения/
+	 * записи, cleanupStaleWrite при устаревании прямо на границе записи, учёт
+	 * known-путей и onResult ok. Наблюдаемое поведение ics-ветки не меняется —
+	 * это дословно прежний хвост performSync.
+	 */
+	private async writeMirrorAndReport(context: SyncContext, content: string): Promise<SubOutcome> {
+		const { sub } = context;
+		const path = mirrorPath(sub, context.inboxFile);
+		const current = await this.deps.vault.read(path);
+		if (!this.isCurrent(context)) return this.skippedOutcome(sub);
+		// запись ТОЛЬКО при изменении — не будим Remotely Save на неизменной ленте.
+		// Сравниваем без \r: диск мог прийти с CRLF (другой клиент/устройство), а мы
+		// всегда пишем LF — иначе бесконечная «перезапись» эквивалентного контента.
+		const changed = current === null || stripCr(current) !== stripCr(content);
+		if (changed) {
+			await this.deps.vault.write(path, content);
+		}
+		if (!this.isCurrent(context)) {
+			await this.cleanupStaleWrite(sub.id, path);
+			return this.skippedOutcome(sub);
+		}
+		this.knownMirrorPaths.set(sub.id, path);
+		const at = this.deps.clock.now().getTime();
+		this.deps.onResult(sub.id, { ok: true, at });
+		return {
+			id: sub.id,
+			status: changed ? "ok" : "unchanged",
+			lastSuccessAt: at,
+			errorCode: null,
+			changed,
+		};
+	}
+
+	/** Общая классификация/отчёт об ошибке (оба вида источника): сырой текст —
+	 *  только в console-диагностику, персист и UI видят исключительно код. */
+	private handleSyncFailure(context: SyncContext, e: unknown): SubOutcome {
+		const { sub } = context;
+		if (!this.isCurrent(context)) return this.skippedOutcome(sub);
+		const error =
+			e instanceof ExternalSyncError
+				? e
+				: new ExternalSyncError(classifyCode(e), errMessage(e));
+		this.warn(
+			`external sync failed for subscription ${sub.id} [${error.code}]: ${error.message}`,
+		);
+		this.deps.onResult(sub.id, { ok: false, code: error.code, detail: error.message });
+		return {
+			id: sub.id,
+			status: "error",
+			lastSuccessAt: sub.lastSyncAt,
+			errorCode: error.code,
+			changed: false,
+		};
 	}
 
 	private isCurrent(context: SyncContext): boolean {

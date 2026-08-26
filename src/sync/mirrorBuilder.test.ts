@@ -141,3 +141,106 @@ describe("buildMirrorFile — формат и frontmatter", () => {
 		expect(t.due).toBe("2026-07-06");
 	});
 });
+
+describe("идентичность и scope v5 (CalDAV)", () => {
+	// Фиксированные вхождения для регрессии байт-стабильности ниже.
+	const legacyA = occ({ uid: "fixed-uid-A", recurrenceKey: "2026-07-06T10:00:00" });
+	const legacyB = occ({
+		uid: "fixed-uid-B",
+		recurrenceKey: "2026-07-13T09:00:00",
+		date: "2026-07-13",
+		startTime: "09:00",
+		endTime: "09:30",
+	});
+
+	it("РЕГРЕССИЯ БАЙТ-СТАБИЛЬНОСТИ: externalOccurrenceId без namespace — те же id, что и до CalDAV (§4.5)", () => {
+		// Значения получены прогоном ТЕКУЩЕЙ реализации до добавления namespace.
+		// ЭТИ ЛИТЕРАЛЫ НЕЛЬЗЯ МЕНЯТЬ: от них зависит 🆔 каждой уже сохранённой
+		// строки-зеркала ICS на дисках пользователей — смена алгоритма-по-умолчанию
+		// «перечитала» бы (обесценила) всю историю линковки внешних событий с задачами.
+		expect(externalOccurrenceId(legacyA)).toBe("gq38wqkear");
+		expect(externalOccurrenceId(legacyB)).toBe("1xx29prqcw");
+	});
+
+	it("РЕГРЕССИЯ БАЙТ-СТАБИЛЬНОСТИ: buildMirrorFile без idNamespace/scopeId — байт-в-байт как раньше", () => {
+		const text = buildMirrorFile([legacyA, legacyB], { name: "Работа" });
+		expect(text).toBe(
+			"---\n" +
+				"gtd-events: true\n" +
+				"gtd-external: true\n" +
+				'gtd-external-name: "Работа"\n' +
+				"---\n" +
+				"%% Зеркало внешнего календаря «Работа». Правки затираются синхронизацией — не редактируйте вручную. %%\n" +
+				"\n" +
+				"- [ ] Событие 📅 2026-07-06 10:00-10:30 🆔 gq38wqkear\n" +
+				"- [ ] Событие 📅 2026-07-13 09:00-09:30 🆔 1xx29prqcw\n",
+		);
+	});
+
+	it("namespace меняет id: разные namespace → разные id; тот же namespace дважды → тот же id; '' === undefined", () => {
+		const withoutNs = externalOccurrenceId(legacyA);
+		const nsA = externalOccurrenceId(legacyA, "accA col1");
+		const nsB = externalOccurrenceId(legacyA, "accB col1");
+
+		expect(nsA).not.toBe(nsB);
+		expect(nsA).not.toBe(withoutNs);
+		expect(nsB).not.toBe(withoutNs);
+
+		// тот же namespace дважды — идемпотентно
+		expect(externalOccurrenceId(legacyA, "accA col1")).toBe(nsA);
+
+		// пустая строка namespace — legacy-алгоритм (как отсутствие namespace)
+		expect(externalOccurrenceId(legacyA, "")).toBe(withoutNs);
+	});
+
+	it("один и тот же remote UID в двух коллекциях → разные 🆔 в отрендеренных строках (§4.5)", () => {
+		const sameUidOcc = occ({ uid: "shared-remote-uid" });
+		const fileA = buildMirrorFile([sameUidOcc], { name: "X", idNamespace: "accA col1" });
+		const fileB = buildMirrorFile([sameUidOcc], { name: "X", idNamespace: "accB col1" });
+
+		const idOf = (text: string): string => taskLines(text)[0]!.match(/🆔 ([0-9a-z]{10})/)![1]!;
+		expect(idOf(fileA)).not.toBe(idOf(fileB));
+	});
+
+	it("scopeId сериализуется как «… 🆔 <id> 🧭 <scope>» — 🧭 СТРОГО после 🆔 (переупорядочение переписало бы каждое зеркало)", () => {
+		const text = buildMirrorFile([occ()], { name: "X", scopeId: "work" });
+		const line = taskLines(text)[0]!;
+		expect(line).toMatch(/ 🆔 [0-9a-z]{10} 🧭 work$/);
+	});
+
+	it("отсутствующий/null/пустой/пробельный scopeId — 🧭 нигде нет; байт-в-байт как legacy", () => {
+		const legacy = buildMirrorFile([occ()], { name: "X" });
+		for (const scopeId of [undefined, null, "", "   "]) {
+			const text = buildMirrorFile([occ()], { name: "X", scopeId });
+			expect(text).not.toContain("🧭");
+			expect(text).toBe(legacy);
+		}
+	});
+
+	it("🆔 и порядок строк не зависят от порядка входа/имени подписки — только от даты/времени/id", () => {
+		const a = occ({ uid: "a", date: "2026-07-06", startTime: "08:00" });
+		const b = occ({ uid: "b", date: "2026-07-06", startTime: "10:00" });
+		const c = occ({ uid: "c", date: "2026-07-08", startTime: "09:00" });
+
+		const forward = buildMirrorFile([a, b, c], { name: "Работа" });
+		const shuffledDifferentName = buildMirrorFile([c, a, b], { name: "Личное" });
+
+		const idsOf = (text: string): string[] =>
+			taskLines(text).map((l) => l.match(/🆔 ([0-9a-z]{10})/)![1]!);
+
+		expect(idsOf(shuffledDifferentName)).toEqual(idsOf(forward));
+	});
+
+	it("buildMirrorFile([]) со scopeId/idNamespace — пустое тело (frontmatter + заголовок + \\n), без токенов scope", () => {
+		const text = buildMirrorFile([], {
+			name: "X",
+			scopeId: "work",
+			idNamespace: "accA col1",
+		});
+		expect(text).not.toContain("🧭");
+		expect(text.endsWith("\n")).toBe(true);
+		expect(text).toContain("gtd-events: true");
+		expect(text).toContain("Зеркало внешнего календаря");
+		expect(taskLines(text)).toEqual([]);
+	});
+});

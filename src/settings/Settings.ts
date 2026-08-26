@@ -1,6 +1,7 @@
 /** Модель настроек (ТЗ §9). Персистится через loadData/saveData. */
 
 import type { PromotionRetry } from "../core/tickler/promote";
+import type { ExternalSyncErrorCode } from "../sync/externalSyncStatus";
 
 export type PromoteTo = "origin" | "inbox";
 export type CatchUpPolicy = "latest" | "all" | "none";
@@ -15,8 +16,14 @@ export type QuickAddKind = "task" | "event";
 /**
  * Версия формата data.json.  Она отделена от версии плагина: формат настроек
  * меняется только когда требуется миграция сохранённых пользовательских данных.
+ *
+ * v5 (CalDAV): дискриминированный союз источников внешних календарей
+ * (ics/caldav/invalid), реестр caldavAccounts, санитизированный errorCode в
+ * статусе подписки. ИНВАРИАНТ этапа: полный набор персистентных полей v5
+ * зафиксирован одним коммитом — последующие этапы добавляют только поведение,
+ * но не поля (иначе уже проштампованные v5-хранилища не получат их миграцию).
  */
-export const SETTINGS_FORMAT_VERSION = 4;
+export const SETTINGS_FORMAT_VERSION = 5;
 
 export interface DeferPreset {
 	label: string;
@@ -24,22 +31,96 @@ export interface DeferPreset {
 	offsetDays: number;
 }
 
-/**
- * Подписка на внешний iCal-календарь (§внешние календари). Материализуется в
- * файл-зеркало рядом с единым GTD-хранилищем. Персистится в data.json.
- * lastSyncAt/lastError — статус последней синхронизации (обновляет SyncService).
- */
-export interface ExternalCalendarSub {
+/** Режим приватности CalDAV-коллекции (§4.3 CalDAV-заказа). "unconfigured" —
+ *  draft-состояние после discovery: пользователь ещё не сделал явный выбор,
+ *  и подписку НЕЛЬЗЯ включить или синхронизировать (гейт на sync-слое). */
+export type ExternalPrivacyMode = "unconfigured" | "details" | "busy";
+
+/** Общие поля активных подписок (ics и caldav). */
+interface ExternalCalendarSubCommon {
 	/** Стабильный внутренний id (ключ статуса/удаления); не меняется при правках. */
 	id: string;
 	/** Отображаемое имя (frontmatter, заголовок, имя файла-зеркала). */
 	name: string;
-	/** Секретный/публичный адрес .ics-ленты. Хранится локально в data.json. */
-	url: string;
 	/** Epoch-мс последней УСПЕШНОЙ синхронизации; null — ещё не синхронизировалась. */
 	lastSyncAt: number | null;
-	/** Текст последней ошибки (сеть/разбор) или null — последняя попытка успешна. */
+	/**
+	 * Устаревшее поле сырого текста ошибки (до v5). v5-писатели держат его
+	 * null; поле сохранено, чтобы откат на 0.14.1 продолжал загружать
+	 * ICS-подписки без сброса массива (rollback-совместимость).
+	 */
 	lastError: string | null;
+	/** Санитизированный код последней ошибки (v5+); null — последняя попытка
+	 *  успешна или попыток ещё не было. Никогда не содержит сырой текст. */
+	errorCode: ExternalSyncErrorCode | null;
+}
+
+/**
+ * Подписка на внешний iCal-календарь (§внешние календари). Материализуется в
+ * файл-зеркало рядом с единым GTD-хранилищем. Персистится в data.json.
+ * `kind` отсутствует в legacy-файлах — отсутствие читается как "ics"
+ * (сознательно отложенная миграция секретного URL в SecretStorage: §8 заказа).
+ */
+export interface IcsCalendarSub extends ExternalCalendarSubCommon {
+	kind?: "ics";
+	/** Секретный/публичный адрес .ics-ленты. Хранится локально в data.json. */
+	url: string;
+}
+
+/**
+ * Read-only CalDAV-подписка: одна выбранная коллекция одного аккаунта.
+ * Никаких href/username/token здесь — только opaque-ключи; всё
+ * identity-содержащее живёт в SecretStorage (§5.1 CalDAV-заказа).
+ */
+export interface CalDavCalendarSub extends ExternalCalendarSubCommon {
+	kind: "caldav";
+	/** Ссылка на CalDavAccount.id (реестр caldavAccounts). */
+	accountId: string;
+	/** Opaque стабильный ключ коллекции (НЕ href и НЕ display name). */
+	collectionKey: string;
+	privacy: ExternalPrivacyMode;
+	/** Явное включение синхронизации; false и privacy "unconfigured" — не синкать. */
+	enabled: boolean;
+	/** Optional GTD-scope: канонический 🧭 в строках зеркала; null — глобально. */
+	scopeId: string | null;
+	/**
+	 * Durable-маркер fail-closed сжатия приватности (details → busy, §4.3):
+	 * true — детальное зеркало ещё не зачищено; подписка остаётся за fence и
+	 * не синкается, пока зачистка не завершится. Никогда не откатывает privacy.
+	 */
+	pendingRedaction: boolean;
+}
+
+/**
+ * Инертная запись вместо повреждённой/неизвестной подписки: не синкается, не
+ * активируется молча и не удаляется молча (§8 заказа — fail-closed без потери
+ * записи). Исходный payload сброшен намеренно: он не прошёл схему и не должен
+ * жить в data.json. Зеркало с этим id защищено от orphan-очистки.
+ */
+export interface InvalidCalendarSub {
+	kind: "invalid";
+	id: string;
+	/** Класс причины (имя поля/код), никогда — отклонённое значение. */
+	reason: string;
+}
+
+export type ExternalCalendarSub = IcsCalendarSub | CalDavCalendarSub | InvalidCalendarSub;
+/** Подписки, которые участвуют в синхронизации/зеркалировании. */
+export type ActiveCalendarSub = IcsCalendarSub | CalDavCalendarSub;
+
+/**
+ * Аккаунт CalDAV-сервера (§4.1 CalDAV-заказа). Ровно один credential в
+ * SecretStorage на аккаунт; несколько подписок-коллекций могут ссылаться на
+ * один accountId. Здесь НЕТ username/token/href — только https-origin и
+ * opaque-ссылка на секрет.
+ */
+export interface CalDavAccount {
+	/** Opaque id (^[a-z0-9]+(-[a-z0-9]+)*$ — контракт SecretStorage-ключей). */
+	id: string;
+	/** ТОЛЬКО https-origin без пути/query (например "https://caldav.example"). */
+	serverOrigin: string;
+	/** Имя записи в Obsidian SecretStorage (тот же формат, что id). */
+	secretRef: string;
 }
 
 export interface GtdFlowSettings {
@@ -108,9 +189,12 @@ export interface GtdFlowSettings {
 	 *  последний выбор пользователя переживает перезапуск. В UI настроек НЕ показывается —
 	 *  меняется только кликом по переключателю в сетке. Дефолт — «Задача». */
 	lastQuickAddKind: QuickAddKind;
-	/** Подписки на внешние iCal-календари (§внешние календари). Массив заменяется
-	 *  целиком при слиянии (см. mergeSettings). Пусто — фича неактивна. */
+	/** Подписки на внешние календари (§внешние календари). Слияние — по
+	 *  записям: битая запись деградирует в InvalidCalendarSub, соседние
+	 *  подписки сохраняются (см. mergeSettings). Пусто — фича неактивна. */
 	externalCalendars: ExternalCalendarSub[];
+	/** Реестр CalDAV-аккаунтов (без секретов и identity; см. CalDavAccount). */
+	caldavAccounts: CalDavAccount[];
 	/** Интервал поллинга внешних календарей в минутах (min 1, дефолт 5). */
 	externalSyncIntervalMin: number;
 }
@@ -164,6 +248,7 @@ export function createDefaultSettings(): GtdFlowSettings {
 		onboarded: false,
 		lastQuickAddKind: "task",
 		externalCalendars: [],
+		caldavAccounts: [],
 		externalSyncIntervalMin: 5,
 	};
 }

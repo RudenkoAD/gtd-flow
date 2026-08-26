@@ -51,6 +51,58 @@ describe("MCP configuration", () => {
 		}
 	});
 
+	// CalDAV v5: одна битая запись подписки/аккаунта — это tolerated-деградация
+	// (инертная запись/отброшенный аккаунт), а не повод ронять все девять
+	// инструментов: write-target'ы MCP от календарей не зависят.
+	it("битая запись внешнего календаря НЕ роняет инструменты (tolerated)", async () => {
+		const root = await makeVault({
+			".obsidian/plugins/gtd-flow/data.json": JSON.stringify({
+				settingsVersion: 5,
+				inboxFile: "GTD/Inbox.md",
+				externalCalendars: [
+					{
+						id: "good",
+						name: "Ok",
+						url: "https://calendar.example/a.ics",
+						lastSyncAt: null,
+						lastError: null,
+						errorCode: null,
+					},
+					{ id: "broken", kind: "unknown-kind", whatever: 1 },
+				],
+				caldavAccounts: [
+					{ id: "acc", serverOrigin: "http://insecure.example", secretRef: "s" },
+				],
+			}),
+		});
+		try {
+			const settings = await loadSettings(root);
+			expect(settings.externalCalendars).toHaveLength(2);
+			expect(settings.externalCalendars[1]).toEqual({
+				kind: "invalid",
+				id: "broken",
+				reason: "schema",
+			});
+			expect(settings.caldavAccounts).toEqual([]);
+		} finally {
+			await removeVault(root);
+		}
+	});
+
+	it("битый write-target (inboxFile) по-прежнему fail-closed", async () => {
+		const root = await makeVault({
+			".obsidian/plugins/gtd-flow/data.json": JSON.stringify({
+				settingsVersion: 5,
+				inboxFile: "bad\u0000path",
+			}),
+		});
+		try {
+			await expect(loadSettings(root)).rejects.toBeInstanceOf(McpConfigError);
+		} finally {
+			await removeVault(root);
+		}
+	});
+
 	it("data.json из будущей версии по-прежнему fail-closed", async () => {
 		const root = await makeVault({
 			".obsidian/plugins/gtd-flow/data.json": JSON.stringify({

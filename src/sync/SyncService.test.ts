@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ExternalCalendarSub } from "../settings/Settings";
+import type { IcsCalendarSub } from "../settings/Settings";
 import {
 	mirrorPath,
 	SyncService,
@@ -40,20 +40,22 @@ const ICS_ONE_EVENT =
 	"BEGIN:VEVENT\r\nUID:e1\r\nSUMMARY:Встреча\r\nDTSTART:20260716T120000\r\nDTEND:20260716T130000\r\nEND:VEVENT\r\n" +
 	"END:VCALENDAR";
 
-function sub(over: Partial<ExternalCalendarSub> = {}): ExternalCalendarSub {
+function sub(over: Partial<IcsCalendarSub> = {}): IcsCalendarSub {
 	return {
 		id: "s1",
 		name: "Календарь",
 		url: "https://example/basic.ics",
 		lastSyncAt: null,
 		lastError: null,
+		errorCode: null,
 		...over,
 	};
 }
 
 interface Harness {
 	fetchImpl: (url: string) => Promise<string>;
-	subs: ExternalCalendarSub[];
+	subs: IcsCalendarSub[];
+	inertIds: string[];
 	inboxFile: string;
 	feedTimeoutMs?: number;
 	warnings: string[];
@@ -65,6 +67,7 @@ function makeService(over: Partial<Harness> = {}) {
 	const h: Harness = {
 		fetchImpl: async () => ICS_ONE_EVENT,
 		subs: [sub()],
+		inertIds: [],
 		inboxFile: "GTD/Inbox.md",
 		warnings: [],
 		...over,
@@ -74,6 +77,7 @@ function makeService(over: Partial<Harness> = {}) {
 		vault,
 		clock: { now: () => new Date(2026, 6, 15) }, // фикс: окно и даты детерминированы
 		subscriptions: () => h.subs,
+		inertSubscriptionIds: () => h.inertIds,
 		inboxFile: () => h.inboxFile,
 		intervalMin: () => 5,
 		feedTimeoutMs: () => h.feedTimeoutMs ?? 30_000,
@@ -440,5 +444,57 @@ describe("SyncService — deadlines and mirror lifecycle hardening", () => {
 		await svc.syncAll();
 		expect(vault.files.get(path)).toContain('gtd-external-id: "legacy-current"');
 		expect(vault.files.size).toBe(1);
+	});
+});
+
+describe("SyncService — инертные (повреждённые) записи подписок", () => {
+	it("зеркало инертной записи защищено от orphan-очистки, пока запись существует", async () => {
+		const { svc, vault, h } = makeService({ subs: [], inertIds: ["broken-1"] });
+		const orphan =
+			'---\ngtd-events: true\ngtd-external: true\ngtd-external-id: "broken-1"\n---\n';
+		vault.files.set("GTD/External/Битый-000000.md", orphan);
+		await svc.reconcileMirrors();
+		expect(vault.files.has("GTD/External/Битый-000000.md")).toBe(true);
+		expect(vault.deletes).toEqual([]);
+		expect(h.warnings.join("\n")).toContain("invalid subscription record broken-1");
+	});
+
+	it("после удаления инертной записи её зеркало уходит в recoverable-очистку", async () => {
+		const { svc, vault } = makeService({ subs: [], inertIds: [] });
+		const orphan =
+			'---\ngtd-events: true\ngtd-external: true\ngtd-external-id: "broken-1"\n---\n';
+		vault.files.set("GTD/External/Битый-000000.md", orphan);
+		await svc.reconcileMirrors();
+		expect(vault.files.has("GTD/External/Битый-000000.md")).toBe(false);
+		expect(vault.deletes).toEqual(["GTD/External/Битый-000000.md"]);
+	});
+
+	it("caldav-подписка до появления провайдера не делает ни запросов, ни записей", async () => {
+		let fetches = 0;
+		const { svc, vault, results, h } = makeService({ subs: [] });
+		h.fetchImpl = async () => {
+			fetches++;
+			return ICS_ONE_EVENT;
+		};
+		const caldavSub = {
+			kind: "caldav" as const,
+			id: "cd-1",
+			name: "Работа",
+			accountId: "acc-1",
+			collectionKey: "col-1",
+			privacy: "details" as const,
+			enabled: true,
+			scopeId: null,
+			pendingRedaction: false,
+			lastSyncAt: null,
+			lastError: null,
+			errorCode: null,
+		};
+		// Harness типизирован под ics; сервис принимает объединение ActiveCalendarSub.
+		h.subs = [caldavSub as unknown as ReturnType<typeof sub>];
+		await svc.syncAll();
+		expect(fetches).toBe(0);
+		expect(vault.writes).toBe(0);
+		expect(results).toEqual([]);
 	});
 });

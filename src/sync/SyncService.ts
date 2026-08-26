@@ -9,9 +9,15 @@
  * фейковыми портами. Ошибки сети/разбора НЕ роняют плагин: они ловятся и
  * пишутся в статус подписки (onResult), таймер продолжает жить.
  */
-import type { ExternalCalendarSub } from "../settings/Settings";
+import type { ActiveCalendarSub, CalDavAccount } from "../settings/Settings";
 import { buildMirrorFile } from "./mirrorBuilder";
 import { mirrorWindow, parseIcs } from "./icsParse";
+
+/** Минимум, от которого детерминирован путь зеркала: стабильный id + имя. */
+export interface MirrorPathSource {
+	id: string;
+	name: string;
+}
 
 /** Итог синхронизации одной подписки (пишется в статус). */
 export type SyncResult = { ok: true; at: number } | { ok: false; error: string };
@@ -48,8 +54,16 @@ export interface SyncDeps {
 	fetch: (url: string, signal?: AbortSignal) => Promise<string>;
 	vault: SyncVaultPort;
 	clock: SyncClock;
-	/** Актуальный список подписок (читается на каждый проход из настроек). */
-	subscriptions: () => readonly ExternalCalendarSub[];
+	/** Актуальный список АКТИВНЫХ подписок (ics/caldav; читается на каждый
+	 *  проход из настроек). Инертные InvalidCalendarSub сюда не попадают —
+	 *  их id приходят через inertSubscriptionIds. */
+	subscriptions: () => readonly ActiveCalendarSub[];
+	/** Реестр CalDAV-аккаунтов (identity-fence и провайдер этапов 4-5 читают
+	 *  отсюда; секретов здесь нет по построению). */
+	accounts?: () => readonly CalDavAccount[];
+	/** Id инертных (повреждённых) записей подписок: их зеркала нельзя трогать
+	 *  orphan-очисткой, пока запись существует в настройках. */
+	inertSubscriptionIds?: () => readonly string[];
 	/** Unified inbox determines the sibling folder for generated mirrors. */
 	inboxFile: () => string;
 	/** Интервал поллинга в минутах (min 1); читается при планировании. */
@@ -105,7 +119,7 @@ export function subIdSlug(id: string): string {
  * <slug> из id (см. subIdSlug) снимает коллизии одинаковых имён; переименование
  * подписки меняет часть-имя предсказуемо (slug стабилен — привязан к id).
  */
-export function mirrorPath(sub: ExternalCalendarSub, inboxFile: string): string {
+export function mirrorPath(sub: MirrorPathSource, inboxFile: string): string {
 	const file = `${EXTERNAL_DIR}/${safeMirrorFileName(sub.name)}-${subIdSlug(sub.id)}.md`;
 	return underInboxParent(inboxFile, file);
 }
@@ -113,7 +127,7 @@ export function mirrorPath(sub: ExternalCalendarSub, inboxFile: string): string 
 /** Pre-stable-id releases used this name-only form.  It is only used to
  * recognise a safe one-time migration candidate, never to delete an arbitrary
  * user-created `gtd-external` note. */
-function legacyMirrorPath(sub: ExternalCalendarSub, inboxFile: string): string {
+function legacyMirrorPath(sub: MirrorPathSource, inboxFile: string): string {
 	return underInboxParent(inboxFile, `${EXTERNAL_DIR}/${safeMirrorFileName(sub.name)}.md`);
 }
 
@@ -136,7 +150,7 @@ function stripCr(s: string): string {
 }
 
 interface SyncContext {
-	sub: ExternalCalendarSub;
+	sub: ActiveCalendarSub;
 	generation: number;
 	inboxFile: string;
 }
@@ -225,7 +239,7 @@ export class SyncService {
 	 * vault.delete (предпочтительно в корзину); порт без delete или отсутствие файла —
 	 * тихо ничего. Дёргает SettingsTab (кнопка удаления и смена имени).
 	 */
-	async deleteMirror(sub: ExternalCalendarSub): Promise<void> {
+	async deleteMirror(sub: MirrorPathSource): Promise<void> {
 		const path = mirrorPath(sub, this.deps.inboxFile());
 		await this.deletePath(path);
 		if (this.knownMirrorPaths.get(sub.id) === path) this.knownMirrorPaths.delete(sub.id);
@@ -233,7 +247,7 @@ export class SyncService {
 
 	/** Remove a subscription safely: tombstone and abort before touching the
 	 * mirror, so a delayed fetch cannot recreate it during the UI's delete flow. */
-	async removeSubscription(sub: ExternalCalendarSub): Promise<void> {
+	async removeSubscription(sub: MirrorPathSource): Promise<void> {
 		this.tombstones.add(sub.id);
 		this.configGeneration++;
 		this.aborters.get(sub.id)?.abort();
@@ -271,11 +285,21 @@ export class SyncService {
 		const active = new Map(subs.map((sub) => [sub.id, sub]));
 		const desired = new Map(subs.map((sub) => [sub.id, mirrorPath(sub, inboxFile)]));
 
+		const inert = new Set(this.deps.inertSubscriptionIds?.() ?? []);
+
 		const discovered = await this.deps.vault.listManagedMirrors?.();
 		if (!this.isConfigurationCurrent(generation)) return;
 		if (discovered !== undefined) {
 			for (const mirror of discovered) {
 				if (!this.isConfigurationCurrent(generation)) return;
+				// Зеркало инертной (повреждённой) записи не трогаем: пока запись
+				// существует в настройках, её данные не подлежат orphan-очистке.
+				if (mirror.subscriptionId !== null && inert.has(mirror.subscriptionId)) {
+					this.warn(
+						`External calendar mirror for invalid subscription record ${mirror.subscriptionId} left unchanged`,
+					);
+					continue;
+				}
 				const sub =
 					mirror.subscriptionId === null ? undefined : active.get(mirror.subscriptionId);
 				if (sub === undefined) {
@@ -365,7 +389,7 @@ export class SyncService {
 		}
 	}
 
-	private syncOne(sub: ExternalCalendarSub): Promise<void> {
+	private syncOne(sub: ActiveCalendarSub): Promise<void> {
 		if (this.disposed || this.tombstones.has(sub.id)) return Promise.resolve();
 		const existing = this.inFlight.get(sub.id);
 		if (existing !== undefined && existing.generation === this.configGeneration)
@@ -386,6 +410,9 @@ export class SyncService {
 
 	private async performSync(context: SyncContext): Promise<void> {
 		const { sub } = context;
+		// CalDAV-провайдер появляется на этапе 4; до него caldav-подписка не
+		// делает ни сетевых запросов, ни записей (этап 2 даст ей отчёт "skipped").
+		if (sub.kind === "caldav") return;
 		try {
 			const raw = sub.url.trim();
 			if (raw === "") throw new Error("не задан адрес ленты");
@@ -429,11 +456,22 @@ export class SyncService {
 		)
 			return false;
 		const current = this.deps.subscriptions().find((sub) => sub.id === context.sub.id);
-		return (
-			current !== undefined &&
-			current.name === context.sub.name &&
-			current.url === context.sub.url
-		);
+		if (current === undefined || current.name !== context.sub.name) return false;
+		// Identity-fence по виду источника. Для ics — прежнее сравнение url.
+		// Для caldav сравнивается полный config-fingerprint (accountId,
+		// collectionKey, privacy, scopeId, enabled): любое его изменение
+		// обесценивает in-flight работу (этап 4 использует это при провайдере).
+		if (context.sub.kind === "caldav") {
+			return (
+				current.kind === "caldav" &&
+				current.accountId === context.sub.accountId &&
+				current.collectionKey === context.sub.collectionKey &&
+				current.privacy === context.sub.privacy &&
+				current.scopeId === context.sub.scopeId &&
+				current.enabled === context.sub.enabled
+			);
+		}
+		return current.kind !== "caldav" && current.url === context.sub.url;
 	}
 
 	private isConfigurationCurrent(generation: number): boolean {

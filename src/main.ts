@@ -1,7 +1,11 @@
 import { Notice, Platform, Plugin, requestUrl, type WorkspaceLeaf } from "obsidian";
 import { VIEW_META, type GtdViewKind, type ViewMeta } from "./views/registry";
 import type { GtdView } from "./views/GtdView";
-import { DEFAULT_SETTINGS, type GtdFlowSettings } from "./settings/Settings";
+import {
+	DEFAULT_SETTINGS,
+	type ActiveCalendarSub,
+	type GtdFlowSettings,
+} from "./settings/Settings";
 import { mergeSettingsWithDiagnostics } from "./settings/mergeSettings";
 import { GtdSettingsTab } from "./settings/SettingsTab";
 import { MetadataAdapter } from "./adapters/MetadataAdapter";
@@ -369,7 +373,15 @@ export default class GtdFlowPlugin extends Plugin {
 						}),
 				},
 				clock: { now: () => new Date() },
-				subscriptions: () => this.settings.externalCalendars,
+				subscriptions: () =>
+					this.settings.externalCalendars.filter(
+						(sub): sub is ActiveCalendarSub => sub.kind !== "invalid",
+					),
+				accounts: () => this.settings.caldavAccounts,
+				inertSubscriptionIds: () =>
+					this.settings.externalCalendars
+						.filter((sub) => sub.kind === "invalid")
+						.map((sub) => sub.id),
 				inboxFile: () => this.settings.inboxFile,
 				intervalMin: () => this.settings.externalSyncIntervalMin,
 				onResult: (id, result) => this.recordSyncResult(id, result),
@@ -574,11 +586,13 @@ export default class GtdFlowPlugin extends Plugin {
 	 *  что-то изменилось (лишний saveData будит sync-клиент data.json впустую). */
 	private recordSyncResult(id: string, result: SyncResult): void {
 		const sub = this.settings.externalCalendars.find((s) => s.id === id);
-		if (sub === undefined) return;
+		if (sub === undefined || sub.kind === "invalid") return;
 		if (result.ok) {
-			if (sub.lastSyncAt === result.at && sub.lastError === null) return;
+			if (sub.lastSyncAt === result.at && sub.lastError === null && sub.errorCode === null)
+				return;
 			sub.lastSyncAt = result.at;
 			sub.lastError = null;
+			sub.errorCode = null;
 		} else {
 			if (sub.lastError === result.error) return;
 			sub.lastError = result.error;

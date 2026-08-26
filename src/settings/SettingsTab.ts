@@ -10,7 +10,13 @@ import {
 	type AiFeedbackInspection,
 	type AiFeedbackInspectionEvent,
 } from "../services/MetadataServices";
-import type { CalendarField, ExternalCalendarSub } from "./Settings";
+import type {
+	ActiveCalendarSub,
+	CalDavCalendarSub,
+	CalendarField,
+	IcsCalendarSub,
+	InvalidCalendarSub,
+} from "./Settings";
 import {
 	CALENDAR_FIELDS,
 	commitInboxFile,
@@ -568,7 +574,11 @@ export class GtdSettingsTab extends PluginSettingTab {
 		if (subs.length === 0) {
 			el.createDiv({ cls: "setting-item-description", text: "Подписок пока нет." });
 		}
-		for (const sub of subs) this.renderExternalSub(el, sub);
+		for (const sub of subs) {
+			if (sub.kind === "invalid") this.renderInvalidSub(el, sub);
+			else if (sub.kind === "caldav") this.renderCaldavSubStub(el, sub);
+			else this.renderExternalSub(el, sub);
+		}
 
 		new Setting(el)
 			.addButton((b) =>
@@ -594,6 +604,7 @@ export class GtdSettingsTab extends PluginSettingTab {
 								url: "",
 								lastSyncAt: null,
 								lastError: null,
+								errorCode: null,
 							});
 							await this.save();
 							this.display();
@@ -602,9 +613,46 @@ export class GtdSettingsTab extends PluginSettingTab {
 			);
 	}
 
+	/**
+	 * Повреждённая запись подписки (не прошла схему при загрузке): не синкается
+	 * и не активируется; пользователь может только удалить её. Зеркало записи
+	 * (если было) защищено от orphan-очистки, пока запись существует; после
+	 * удаления записи reconcile отправит зеркало в корзину (восстановимо).
+	 */
+	private renderInvalidSub(el: HTMLElement, sub: InvalidCalendarSub): void {
+		new Setting(el)
+			.setName("Повреждённая запись подписки")
+			.setDesc(`Запись «${sub.id}» не прошла проверку формата и отключена (fail-closed).`)
+			.addExtraButton((b) =>
+				b
+					.setIcon("trash")
+					.setTooltip("Удалить запись")
+					.onClick(() =>
+						this.reportChange(async () => {
+							const subs = this.plugin.settings.externalCalendars;
+							const i = subs.indexOf(sub);
+							if (i >= 0) subs.splice(i, 1);
+							if (this.calendarSync)
+								this.plugin.desktopCalendarSync().configurationChanged();
+							await this.save();
+							this.display();
+						}),
+					),
+			);
+	}
+
+	/** CalDAV-подписка: полноценный UI появляется на этапе настройки CalDAV
+	 *  (аккаунты/discovery). До него запись видима и защищена, но без органов
+	 *  управления — создать её текущий UI не может. */
+	private renderCaldavSubStub(el: HTMLElement, sub: CalDavCalendarSub): void {
+		new Setting(el)
+			.setName(sub.name.trim() === "" ? "(без имени)" : sub.name)
+			.setDesc(`CalDAV-коллекция: ${formatSyncStatus(sub)}`);
+	}
+
 	/** One subscription: name, status, and controls; feed URL is on the next row.
 	 *  с предупреждением о секретности (строка 2). */
-	private renderExternalSub(el: HTMLElement, sub: ExternalCalendarSub): void {
+	private renderExternalSub(el: HTMLElement, sub: IcsCalendarSub): void {
 		const row = new Setting(el)
 			.setName(sub.name.trim() === "" ? "(без имени)" : sub.name)
 			.setDesc(formatSyncStatus(sub));
@@ -996,7 +1044,8 @@ function commitOnBlur(inputEl: HTMLInputElement, commit: () => void | Promise<vo
 }
 
 /** Человекочитаемый статус подписки для описания строки. */
-function formatSyncStatus(sub: ExternalCalendarSub): string {
+function formatSyncStatus(sub: ActiveCalendarSub): string {
+	if (sub.errorCode !== null) return `⚠ ошибка: ${sub.errorCode}`;
 	if (sub.lastError !== null) return `⚠ ошибка: ${sub.lastError}`;
 	if (sub.lastSyncAt === null) return "ещё не синхронизировалось";
 	const d = new Date(sub.lastSyncAt);

@@ -11,13 +11,21 @@
  */
 import { type ZodType, z } from "../schema/zod";
 import { legacyInboxCandidates } from "../core/scope/namespaceMigration";
-import { SETTINGS_FORMAT_VERSION, type GtdFlowSettings } from "./Settings";
+import { isScopeId } from "../core/scope/scope";
+import { EXTERNAL_SYNC_ERROR_CODES } from "../sync/externalSyncStatus";
+import {
+	SETTINGS_FORMAT_VERSION,
+	type CalDavAccount,
+	type ExternalCalendarSub,
+	type GtdFlowSettings,
+} from "./Settings";
 
 type JsonObject = Record<string, unknown>;
 
 const MAX_PATH_LENGTH = 1024;
 const MAX_TEXT_LENGTH = 4096;
 const MAX_SUBSCRIPTIONS = 200;
+const MAX_ACCOUNTS = 50;
 const MAX_PRESETS = 200;
 const MAX_RETRIES = 10_000;
 
@@ -66,12 +74,71 @@ function isCalendarUrl(value: string): boolean {
 	}
 }
 
-const externalCalendarSchema = z.object({
+/** ТОЛЬКО канонический https-origin: без пути, query, учётных данных в URL и
+ * хвостового слэша (§6.3/§7 CalDAV-заказа: HTTPS обязателен, origin-only). */
+function isHttpsOrigin(value: string): boolean {
+	try {
+		const url = new URL(value);
+		return url.protocol === "https:" && url.origin === value;
+	} catch {
+		return false;
+	}
+}
+
+/** Контракт ключей Obsidian SecretStorage (`setSecret` кидает на иных id). */
+const secretSlugString = () =>
+	boundedString(256).regex(/^[a-z0-9]+(-[a-z0-9]+)*$/u, "must be a lowercase slug");
+
+const subscriptionStatusShape = {
+	lastSyncAt: z.number().finite().int().min(0).nullable(),
+	lastError: boundedString(2048).nullable(),
+	errorCode: z.enum(EXTERNAL_SYNC_ERROR_CODES).nullable(),
+};
+
+const icsCalendarSchema = z.object({
+	// Отсутствующий kind — legacy-ICS (см. IcsCalendarSub).
+	kind: z.literal("ics").optional(),
 	id: nonEmptyString(256),
 	name: trimmedString(256),
 	url: nonEmptyString(MAX_TEXT_LENGTH).refine(isCalendarUrl, "must be an http(s) or webcal URL"),
-	lastSyncAt: z.number().finite().int().min(0).nullable(),
-	lastError: boundedString(2048).nullable(),
+	...subscriptionStatusShape,
+});
+
+const caldavCalendarSchema = z.object({
+	kind: z.literal("caldav"),
+	id: nonEmptyString(256),
+	name: trimmedString(256),
+	accountId: secretSlugString(),
+	collectionKey: nonEmptyString(256),
+	privacy: z.enum(["unconfigured", "details", "busy"]),
+	enabled: z.boolean(),
+	scopeId: nonEmptyString(64).refine(isScopeId, "must be a scope id").nullable(),
+	pendingRedaction: z.boolean(),
+	...subscriptionStatusShape,
+});
+
+const invalidCalendarSchema = z.object({
+	kind: z.literal("invalid"),
+	id: nonEmptyString(256),
+	reason: boundedString(256),
+});
+
+/** Порядок веток: дискриминированные kind-варианты раньше legacy-ics (у той
+ * kind опционален). Неизвестный kind не проходит ни одну ветку → запись
+ * деградирует в инертную (fail-closed, см. mergeExternalCalendars). */
+const externalCalendarSchema = z.union([
+	caldavCalendarSchema,
+	invalidCalendarSchema,
+	icsCalendarSchema,
+]);
+
+const caldavAccountSchema = z.object({
+	id: secretSlugString(),
+	serverOrigin: nonEmptyString(MAX_TEXT_LENGTH).refine(
+		isHttpsOrigin,
+		"must be a bare https origin",
+	),
+	secretRef: secretSlugString(),
 });
 
 const debounceSchema = z.object({
@@ -132,7 +199,14 @@ export const PersistedSettingsSchema = z
 		dayStatusFile: pathString(),
 		onboarded: z.boolean(),
 		lastQuickAddKind: z.enum(["task", "event"]),
-		externalCalendars: z.array(externalCalendarSchema).max(MAX_SUBSCRIPTIONS),
+		// На MCP trust boundary записи подписок/аккаунтов НЕ валидируются
+		// строго: они никогда не являются write-target'ами MCP, а строгая
+		// проверка здесь превращала одну битую запись в отказ всех девяти
+		// инструментов (первый гейт mcp/config.ts работает до merge и до
+		// классификации диагностик). Настоящая по-записная валидация — в
+		// mergeExternalCalendars/mergeCaldavAccounts ниже.
+		externalCalendars: z.array(z.unknown()).max(MAX_SUBSCRIPTIONS),
+		caldavAccounts: z.array(z.unknown()).max(MAX_ACCOUNTS),
 		externalSyncIntervalMin: clampedInt(1, 1_440),
 	})
 	.partial()
@@ -148,6 +222,7 @@ export const PersistedSettingsSchema = z
 class SettingsDiagnostics {
 	readonly all: string[] = [];
 	readonly migrations: string[] = [];
+	readonly tolerated: string[] = [];
 
 	/** Поле не прошло проверку и откатилось (recovery). */
 	push(message: string): void {
@@ -159,6 +234,17 @@ class SettingsDiagnostics {
 		this.all.push(message);
 		this.migrations.push(message);
 	}
+
+	/**
+	 * Третий класс: запись деградировала fail-closed, но соседние данные и все
+	 * write-target'ы целы. Не recovery (MCP не обязан падать) и не миграция
+	 * (данные записи потеряны сознательно). Пример: битая подписка внешнего
+	 * календаря стала инертной InvalidCalendarSub.
+	 */
+	tolerate(message: string): void {
+		this.all.push(message);
+		this.tolerated.push(message);
+	}
 }
 
 export interface SettingsMergeResult {
@@ -167,6 +253,10 @@ export interface SettingsMergeResult {
 	diagnostics: string[];
 	/** Подмножество diagnostics, порождённое штатной миграцией формата. */
 	migrations: string[];
+	/** Подмножество diagnostics: запись деградировала fail-closed (инертная
+	 *  подписка/отброшенный аккаунт), но соседние данные целы. Для fail-closed
+	 *  потребителей (MCP) — не повод падать. */
+	tolerated: string[];
 	/**
 	 * Путь единого файла входящих, ВЫВЕДЕННЫЙ миграцией v1 → v2 (null — вывода не
 	 * было). Плагин показывает его пользователю однократно и сохраняет настройки,
@@ -207,6 +297,7 @@ export function mergeSettingsWithDiagnostics(
 			settings: freshDefaults(defaults),
 			diagnostics: diagnostics.all,
 			migrations: diagnostics.migrations,
+			tolerated: diagnostics.tolerated,
 			migratedInboxFile: null,
 		};
 	}
@@ -273,13 +364,8 @@ export function mergeSettingsWithDiagnostics(
 	assignIfValid(settings, "dayStatusFile", pathString(), data, diagnostics);
 	assignIfValid(settings, "onboarded", z.boolean(), data, diagnostics);
 	assignIfValid(settings, "lastQuickAddKind", z.enum(["task", "event"]), data, diagnostics);
-	assignIfValid(
-		settings,
-		"externalCalendars",
-		z.array(externalCalendarSchema).max(MAX_SUBSCRIPTIONS),
-		data,
-		diagnostics,
-	);
+	mergeExternalCalendars(settings, data, diagnostics);
+	mergeCaldavAccounts(settings, data, diagnostics);
 	assignIfValid(settings, "externalSyncIntervalMin", clampedInt(1, 1_440), data, diagnostics);
 
 	mergeNested(
@@ -312,8 +398,73 @@ export function mergeSettingsWithDiagnostics(
 		settings,
 		diagnostics: diagnostics.all,
 		migrations: diagnostics.migrations,
+		tolerated: diagnostics.tolerated,
 		migratedInboxFile,
 	};
+}
+
+/**
+ * По-записное слияние подписок (§8 CalDAV-заказа): битая или неизвестная
+ * запись НЕ сбрасывает соседние и НЕ активируется молча — она деградирует в
+ * инертную InvalidCalendarSub с сохранением id (если он читается), чтобы её
+ * зеркало не было снесено orphan-очисткой, а пользователь видел запись в UI.
+ * Отклонённый payload сбрасывается: он не прошёл схему и не пере-сериализуется.
+ */
+function mergeExternalCalendars(
+	settings: GtdFlowSettings,
+	raw: JsonObject,
+	diagnostics: SettingsDiagnostics,
+): void {
+	if (!("externalCalendars" in raw)) return;
+	const value = raw["externalCalendars"];
+	if (!Array.isArray(value) || value.length > MAX_SUBSCRIPTIONS) {
+		diagnostics.push("externalCalendars: invalid; default used");
+		return;
+	}
+	const entries: ExternalCalendarSub[] = [];
+	value.forEach((entry, index) => {
+		const parsed = externalCalendarSchema.safeParse(entry);
+		if (parsed.success) {
+			entries.push(parsed.data as ExternalCalendarSub);
+			return;
+		}
+		const rawId = asObject(entry)?.["id"];
+		const idParsed =
+			typeof rawId === "string" ? nonEmptyString(256).safeParse(rawId) : undefined;
+		entries.push({
+			kind: "invalid",
+			id: idParsed?.success === true ? idParsed.data : `invalid-${index}`,
+			reason: "schema",
+		});
+		diagnostics.tolerate(`externalCalendars[${index}]: invalid entry demoted to inert record`);
+	});
+	settings.externalCalendars = entries;
+}
+
+/**
+ * По-записное слияние реестра аккаунтов. Битый аккаунт отбрасывается с
+ * tolerated-диагностикой: он пересоздаваем пользователем (origin + выбор
+ * секрета), удалённые данные не теряются, а его подписки на следующем проходе
+ * отчитаются ошибкой вместо молчаливой работы с битым origin.
+ */
+function mergeCaldavAccounts(
+	settings: GtdFlowSettings,
+	raw: JsonObject,
+	diagnostics: SettingsDiagnostics,
+): void {
+	if (!("caldavAccounts" in raw)) return;
+	const value = raw["caldavAccounts"];
+	if (!Array.isArray(value) || value.length > MAX_ACCOUNTS) {
+		diagnostics.push("caldavAccounts: invalid; default used");
+		return;
+	}
+	const accounts: CalDavAccount[] = [];
+	value.forEach((entry, index) => {
+		const parsed = caldavAccountSchema.safeParse(entry);
+		if (parsed.success) accounts.push(parsed.data as CalDavAccount);
+		else diagnostics.tolerate(`caldavAccounts[${index}]: invalid entry dropped`);
+	});
+	settings.caldavAccounts = accounts;
 }
 
 /** Версия 0 — все текущие legacy data.json без settingsVersion. Пока миграция
@@ -379,6 +530,18 @@ function migrateToCurrent(
 		migrated["durationLongStyle"] = "whole-days";
 		diagnostics.migration("durationLongStyle: migrated to whole-days");
 	}
+	// v4 → v5: подписки получают обязательное поле errorCode (санитизированный
+	// статус). Значения пользователя не меняются — только дописывается null.
+	if (version < 5 && Array.isArray(migrated["externalCalendars"])) {
+		let updated = false;
+		migrated["externalCalendars"] = migrated["externalCalendars"].map((entry) => {
+			const record = asObject(entry);
+			if (record === null || "errorCode" in record) return entry;
+			updated = true;
+			return { ...record, errorCode: null };
+		});
+		if (updated) diagnostics.migration("externalCalendars: migrated to v5 status fields");
+	}
 	return migrated;
 }
 
@@ -437,6 +600,7 @@ function freshDefaults(defaults: GtdFlowSettings): GtdFlowSettings {
 		promoteRetries: defaults.promoteRetries.map((retry) => ({ ...retry })),
 		recurring: { ...defaults.recurring },
 		externalCalendars: defaults.externalCalendars.map((calendar) => ({ ...calendar })),
+		caldavAccounts: defaults.caldavAccounts.map((account) => ({ ...account })),
 	};
 }
 

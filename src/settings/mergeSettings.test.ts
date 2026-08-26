@@ -269,7 +269,10 @@ describe("mergeSettings", () => {
 			{ taskId: "task-1", source: "GTD/Board.md", target: "GTD/Inbox.md" },
 		]);
 		expect(merged.inboxFile).toBe("Work/Входящие.md");
-		expect(merged.externalCalendars[0]?.url).toBe("webcal://calendar.example/team.ics");
+		expect(merged.externalCalendars[0]).toMatchObject({
+			url: "webcal://calendar.example/team.ics",
+			errorCode: null,
+		});
 		expect(merged.calendarPlacement).toEqual(["start", "due", "scheduled"]);
 	});
 
@@ -296,7 +299,10 @@ describe("mergeSettings", () => {
 
 		expect(settings.inboxFile).toBe(DEFAULT_SETTINGS.inboxFile);
 		expect(settings.calendarPlacement).toEqual(DEFAULT_SETTINGS.calendarPlacement);
-		expect(settings.externalCalendars).toEqual([]);
+		// Битая подписка деградирует в инертную запись, а не сбрасывает массив.
+		expect(settings.externalCalendars).toEqual([
+			{ kind: "invalid", id: "x", reason: "schema" },
+		]);
 		expect(settings.promoteRetries).toEqual([]);
 		expect(settings.firstDayOfWeek).toBe(6);
 		expect(settings.virtualizeThreshold).toBe(0);
@@ -307,7 +313,7 @@ describe("mergeSettings", () => {
 			expect.arrayContaining([
 				"inboxFile: invalid; default used",
 				"calendarPlacement: invalid; default used",
-				"externalCalendars: invalid; default used",
+				"externalCalendars[0]: invalid entry demoted to inert record",
 				"promoteRetries: invalid; default used",
 			]),
 		);
@@ -331,10 +337,168 @@ describe("mergeSettings", () => {
 			url: "https://calendar.example/feed.ics",
 			lastSyncAt: null,
 			lastError: null,
+			errorCode: null,
+		});
+		one.caldavAccounts.push({
+			id: "acc-1",
+			serverOrigin: "https://caldav.example",
+			secretRef: "gtd-flow-caldav-acc-1",
 		});
 
 		expect(two).toEqual(DEFAULT_SETTINGS);
 		expect(DEFAULT_SETTINGS.ai.enabled).toBe(false);
 		expect(DEFAULT_SETTINGS.deferPresets[0]?.label).toBe("Завтра");
+	});
+});
+
+/**
+ * v5 (CalDAV): дискриминированный союз источников, по-записная деградация,
+ * реестр аккаунтов. Ключевые инварианты §8 CalDAV-заказа: legacy-ICS грузится
+ * без изменения id/зеркал, неизвестный kind — fail-closed БЕЗ молчаливого
+ * умолчания и БЕЗ потери записи, диагностика не содержит значений.
+ */
+describe("mergeSettings v5 (CalDAV)", () => {
+	const legacyIcs = {
+		id: "ext-legacy-1",
+		name: "Работа",
+		url: "https://calendar.example/secret.ics",
+		lastSyncAt: 123,
+		lastError: null,
+	};
+
+	it("v4 → v5: legacy ICS-подписка получает errorCode: null без смены id/url", () => {
+		const { settings, migrations, tolerated } = mergeSettingsWithDiagnostics(DEFAULT_SETTINGS, {
+			settingsVersion: 4,
+			inboxFile: "GTD/Inbox.md",
+			externalCalendars: [legacyIcs],
+		});
+		expect(settings.externalCalendars).toEqual([{ ...legacyIcs, errorCode: null }]);
+		expect(migrations).toContain("externalCalendars: migrated to v5 status fields");
+		expect(tolerated).toEqual([]);
+	});
+
+	it("неизвестный kind деградирует fail-closed в инертную запись с сохранением id", () => {
+		const { settings, tolerated, migrations } = mergeSettingsWithDiagnostics(DEFAULT_SETTINGS, {
+			settingsVersion: 5,
+			externalCalendars: [
+				{ ...legacyIcs, errorCode: null },
+				{ kind: "webdav-future", id: "ext-future", secret: "value-x" },
+			],
+		});
+		expect(settings.externalCalendars[0]).toMatchObject({ id: "ext-legacy-1" });
+		expect(settings.externalCalendars[1]).toEqual({
+			kind: "invalid",
+			id: "ext-future",
+			reason: "schema",
+		});
+		expect(tolerated).toEqual(["externalCalendars[1]: invalid entry demoted to inert record"]);
+		expect(migrations).toEqual([]);
+	});
+
+	it("валидная caldav-подписка и инертная запись проходят round-trip без изменений", () => {
+		const caldav = {
+			kind: "caldav" as const,
+			id: "ext-cd-1",
+			name: "Календарь работы",
+			accountId: "acc-1",
+			collectionKey: "col-abc",
+			privacy: "unconfigured" as const,
+			enabled: false,
+			scopeId: "work",
+			pendingRedaction: false,
+			lastSyncAt: null,
+			lastError: null,
+			errorCode: null,
+		};
+		const inert = { kind: "invalid" as const, id: "broken-9", reason: "schema" };
+		const { settings, diagnostics } = mergeSettingsWithDiagnostics(DEFAULT_SETTINGS, {
+			settingsVersion: 5,
+			externalCalendars: [caldav, inert],
+		});
+		expect(settings.externalCalendars).toEqual([caldav, inert]);
+		expect(diagnostics).toEqual([]);
+	});
+
+	it("caldav-подписка с битым scopeId/privacy деградирует по-записно", () => {
+		const { settings, tolerated } = mergeSettingsWithDiagnostics(DEFAULT_SETTINGS, {
+			settingsVersion: 5,
+			externalCalendars: [
+				{
+					kind: "caldav",
+					id: "ext-cd-2",
+					name: "X",
+					accountId: "acc-1",
+					collectionKey: "k",
+					privacy: "everything",
+					enabled: true,
+					scopeId: "Не Scope!",
+					pendingRedaction: false,
+					lastSyncAt: null,
+					lastError: null,
+					errorCode: null,
+				},
+			],
+		});
+		expect(settings.externalCalendars).toEqual([
+			{ kind: "invalid", id: "ext-cd-2", reason: "schema" },
+		]);
+		expect(tolerated).toHaveLength(1);
+	});
+
+	it("caldavAccounts: https-origin обязателен, path/query/http/слаг-нарушения отбрасываются", () => {
+		const good = {
+			id: "acc-1",
+			serverOrigin: "https://caldav.example",
+			secretRef: "gtd-flow-caldav-acc-1",
+		};
+		const { settings, tolerated, diagnostics } = mergeSettingsWithDiagnostics(
+			DEFAULT_SETTINGS,
+			{
+				settingsVersion: 5,
+				caldavAccounts: [
+					good,
+					{ id: "acc-2", serverOrigin: "http://caldav.example", secretRef: "s-2" },
+					{ id: "acc-3", serverOrigin: "https://caldav.example/dav/", secretRef: "s-3" },
+					{
+						id: "acc-4",
+						// Конкатенация — чтобы синтетический пример не срабатывал
+						// в check-secret-hygiene при скане исходников.
+						serverOrigin: "https://" + "user:pw@" + "caldav.example",
+						secretRef: "s-4",
+					},
+					{ id: "Не слаг", serverOrigin: "https://caldav.example", secretRef: "s-5" },
+				],
+			},
+		);
+		expect(settings.caldavAccounts).toEqual([good]);
+		expect(tolerated).toEqual([
+			"caldavAccounts[1]: invalid entry dropped",
+			"caldavAccounts[2]: invalid entry dropped",
+			"caldavAccounts[3]: invalid entry dropped",
+			"caldavAccounts[4]: invalid entry dropped",
+		]);
+		// Диагностика не содержит origin/URL/учётных данных.
+		expect(diagnostics.join("\n")).not.toContain("caldav.example");
+		expect(diagnostics.join("\n")).not.toContain("user:pw");
+	});
+
+	it("не-массив externalCalendars — прежний recovery-отказ (fail-closed для MCP)", () => {
+		const { settings, diagnostics, tolerated } = mergeSettingsWithDiagnostics(
+			DEFAULT_SETTINGS,
+			{
+				settingsVersion: 5,
+				externalCalendars: "oops",
+				caldavAccounts: 42,
+			},
+		);
+		expect(settings.externalCalendars).toEqual([]);
+		expect(settings.caldavAccounts).toEqual([]);
+		expect(diagnostics).toEqual(
+			expect.arrayContaining([
+				"externalCalendars: invalid; default used",
+				"caldavAccounts: invalid; default used",
+			]),
+		);
+		expect(tolerated).toEqual([]);
 	});
 });

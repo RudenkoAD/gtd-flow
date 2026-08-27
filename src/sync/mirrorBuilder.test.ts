@@ -179,15 +179,15 @@ describe("идентичность и scope v5 (CalDAV)", () => {
 
 	it("namespace меняет id: разные namespace → разные id; тот же namespace дважды → тот же id; '' === undefined", () => {
 		const withoutNs = externalOccurrenceId(legacyA);
-		const nsA = externalOccurrenceId(legacyA, "accA col1");
-		const nsB = externalOccurrenceId(legacyA, "accB col1");
+		const nsA = externalOccurrenceId(legacyA, "accA\u0000col1");
+		const nsB = externalOccurrenceId(legacyA, "accB\u0000col1");
 
 		expect(nsA).not.toBe(nsB);
 		expect(nsA).not.toBe(withoutNs);
 		expect(nsB).not.toBe(withoutNs);
 
 		// тот же namespace дважды — идемпотентно
-		expect(externalOccurrenceId(legacyA, "accA col1")).toBe(nsA);
+		expect(externalOccurrenceId(legacyA, "accA\u0000col1")).toBe(nsA);
 
 		// пустая строка namespace — legacy-алгоритм (как отсутствие namespace)
 		expect(externalOccurrenceId(legacyA, "")).toBe(withoutNs);
@@ -195,8 +195,8 @@ describe("идентичность и scope v5 (CalDAV)", () => {
 
 	it("один и тот же remote UID в двух коллекциях → разные 🆔 в отрендеренных строках (§4.5)", () => {
 		const sameUidOcc = occ({ uid: "shared-remote-uid" });
-		const fileA = buildMirrorFile([sameUidOcc], { name: "X", idNamespace: "accA col1" });
-		const fileB = buildMirrorFile([sameUidOcc], { name: "X", idNamespace: "accB col1" });
+		const fileA = buildMirrorFile([sameUidOcc], { name: "X", idNamespace: "accA\u0000col1" });
+		const fileB = buildMirrorFile([sameUidOcc], { name: "X", idNamespace: "accB\u0000col1" });
 
 		const idOf = (text: string): string => taskLines(text)[0]!.match(/🆔 ([0-9a-z]{10})/)![1]!;
 		expect(idOf(fileA)).not.toBe(idOf(fileB));
@@ -235,7 +235,7 @@ describe("идентичность и scope v5 (CalDAV)", () => {
 		const text = buildMirrorFile([], {
 			name: "X",
 			scopeId: "work",
-			idNamespace: "accA col1",
+			idNamespace: "accA\u0000col1",
 		});
 		expect(text).not.toContain("🧭");
 		expect(text.endsWith("\n")).toBe(true);

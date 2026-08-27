@@ -22,6 +22,7 @@ import {
 	CALENDAR_FIELDS,
 	commitInboxFile,
 	commitPrivacyMode,
+	clampSubName,
 	commitSubName,
 	describeSyncErrorCode,
 	formatDeferPresets,
@@ -1231,10 +1232,12 @@ export class GtdSettingsTab extends PluginSettingTab {
 							this.plugin.settings.externalCalendars.push({
 								kind: "caldav",
 								id: genSubId(),
+								// clampSubName: удалённый displayName длиннее 256 символов
+								// иначе деградировал бы запись при следующей загрузке.
 								name:
-									calendar.displayName.trim() === ""
+									clampSubName(calendar.displayName) === ""
 										? "Календарь"
-										: calendar.displayName,
+										: clampSubName(calendar.displayName),
 								accountId: account.id,
 								collectionKey: calendar.collectionKey,
 								privacy: "unconfigured",

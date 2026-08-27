@@ -12,6 +12,7 @@
  * Описания/участники/организаторы/вложения сюда попасть не могут структурно:
  * MirrorOccurrence этих полей не имеет (см. icsParse).
  */
+import { ALL_FIELD_EMOJI } from "../../core/parser/emoji";
 import type { MirrorOccurrence } from "../icsParse";
 
 /** Generic-заголовок busy-режима (§4.3 таблица заказа). */
@@ -22,13 +23,20 @@ export type MirrorPrivacyMode = "details" | "busy";
 const URI_RE = /[a-z][a-z0-9+.-]*:\/\/\S+/gi;
 const MAILTO_RE = /\bmailto:\S+/gi;
 const EMAIL_RE = /\S+@\S+/g;
+// Собственные структурные эмодзи-поля GTD Flow (📅 🧭 🆔 ⏫ …): недоверенный
+// SUMMARY, попав в строку зеркала как сырой текст, не имеет права породить
+// РЕАЛЬНОЕ поле при обратном разборе (инъекция scope/даты/приоритета).
+// parseIcs.cleanText уже вычищает их на своём слое; проекция обязана держать
+// инвариант независимо — это публичный шов (defense-in-depth, находка ревью).
+const FIELD_EMOJI_RE = new RegExp(`(?:${ALL_FIELD_EMOJI.join("|")})`, "gu");
 
-/** Санация текстового поля details-режима: без URI/mailto/email/#. */
+/** Санация текстового поля details-режима: без URI/mailto/email/#/эмодзи-полей. */
 export function sanitizeProjectedText(raw: string): string {
 	return raw
 		.replace(URI_RE, " ")
 		.replace(MAILTO_RE, " ")
 		.replace(EMAIL_RE, " ")
+		.replace(FIELD_EMOJI_RE, " ")
 		.replace(/#/g, "")
 		.replace(/\s+/g, " ")
 		.trim();

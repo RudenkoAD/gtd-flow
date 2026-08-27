@@ -12,6 +12,7 @@ import {
 	type InvalidCalendarSub,
 } from "./Settings";
 import { EXTERNAL_SYNC_ERROR_CODES, NEVER_ATTEMPTED_STATUS } from "../sync/externalSyncStatus";
+import { mergeSettingsWithDiagnostics } from "./mergeSettings";
 import {
 	commitInboxFile,
 	commitPrivacyMode,
@@ -26,6 +27,7 @@ import {
 	removeCaldavAccount,
 	reorderCalendarPlacement,
 	applySyncResult,
+	clampSubName,
 	describeSyncErrorCode,
 	formatSyncStatus,
 } from "./settingsFormat";
@@ -698,5 +700,35 @@ describe("isValidCaldavOrigin", () => {
 		expect(isValidCaldavOrigin("")).toBe(false);
 		expect(isValidCaldavOrigin("не url вовсе")).toBe(false);
 		expect(isValidCaldavOrigin("ftp://caldav.example")).toBe(false);
+	});
+});
+
+describe("clampSubName — длина имени подписки (находка ревью)", () => {
+	it("имя длиннее 256 символов клампится и проходит персистентную схему", () => {
+		const long = "и".repeat(400);
+		const clamped = clampSubName(long);
+		expect(clamped.length).toBe(256);
+		expect(planSubNameCommit("старое", long).value.length).toBe(256);
+		// Схема v5 принимает результат клампа без деградации записи.
+		const { settings, tolerated } = mergeSettingsWithDiagnostics(DEFAULT_SETTINGS, {
+			settingsVersion: 5,
+			externalCalendars: [
+				{
+					id: "x",
+					name: clamped,
+					url: "https://calendar.example/a.ics",
+					lastSyncAt: null,
+					lastError: null,
+					errorCode: null,
+				},
+			],
+		});
+		expect(tolerated).toEqual([]);
+		expect(settings.externalCalendars[0]).toMatchObject({ id: "x" });
+	});
+
+	it("хвостовые пробелы после среза не остаются", () => {
+		const raw = "a".repeat(255) + "   b";
+		expect(clampSubName(raw).endsWith(" ")).toBe(false);
 	});
 });

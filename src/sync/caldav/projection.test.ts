@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { BUSY_TITLE, projectOccurrences } from "./projection";
+import { BUSY_TITLE, projectOccurrences, sanitizeProjectedText } from "./projection";
+import { buildMirrorFile } from "../mirrorBuilder";
 import type { MirrorOccurrence } from "../icsParse";
 
 function occ(over: Partial<MirrorOccurrence> = {}): MirrorOccurrence {
@@ -179,5 +180,32 @@ describe("projectOccurrences — Zoom-подобный продюсер", () => 
 		expect(result!.title).toContain("Планёрка");
 		expect(result!.title).not.toContain("zoom.example");
 		expect(result!.title).not.toContain("pwd");
+	});
+});
+
+describe("sanitizeProjectedText — инъекция эмодзи-полей (находка ревью)", () => {
+	it("структурные эмодзи GTD вычищаются из details-заголовка и места", () => {
+		expect(sanitizeProjectedText("Standup 🧭 work")).toBe("Standup work");
+		expect(sanitizeProjectedText("Встреча ⏫ 📅 2026-01-01 🆔 abc")).toBe(
+			"Встреча 2026-01-01 abc",
+		);
+	});
+
+	it("end-to-end: заголовок с 🧭 не порождает scope-поле в строке зеркала", () => {
+		const occ: MirrorOccurrence = {
+			uid: "evil-1",
+			recurrenceKey: "2026-07-22T10:00:00",
+			date: "2026-07-22",
+			allDay: false,
+			startTime: "10:00",
+			endTime: "11:00",
+			title: "Standup 🧭 work",
+			location: null,
+			dayIndex: 0,
+			dayCount: 1,
+		};
+		const projected = projectOccurrences([occ], "details");
+		const file = buildMirrorFile(projected, { name: "X", subscriptionId: "s1", scopeId: null });
+		expect(file).not.toContain("🧭");
 	});
 });

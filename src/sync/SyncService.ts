@@ -199,7 +199,7 @@ export function subIdSlug(id: string): string {
  * провалится). Записывается в frontmatter зеркала (mirrorBuilder.sourceKey).
  */
 export function caldavSourceKey(accountId: string, collectionKey: string): string {
-	const base = `${accountId} ${collectionKey}`;
+	const base = `${accountId}\u0000${collectionKey}`;
 	let h = 0x811c9dc5 >>> 0;
 	for (let i = 0; i < base.length; i++) h = Math.imul(h ^ base.charCodeAt(i), 0x01000193) >>> 0;
 	return (h % 2176782336).toString(36).padStart(6, "0"); // 36^6 = 2176782336 → ровно 6 символов
@@ -300,7 +300,11 @@ export class SyncService {
 		string,
 		{ generation: number; promise: Promise<SubOutcome> }
 	>();
-	private readonly aborters = new Map<string, AbortController>();
+	/** Все живые контроллеры по id подписки. МНОЖЕСТВО, не один слот: два
+	 *  потока разных поколений для одного id иначе затирали бы друг друга, и
+	 *  точечный abort (removeSubscription) не доставал бы старший поток
+	 *  (находка предрелизного ревью). */
+	private readonly aborters = new Map<string, Set<AbortController>>();
 	/** Fallback reconciliation for hosts that cannot enumerate managed mirrors. */
 	private readonly knownMirrorPaths = new Map<string, string>();
 
@@ -325,8 +329,27 @@ export class SyncService {
 		this.configGeneration++;
 		this.clearTimer();
 		this.clearReconcileTimer();
-		for (const controller of this.aborters.values()) controller.abort();
+		this.abortAll();
 		this.aborters.clear();
+	}
+
+	private abortAll(): void {
+		for (const set of this.aborters.values()) {
+			for (const controller of set) controller.abort();
+		}
+	}
+
+	private registerAborter(id: string, controller: AbortController): void {
+		const set = this.aborters.get(id) ?? new Set<AbortController>();
+		set.add(controller);
+		this.aborters.set(id, set);
+	}
+
+	private unregisterAborter(id: string, controller: AbortController): void {
+		const set = this.aborters.get(id);
+		if (set === undefined) return;
+		set.delete(controller);
+		if (set.size === 0) this.aborters.delete(id);
 	}
 
 	/** Санитизированный runtime-статус подписки для UI/автоматизации: только
@@ -376,7 +399,7 @@ export class SyncService {
 	configurationChanged(): void {
 		if (this.disposed) return;
 		this.configGeneration++;
-		for (const controller of this.aborters.values()) controller.abort();
+		this.abortAll();
 		this.scheduleConfigurationReconcile();
 	}
 
@@ -397,7 +420,7 @@ export class SyncService {
 	async removeSubscription(sub: MirrorPathSource): Promise<void> {
 		this.tombstones.add(sub.id);
 		this.configGeneration++;
-		this.aborters.get(sub.id)?.abort();
+		for (const controller of this.aborters.get(sub.id) ?? []) controller.abort();
 		try {
 			await this.deleteMirror(sub);
 		} catch (e) {
@@ -604,12 +627,15 @@ export class SyncService {
 	}
 
 	/** Complete at least one pass for the latest stable configuration. Отчёт
-	 * строится по ФИНАЛЬНОМУ проходу: устаревшие поколения дренируются молча. */
+	 * строится по ФИНАЛЬНОМУ проходу: устаревшие поколения дренируются молча.
+	 * dispose() посреди прохода возвращает ЧЕСТНО собранные исходы прерванного
+	 * прохода (частичный отчёт), а не пустой «ok»: реальные записи и onResult
+	 * уже случились (находка предрелизного ревью). */
 	private async runAllUntilCurrentConfiguration(): Promise<SubOutcome[]> {
 		while (!this.disposed) {
 			const generation = this.configGeneration;
 			const outcomes = await this.runAll();
-			if (generation === this.configGeneration) return outcomes;
+			if (this.disposed || generation === this.configGeneration) return outcomes;
 		}
 		return [];
 	}
@@ -755,11 +781,10 @@ export class SyncService {
 
 			// Один AbortController на ВЕСЬ caldav-поток (discovery+REPORT вместе):
 			// configurationChanged()/dispose()/removeSubscription() обходят
-			// this.aborters и абортят его целиком (та же конвенция, что и у
-			// fetchWithDeadline — регистрация при старте, снятие в finally, только
-			// если контроллер всё ещё «наш»).
+			// this.aborters и абортят его целиком. Регистрация — в МНОЖЕСТВО по id:
+			// параллельный поток другого поколения не затирает этот контроллер.
 			const controller = new AbortController();
-			this.aborters.set(sub.id, controller);
+			this.registerAborter(sub.id, controller);
 			let occurrences: readonly MirrorOccurrence[];
 			try {
 				const requested = Math.floor(
@@ -780,7 +805,7 @@ export class SyncService {
 							: new ExternalSyncError("unknown", errMessage(e));
 					});
 			} finally {
-				if (this.aborters.get(sub.id) === controller) this.aborters.delete(sub.id);
+				this.unregisterAborter(sub.id, controller);
 			}
 
 			if (!this.isCurrent(context)) return this.skippedOutcome(sub);
@@ -789,7 +814,7 @@ export class SyncService {
 			const content = buildMirrorFile(projected, {
 				name: sub.name,
 				subscriptionId: sub.id,
-				idNamespace: `${sub.accountId} ${sub.collectionKey}`,
+				idNamespace: `${sub.accountId}\u0000${sub.collectionKey}`,
 				scopeId: sub.scopeId,
 				sourceKey: caldavSourceKey(sub.accountId, sub.collectionKey),
 			});
@@ -819,7 +844,7 @@ export class SyncService {
 			await this.deps.vault.write(path, content);
 		}
 		if (!this.isCurrent(context)) {
-			await this.cleanupStaleWrite(sub.id, path);
+			await this.cleanupStaleWrite(context, path);
 			return this.skippedOutcome(sub);
 		}
 		this.knownMirrorPaths.set(sub.id, path);
@@ -888,7 +913,7 @@ export class SyncService {
 
 	private async fetchWithDeadline(id: string, url: string): Promise<string> {
 		const controller = new AbortController();
-		this.aborters.set(id, controller);
+		this.registerAborter(id, controller);
 		const requested = Promise.resolve().then(() => this.deps.fetch(url, controller.signal));
 		const timeoutCandidate = Math.floor(
 			this.deps.feedTimeoutMs?.() ?? DEFAULT_SYNC_FEED_TIMEOUT_MS,
@@ -912,18 +937,38 @@ export class SyncService {
 			});
 		} finally {
 			if (timer !== null) clearTimeout(timer);
-			if (this.aborters.get(id) === controller) this.aborters.delete(id);
+			this.unregisterAborter(id, controller);
 		}
 	}
 
-	private async cleanupStaleWrite(id: string, path: string): Promise<void> {
+	private async cleanupStaleWrite(context: SyncContext, path: string): Promise<void> {
+		const id = context.sub.id;
 		const current = this.deps.subscriptions().find((sub) => sub.id === id);
 		if (current === undefined || this.tombstones.has(id)) {
 			await this.deletePath(path);
 			return;
 		}
 		const desired = mirrorPath(current, this.deps.inboxFile());
-		if (desired !== path) await this.deletePath(path);
+		if (desired !== path) {
+			await this.deletePath(path);
+			return;
+		}
+		// Путь совпал, но контент записан под УСТАРЕВШИМ fingerprint'ом. Для
+		// caldav это может значить: приватность уже сжата (pendingRedaction /
+		// сменившийся режим) или сменился сам источник (account/collection) —
+		// оставить такой файл значило бы воскресить только что зачищенное или
+		// заменённое зеркало ПОСЛЕ redactPendingSubscriptions/reconcileMirrors
+		// (находки предрелизного ревью). Fail-closed: в recoverable-корзину;
+		// следующий успешный проход перезапишет зеркало корректным контентом.
+		if (context.sub.kind === "caldav") {
+			const staleContent =
+				current.kind !== "caldav" ||
+				current.pendingRedaction ||
+				current.privacy !== context.sub.privacy ||
+				caldavSourceKey(current.accountId, current.collectionKey) !==
+					caldavSourceKey(context.sub.accountId, context.sub.collectionKey);
+			if (staleContent) await this.deletePath(path);
+		}
 	}
 
 	private async deletePath(path: string): Promise<void> {

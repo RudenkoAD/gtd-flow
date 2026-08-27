@@ -851,7 +851,7 @@ describe("SyncService — caldav-провайдер (этап 4)", () => {
 			buildMirrorFile([occ()], {
 				name: s.name,
 				subscriptionId: s.id,
-				idNamespace: `${s.accountId} ${s.collectionKey}`,
+				idNamespace: `${s.accountId}\u0000${s.collectionKey}`,
 			}),
 		);
 		expect(vault.files.get(path)).toContain("- [ ]");
@@ -1192,5 +1192,117 @@ describe("SyncService — fail-closed переходы (этап 6)", () => {
 			const idIdx = lines.findIndex((l) => l.startsWith("gtd-external-id:"));
 			expect(lines[idIdx + 1]).toBe(`gtd-external-source: "${expectedKey}"`);
 		});
+	});
+});
+
+describe("SyncService — фиксы предрелизного ревью", () => {
+	const caldavFixSub = (over: Record<string, unknown> = {}) =>
+		({
+			kind: "caldav" as const,
+			id: "cd-fix",
+			name: "Работа",
+			accountId: "acc-1",
+			collectionKey: "col-1",
+			privacy: "details" as const,
+			enabled: true,
+			scopeId: null,
+			pendingRedaction: false,
+			lastSyncAt: null,
+			lastError: null,
+			errorCode: null,
+			...over,
+		}) as unknown as ReturnType<typeof sub>;
+
+	const occFix = {
+		uid: "e-1",
+		recurrenceKey: "2026-07-20T10:00:00",
+		date: "2026-07-20",
+		allDay: false,
+		startTime: "10:00",
+		endTime: "11:00",
+		title: "Детали встречи",
+		location: null,
+		dayIndex: 0,
+		dayCount: 1,
+	};
+
+	it("устаревшая details-запись НЕ воскрешает зеркало после сжатия приватности", async () => {
+		let releaseLoad: (v: readonly (typeof occFix)[]) => void = () => undefined;
+		const sub0 = caldavFixSub();
+		const { svc, vault, h } = makeService({
+			subs: [sub0 as never],
+			accounts: [{ id: "acc-1", serverOrigin: "https://caldav.example", secretRef: "s" }],
+			provider: {
+				beginPass: () => undefined,
+				load: () => new Promise((resolve) => (releaseLoad = resolve)),
+			},
+		});
+		void h;
+		const pass = svc.syncAll();
+		await new Promise((r) => setTimeout(r, 0));
+		// Пользователь сжимает приватность, пока запись ещё в полёте:
+		// fence -> durable busy + pendingRedaction (как commitPrivacyMode).
+		svc.configurationChanged();
+		(sub0 as unknown as { privacy: string; pendingRedaction: boolean }).privacy = "busy";
+		(sub0 as unknown as { pendingRedaction: boolean }).pendingRedaction = true;
+		releaseLoad([occFix]);
+		await pass;
+		// Запись либо не случилась, либо зачищена cleanupStaleWrite: детального
+		// контента на диске нет.
+		const files = [...vault.files.entries()];
+		expect(files.every(([, content]) => !content.includes("Детали встречи"))).toBe(true);
+	});
+
+	it("removeSubscription абортит и СТАРШИЙ поток другого поколения (Set контроллеров)", async () => {
+		const signals: AbortSignal[] = [];
+		const sub0 = caldavFixSub();
+		const { svc, h } = makeService({
+			subs: [sub0 as never],
+			accounts: [{ id: "acc-1", serverOrigin: "https://caldav.example", secretRef: "s" }],
+			provider: {
+				beginPass: () => undefined,
+				load: (_s, _w, opts) => {
+					signals.push(opts.signal);
+					// Висит до аборта; на abort — отклоняется, как настоящий провайдер.
+					return new Promise((_resolve, reject) => {
+						opts.signal.addEventListener("abort", () =>
+							reject(new ExternalSyncError("timeout", "aborted")),
+						);
+					});
+				},
+			},
+		});
+		const first = svc.syncById("cd-fix");
+		await new Promise((r) => setTimeout(r, 0));
+		// Смена поколения (не абортящая напрямую нашу цель — новая попытка).
+		h.subs = [caldavFixSub()];
+		const second = svc.syncById("cd-fix");
+		await new Promise((r) => setTimeout(r, 0));
+		expect(signals.length).toBeGreaterThanOrEqual(1);
+		await svc.removeSubscription({ id: "cd-fix", name: "Работа" });
+		// ВСЕ живые контроллеры этого id абортированы, включая старший.
+		expect(signals.every((s) => s.aborted)).toBe(true);
+		h.subs = [];
+		svc.rollbackSubscriptionRemoval("cd-fix");
+		await Promise.all([first, second]);
+	});
+
+	it("dispose посреди прохода даёт частичный отчёт, а не пустой ok", async () => {
+		const a = sub({ id: "a", name: "A" });
+		const b = sub({ id: "b", name: "B", url: "https://example/b.ics" });
+		const { svc, h } = makeService({ subs: [a, b] });
+		let releaseB: (v: string) => void = () => undefined;
+		h.fetchImpl = (url) =>
+			url.endsWith("b.ics")
+				? new Promise<string>((resolve) => (releaseB = resolve))
+				: Promise.resolve(ICS_ONE_EVENT);
+		const pass = svc.syncAll();
+		await new Promise((r) => setTimeout(r, 0));
+		svc.dispose();
+		releaseB(ICS_ONE_EVENT);
+		const report = await pass;
+		// Реальная запись зеркала A уже случилась — отчёт обязан её показать.
+		expect(report.changedMirrors).toBe(1);
+		expect(report.subscriptions.some((s) => s.id === "a" && s.status === "ok")).toBe(true);
 	});
 });

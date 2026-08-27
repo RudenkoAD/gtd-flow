@@ -114,8 +114,17 @@ export interface SubNameCommitPlan {
  * (renamed=false), а очистка имени в пусто — считается (renamed=true: старое
  * зеркало осиротело). Значение всегда обрезается.
  */
+/** Персистентная схема ограничивает имя подписки 256 символами; более длинное
+ *  имя при следующей загрузке деградировало бы ВСЮ запись в инертную
+ *  (находка предрелизного ревью). Клампим на каждом входе имени. */
+export const MAX_SUB_NAME_LENGTH = 256;
+
+export function clampSubName(raw: string): string {
+	return raw.trim().slice(0, MAX_SUB_NAME_LENGTH).trimEnd();
+}
+
 export function planSubNameCommit(oldName: string, input: string): SubNameCommitPlan {
-	const value = input.trim();
+	const value = clampSubName(input);
 	return { value, renamed: value !== oldName.trim() };
 }
 

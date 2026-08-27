@@ -1,16 +1,22 @@
 /**
- * Регистрация девяти инструментов на McpServer.
+ * Регистрация одиннадцати инструментов на McpServer.
  *
- * Каждый инструмент открывает СВЕЖУЮ GtdSession (полный скан vault'а на вызов —
- * всегда согласован с диском) и делегирует в handlers.ts. Ответ — компактный
+ * Девять из них открывают СВЕЖУЮ GtdSession (полный скан vault'а на вызов —
+ * всегда согласован с диском) и делегируют в handlers.ts. Ответ — компактный
  * JSON-текст; брошенный Error превращается в isError-ответ с полем error.
  * Описания на английском и говорят, КОГДА звать инструмент.
+ *
+ * sync_external_calendars/external_sync_status (§11 CalDAV-заказа) — особый
+ * случай: они НЕ сканируют vault и НЕ открывают GtdSession, а ходят в
+ * ./bridge.ts — файловый мост к живому Obsidian-плагину. MCP-процесс не
+ * является CalDAV-клиентом и не видит ни сети, ни секретов.
  */
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { isDurationMinutes } from "../core/model/Task";
 import { localTodayIso } from "../services/snapshotHelpers";
+import { readExternalSyncStatus, syncExternalCalendarsViaBridge } from "./bridge";
 import { loadSettings } from "./config";
 import { FsVault } from "./fsVault";
 import {
@@ -265,5 +271,86 @@ export function registerTools(server: McpServer, ctx: ServerContext): void {
 			inputSchema: {},
 		},
 		(args) => runTool(ctx, (s) => listBoards(s, args)),
+	);
+
+	server.registerTool(
+		"sync_external_calendars",
+		{
+			title: "Sync external calendars",
+			description:
+				"Запускает проход внешней (CalDAV/ICS) синхронизации в ЖИВОМ Obsidian через файловый мост и ждёт терминального отчёта — просто отправить запрос недостаточно (dispatch ≠ success), инструмент возвращает результат только когда плагин фактически завершил проход или истёк таймаут. Требует открытого на этом устройстве Obsidian с работающим плагином: без него, а также по истечении ожидания, вернётся isError с кодом plugin-unavailable/timeout. По умолчанию partial-отчёт НЕ считается основанием продолжать последующую vault-sync оркестрацию; force_partial явно снимает это ограничение, error не продолжает никогда.",
+			inputSchema: {
+				timeout_s: z
+					.number()
+					.min(5)
+					.max(600)
+					.optional()
+					.describe(
+						"Сколько секунд ждать терминальный отчёт (5..600). По умолчанию 180.",
+					),
+				force_partial: z
+					.boolean()
+					.optional()
+					.describe(
+						"Разрешить продолжение vault-sync при частичном (partial) отчёте. По умолчанию false.",
+					),
+			},
+		},
+		async (args) => {
+			try {
+				const timeoutMs =
+					args.timeout_s !== undefined ? Math.round(args.timeout_s * 1000) : undefined;
+				const result = await syncExternalCalendarsViaBridge(
+					{ vaultRoot: ctx.vaultRoot },
+					{ timeoutMs, forcePartial: args.force_partial },
+				);
+				if (result.outcome === "completed" && result.report !== undefined) {
+					return okResult({
+						status: result.report.status,
+						changedMirrors: result.report.changedMirrors,
+						startedAt: result.report.startedAt,
+						finishedAt: result.report.finishedAt,
+						subscriptions: result.report.subscriptions,
+						vault_sync: result.vaultSync,
+					});
+				}
+				const hint =
+					result.outcome === "timeout"
+						? "Плагин не ответил вовремя: убедитесь, что Obsidian с этим хранилищем открыт, и повторите вызов."
+						: "Откройте Obsidian с этим хранилищем — плагин ещё ни разу не публиковал статус внешней синхронизации на этом устройстве.";
+				return {
+					content: [
+						{ type: "text", text: JSON.stringify({ error: result.outcome, hint }) },
+					],
+					isError: true,
+				};
+			} catch (e) {
+				return errResult(e);
+			}
+		},
+	);
+
+	server.registerTool(
+		"external_sync_status",
+		{
+			title: "External sync status",
+			description:
+				"Читает последний известный статус внешней (CalDAV/ICS) синхронизации на этом устройстве — без сети и без запуска нового прохода. Полезно перед sync_external_calendars, чтобы понять, публиковал ли плагин здесь вообще хоть один статус.",
+			inputSchema: {},
+		},
+		async () => {
+			try {
+				const result = await readExternalSyncStatus({ vaultRoot: ctx.vaultRoot });
+				if (!result.available) {
+					return {
+						content: [{ type: "text", text: JSON.stringify(result) }],
+						isError: true,
+					};
+				}
+				return okResult(result);
+			} catch (e) {
+				return errResult(e);
+			}
+		},
 	);
 }

@@ -338,12 +338,30 @@ export default class GtdFlowPlugin extends Plugin {
 			// CalDAV-композиция: транспорт (node:http(s) с ручными редиректами),
 			// SecretStorage-порт учётных данных и провайдер вхождений — всё за тем
 			// же desktop-гейтом; на Android ни один из модулей не выполняется.
-			const [{ CalDavProvider }, { createNodeHttpAdapter }, secretsModule] =
+			const [{ CalDavProvider }, { createNodeHttpAdapter }, secretsModule, bridgeModule] =
 				await Promise.all([
 					import("./sync/caldav/caldavProvider"),
 					import("./sync/caldav/nodeHttpAdapter"),
 					import("./adapters/SecretStorageCredentials"),
+					import("./adapters/ExternalSyncBridge"),
 				]);
+			// Файловый мост §11 (P1): status-артефакт + каталог запросов в
+			// device-local каталоге плагина. deviceId — стабильный app.appId
+			// (fallback без персиста: id обновится в status-артефакте при старте;
+			// НЕ хранить в settings — data.json синкается между устройствами).
+			const bridge = new bridgeModule.ExternalSyncBridge({
+				fs: {
+					read: (path) => this.app.vault.adapter.read(path),
+					write: (path, data) => this.app.vault.adapter.write(path, data),
+					exists: (path) => this.app.vault.adapter.exists(path),
+					list: (path) => this.app.vault.adapter.list(path),
+					remove: (path) => this.app.vault.adapter.remove(path),
+					mkdir: (path) => this.app.vault.adapter.mkdir(path),
+				},
+				deviceId: bridgeModule.bridgeDeviceIdOf(this.app),
+				syncAll: () => this.desktopCalendarSync().syncAll(),
+				onWarning: (message) => console.warn(`GTD Flow bridge: ${message}`),
+			});
 			this.caldavCredentials = new secretsModule.SecretStorageCredentials(
 				secretsModule.secretStorageOf(this.app),
 				() => this.settings.caldavAccounts,
@@ -426,7 +444,25 @@ export default class GtdFlowPlugin extends Plugin {
 					await this.saveSettings();
 				},
 				onLifecycleWarning: (message) => console.warn(`GTD Flow: ${message}`),
+				// Мост §11: свежий санитизированный отчёт каждого терминального
+				// прохода публикуется в status-артефакт.
+				onReport: (report) => void bridge.publishStatus(report),
 			});
+			// Стартовая публикация статуса (deviceId становится обнаружим для MCP
+			// до первого прохода) + поллинг каталога запросов моста.
+			{
+				const now = Date.now();
+				void bridge.publishStatus({
+					status: "ok",
+					startedAt: now,
+					finishedAt: now,
+					changedMirrors: 0,
+					subscriptions: [],
+				});
+				this.registerInterval(
+					window.setInterval(() => void bridge.processRequests(), 3000),
+				);
+			}
 		}
 		this.metadataServices = new MetadataServices({
 			vault: this.vaultAdapter,

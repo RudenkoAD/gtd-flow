@@ -149,6 +149,10 @@ export interface SyncDeps {
 	onPendingRedactionCleared?: (id: string) => Promise<void> | void;
 	/** Non-fatal lifecycle diagnostics (for example an orphan removed at startup). */
 	onLifecycleWarning?: (message: string) => void;
+	/** Терминальный отчёт КАЖДОГО завершённого syncAll-прохода (в т.ч.
+	 *  планового) — мост §11 пишет из него status-артефакт. Наблюдатель:
+	 *  исключения глотаются, отчёт вызывающему не искажается. */
+	onReport?: (report: ExternalSyncReport) => void;
 }
 
 /** Подкаталог файлов-зеркал рядом с настроенным единым inbox. */
@@ -370,9 +374,15 @@ export class SyncService {
 		// One shared run drains configuration generations: if settings change
 		// while an old snapshot is syncing, callers keep awaiting this same
 		// promise until a fresh current-generation pass has also completed.
-		const run = this.runAllUntilCurrentConfiguration().then((outcomes) =>
-			buildReport(startedAt, this.deps.clock.now().getTime(), outcomes),
-		);
+		const run = this.runAllUntilCurrentConfiguration().then((outcomes) => {
+			const report = buildReport(startedAt, this.deps.clock.now().getTime(), outcomes);
+			try {
+				this.deps.onReport?.(report);
+			} catch {
+				// Наблюдатель не имеет права ломать отчёт вызывающему.
+			}
+			return report;
+		});
 		this.activeSyncAll = run;
 		const clearActive = (): void => {
 			if (this.activeSyncAll === run) this.activeSyncAll = null;

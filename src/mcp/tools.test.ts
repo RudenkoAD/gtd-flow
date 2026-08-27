@@ -1,6 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
+import type { ReadExternalSyncStatusResult, SyncViaBridgeResult } from "./bridge";
 
-const { handlerMocks, loadSettingsMock, openSessionMock } = vi.hoisted(() => ({
+const { bridgeMocks, handlerMocks, loadSettingsMock, openSessionMock } = vi.hoisted(() => ({
+	bridgeMocks: {
+		readExternalSyncStatus: vi.fn(async (): Promise<ReadExternalSyncStatusResult> => ({
+			available: false,
+			reason: "no-status",
+		})),
+		syncExternalCalendarsViaBridge: vi.fn(async (): Promise<SyncViaBridgeResult> => ({
+			outcome: "plugin-unavailable",
+		})),
+	},
 	handlerMocks: {
 		addEvent: vi.fn(async () => ({ tool: "add_event" })),
 		addTask: vi.fn(async () => ({ tool: "add_task" })),
@@ -16,6 +26,7 @@ const { handlerMocks, loadSettingsMock, openSessionMock } = vi.hoisted(() => ({
 	openSessionMock: vi.fn(async () => ({ marker: "session" })),
 }));
 
+vi.mock("./bridge", () => bridgeMocks);
 vi.mock("./config", () => ({ loadSettings: loadSettingsMock }));
 vi.mock("./fsVault", () => ({
 	FsVault: class {
@@ -68,6 +79,8 @@ describe("MCP tool registration", () => {
 			"list_events",
 			"add_event",
 			"list_boards",
+			"sync_external_calendars",
+			"external_sync_status",
 		]);
 
 		const args: Record<string, Record<string, unknown>> = {
@@ -107,5 +120,81 @@ describe("MCP tool registration", () => {
 			isError: true,
 			content: [{ text: JSON.stringify({ error: "handler failed" }) }],
 		});
+	});
+
+	it("sync_external_calendars/external_sync_status bypass loadSettings/GtdSession entirely", async () => {
+		const tools = register();
+		loadSettingsMock.mockClear();
+		openSessionMock.mockClear();
+
+		bridgeMocks.syncExternalCalendarsViaBridge.mockResolvedValueOnce({
+			outcome: "plugin-unavailable",
+		});
+		const unavailable = await tools.get("sync_external_calendars")!.handler({});
+		expect(unavailable.isError).toBe(true);
+		expect(JSON.parse(unavailable.content[0]!.text)).toMatchObject({
+			error: "plugin-unavailable",
+		});
+
+		const report = {
+			status: "ok" as const,
+			startedAt: 1,
+			finishedAt: 2,
+			changedMirrors: 3,
+			subscriptions: [
+				{ id: "sub-1", status: "ok" as const, lastSuccessAt: 2, errorCode: null },
+			],
+		};
+		bridgeMocks.syncExternalCalendarsViaBridge.mockResolvedValueOnce({
+			outcome: "completed",
+			report,
+			vaultSync: { proceed: true, reason: "ok" },
+		});
+		const completed = await tools
+			.get("sync_external_calendars")!
+			.handler({ timeout_s: 30, force_partial: true });
+		expect(completed.isError).toBeUndefined();
+		expect(JSON.parse(completed.content[0]!.text)).toEqual({
+			status: "ok",
+			changedMirrors: 3,
+			startedAt: 1,
+			finishedAt: 2,
+			subscriptions: report.subscriptions,
+			vault_sync: { proceed: true, reason: "ok" },
+		});
+		expect(bridgeMocks.syncExternalCalendarsViaBridge).toHaveBeenLastCalledWith(
+			{ vaultRoot: "/vault" },
+			{ timeoutMs: 30_000, forcePartial: true },
+		);
+
+		bridgeMocks.readExternalSyncStatus.mockResolvedValueOnce({
+			available: false,
+			reason: "no-status",
+		});
+		const statusUnavailable = await tools.get("external_sync_status")!.handler({});
+		expect(statusUnavailable.isError).toBe(true);
+		expect(JSON.parse(statusUnavailable.content[0]!.text)).toEqual({
+			available: false,
+			reason: "no-status",
+		});
+
+		bridgeMocks.readExternalSyncStatus.mockResolvedValueOnce({
+			available: true,
+			deviceId: "device-a",
+			updatedAt: 42,
+			report,
+		});
+		const statusAvailable = await tools.get("external_sync_status")!.handler({});
+		expect(statusAvailable.isError).toBeUndefined();
+		expect(JSON.parse(statusAvailable.content[0]!.text)).toEqual({
+			available: true,
+			deviceId: "device-a",
+			updatedAt: 42,
+			report,
+		});
+
+		// Neither tool scans the vault: no fresh GtdSession, no settings load.
+		expect(loadSettingsMock).not.toHaveBeenCalled();
+		expect(openSessionMock).not.toHaveBeenCalled();
 	});
 });

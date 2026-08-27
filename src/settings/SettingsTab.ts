@@ -3,7 +3,7 @@
  * saveSettings. Числовые поля: валидное значение пишется сразу, мусор
  * не пишется вовсе и откатывается к последнему сохранённому на blur.
  */
-import { Modal, Notice, PluginSettingTab, Setting, type App } from "obsidian";
+import { Modal, Notice, PluginSettingTab, SecretComponent, Setting, type App } from "obsidian";
 import type GtdFlowPlugin from "../main";
 import {
 	AI_FEEDBACK_INSPECTION_LIMIT,
@@ -12,6 +12,7 @@ import {
 } from "../services/MetadataServices";
 import type {
 	ActiveCalendarSub,
+	CalDavAccount,
 	CalDavCalendarSub,
 	CalendarField,
 	IcsCalendarSub,
@@ -20,18 +21,24 @@ import type {
 import {
 	CALENDAR_FIELDS,
 	commitInboxFile,
+	commitPrivacyMode,
 	commitSubName,
+	describeSyncErrorCode,
 	formatDeferPresets,
 	formatSyncStatus,
+	isValidCaldavOrigin,
 	parseDeferPresets,
 	parseIntInRange,
+	removeCaldavAccount,
 	reorderCalendarPlacement,
 } from "./settingsFormat";
-import { NEVER_ATTEMPTED_STATUS } from "../sync/externalSyncStatus";
+import { ExternalSyncError, NEVER_ATTEMPTED_STATUS } from "../sync/externalSyncStatus";
 import { reportAsync } from "../views/common/runAction";
 import { confirm } from "../views/common/ConfirmModal";
 import { recreateScopeCatalogWithConfirm } from "../views/common/scopeRecovery";
 import { SCOPE_CATALOG_PATH } from "../services/ScopeCatalogService";
+import type { SecretStorageCredentials } from "../adapters/SecretStorageCredentials";
+import type { DiscoveredCalendar } from "../sync/caldav/protocol";
 
 const CALENDAR_FIELD_LABEL: Record<CalendarField, string> = {
 	due: "Срок (📅 due)",
@@ -56,6 +63,15 @@ export class GtdSettingsTab extends PluginSettingTab {
 	// Гейт секции внешних календарей: отдельный от desktopFeatures, чтобы
 	// календарная синхронизация не зависела от политики AI/desktop-видов.
 	private readonly calendarSync: boolean;
+	/** Обнаруженные CalDAV-коллекции ЭТОГО процесса (per-tab UI state, НЕ
+	 *  персистится): accountId → результат последнего успешного «Обнаружить
+	 *  календари». Кэш href живёт отдельно в SecretStorage (§5.1). */
+	private readonly discovered = new Map<string, readonly DiscoveredCalendar[]>();
+	/** Открыта ли инлайн-форма «Добавить CalDAV-аккаунт». */
+	private addingCaldavAccount = false;
+	/** id аккаунта, для которого сейчас открыта форма «Обновить учётные данные»
+	 *  (та же форма, что и добавление, только предцелена на существующий аккаунт). */
+	private editingCaldavCredentialsFor: string | null = null;
 
 	constructor(
 		app: App,
@@ -578,9 +594,11 @@ export class GtdSettingsTab extends PluginSettingTab {
 		}
 		for (const sub of subs) {
 			if (sub.kind === "invalid") this.renderInvalidSub(el, sub);
-			else if (sub.kind === "caldav") this.renderCaldavSubStub(el, sub);
+			else if (sub.kind === "caldav") this.renderCaldavSub(el, sub);
 			else this.renderExternalSub(el, sub);
 		}
+
+		this.renderCaldavAccountsSection(el);
 
 		new Setting(el)
 			.addButton((b) =>
@@ -651,13 +669,162 @@ export class GtdSettingsTab extends PluginSettingTab {
 			);
 	}
 
-	/** CalDAV-подписка: полноценный UI появляется на этапе настройки CalDAV
-	 *  (аккаунты/discovery). До него запись видима и защищена, но без органов
-	 *  управления — создать её текущий UI не может. */
-	private renderCaldavSubStub(el: HTMLElement, sub: CalDavCalendarSub): void {
-		new Setting(el)
+	/**
+	 * Удалить активную (ics/caldav) подписку safely: зеркало в корзину ПЕРВЫМ
+	 * (пока запись ещё в списке), затем вырезать из settings, затем save с
+	 * откатом при отказе (восстановить запись + rollbackSubscriptionRemoval).
+	 * Общий хвост для трёх мест: кнопка «Удалить» у ICS-строки, у CalDAV-строки
+	 * и выключение toggle обнаруженного календаря (§9).
+	 */
+	private async removeActiveSub(sub: ActiveCalendarSub): Promise<void> {
+		const sync = this.plugin.desktopCalendarSync();
+		// tombstone+abort ДО await, чтобы зависший fetch не воскресил зеркало.
+		await sync.removeSubscription(sub);
+		const subs = this.plugin.settings.externalCalendars;
+		const i = subs.indexOf(sub);
+		if (i >= 0) {
+			subs.splice(i, 1);
+			sync.configurationChanged();
+		}
+		try {
+			await this.save();
+		} catch (error) {
+			if (i >= 0) {
+				subs.splice(i, 0, sub);
+				sync.rollbackSubscriptionRemoval(sub.id);
+			}
+			throw error;
+		}
+	}
+
+	/**
+	 * CalDAV-подписка (§9 CalDAV-заказа): имя+статус+синк/удаление на строке 1,
+	 * приватность на строке 2 (fail-closed, ничего не предвыбрано пока
+	 * "unconfigured"), «Включена» на строке 3 (заблокирован до явного выбора
+	 * приватности), Scope на строке 4. Ни href, ни username/token сюда не
+	 * попадают — только opaque collectionKey/accountId уже осевшие в sub.
+	 */
+	private renderCaldavSub(el: HTMLElement, sub: CalDavCalendarSub): void {
+		const account = this.plugin.settings.caldavAccounts.find((a) => a.id === sub.accountId);
+		const originLabel = account?.serverOrigin ?? "аккаунт недоступен";
+		const row = new Setting(el)
 			.setName(sub.name.trim() === "" ? "(без имени)" : sub.name)
-			.setDesc(`CalDAV-коллекция: ${formatSyncStatus(sub, this.syncRuntime(sub))}`);
+			.setDesc(`${originLabel} · ${formatSyncStatus(sub, this.syncRuntime(sub))}`);
+
+		row.addText((t) => {
+			t.setPlaceholder("Имя");
+			t.setValue(sub.name);
+			// Тот же коммит-по-blur/Enter, что и у ICS (см. renderExternalSub).
+			commitOnBlur(t.inputEl, async () => {
+				const renamed = await commitSubName(sub, t.getValue(), {
+					deleteMirror: (oldName) => {
+						const sync = this.plugin.desktopCalendarSync();
+						sync.configurationChanged();
+						return sync.deleteMirror({ ...sub, name: oldName });
+					},
+					save: () => this.save(),
+				});
+				if (renamed) this.display();
+				else t.setValue(sub.name);
+			});
+		});
+
+		row.addExtraButton((b) =>
+			b
+				.setIcon("refresh-cw")
+				.setTooltip("Синхронизировать сейчас")
+				.onClick(() =>
+					this.reportAction("не удалось синхронизировать календарь", async () => {
+						await this.plugin.desktopCalendarSync().syncById(sub.id);
+						this.display();
+					}),
+				),
+		);
+		row.addExtraButton((b) =>
+			b
+				.setIcon("trash")
+				.setTooltip("Удалить подписку")
+				.onClick(() =>
+					this.reportAction("не удалось удалить подписку", async () => {
+						await this.removeActiveSub(sub);
+						this.display();
+					}),
+				),
+		);
+
+		const privacyRow = new Setting(el).setName("Приватность");
+		privacyRow.addDropdown((dd) => {
+			// "unconfigured" — только пока приватность реально не выбрана; после
+			// первого явного выбора обратно её выбрать нельзя (§4.3).
+			if (sub.privacy === "unconfigured") dd.addOption("unconfigured", "— выберите режим —");
+			dd.addOption("busy", "Занятость (рекомендуется): только время");
+			dd.addOption("details", "Детали: название и место");
+			dd.setValue(sub.privacy);
+			dd.onChange((value) =>
+				this.reportChange(async () => {
+					if (value !== "busy" && value !== "details") return;
+					const sync = this.plugin.desktopCalendarSync();
+					try {
+						const result = await commitPrivacyMode(sub, value, {
+							fence: () => sync.configurationChanged(),
+							save: () => this.save(),
+						});
+						if (result === "pending-redaction") {
+							new Notice(
+								"GTD Flow: детальное зеркало будет зачищено перед следующей синхронизацией",
+							);
+							sync.configurationChanged();
+						}
+						if (result !== "unchanged") this.display();
+					} catch {
+						new Notice("GTD Flow: изменение не применено");
+						dd.setValue(sub.privacy);
+					}
+				}),
+			);
+		});
+
+		const enabledRow = new Setting(el).setName("Включена");
+		enabledRow.addToggle((toggle) => {
+			toggle.setValue(sub.enabled);
+			// §4.3: нельзя включить синхронизацию до явного выбора приватности.
+			toggle.setDisabled(sub.privacy === "unconfigured");
+			toggle.onChange((value) =>
+				this.reportChange(async () => {
+					if (sub.privacy === "unconfigured") {
+						// Defense-in-depth: setDisabled — UI-подсказка, не гарантия.
+						toggle.setValue(false);
+						new Notice("GTD Flow: сначала выберите режим приватности");
+						return;
+					}
+					sub.enabled = value;
+					this.plugin.desktopCalendarSync().configurationChanged();
+					await this.save();
+				}),
+			);
+		});
+
+		const scopeRow = new Setting(el).setName("Scope");
+		scopeRow.addDropdown((dd) => {
+			const catalog = this.plugin.scopes.current();
+			const activeScopes = catalog.scopes.filter((s) => !s.archived);
+			const scopeMissing =
+				sub.scopeId !== null && !activeScopes.some((s) => s.id === sub.scopeId);
+			// Недоступный/архивный scope — fail-closed отображение (§4.2): показать
+			// предупреждение первым пунктом и оставить его выбранным, не расскоуплять молча.
+			if (scopeMissing) dd.addOption(sub.scopeId!, `⚠ ${sub.scopeId} (недоступен)`);
+			dd.addOption("", "(глобально)");
+			for (const s of activeScopes) dd.addOption(s.id, s.name);
+			dd.setValue(sub.scopeId ?? "");
+			dd.onChange((value) =>
+				this.reportChange(async () => {
+					sub.scopeId = value === "" ? null : value;
+					this.plugin.desktopCalendarSync().configurationChanged();
+					await this.save();
+					// Смена scope перерисовывает зеркало на месте — без display().
+				}),
+			);
+		});
 	}
 
 	/** One subscription: name, status, and controls; feed URL is on the next row.
@@ -711,31 +878,7 @@ export class GtdSettingsTab extends PluginSettingTab {
 				.setTooltip("Удалить подписку")
 				.onClick(() =>
 					this.reportAction("не удалось удалить подписку", async () => {
-						// сперва убрать файл-зеркало (в корзину), пока подписка ещё в списке —
-						// путь считается от её id+имени; tombstone ставится ДО await, поэтому
-						// зависший fetch не сможет воскресить зеркало после удаления.
-						const sync = this.plugin.desktopCalendarSync();
-						await sync.removeSubscription(sub);
-						const subs = this.plugin.settings.externalCalendars;
-						const i = subs.indexOf(sub);
-						if (i >= 0) {
-							subs.splice(i, 1);
-							// A prior interrupted migration can have left another path with the
-							// same stable id.  Reconcile after the id disappears from settings.
-							sync.configurationChanged();
-						}
-						try {
-							await this.save();
-						} catch (error) {
-							// saveData failed after the mirror was removed.  Keep the in-memory
-							// list aligned with the persisted configuration, so a later save
-							// cannot silently turn this failed deletion into a real one.
-							if (i >= 0) {
-								subs.splice(i, 0, sub);
-								sync.rollbackSubscriptionRemoval(sub.id);
-							}
-							throw error;
-						}
+						await this.removeActiveSub(sub);
 						this.display();
 					}),
 				),
@@ -746,7 +889,8 @@ export class GtdSettingsTab extends PluginSettingTab {
 			.setDesc(
 				"Поддерживаются http(s):// и webcal:// (кнопки «Подписаться» Apple/Google — " +
 					"webcal автоматически заменяется на https). Внимание: секретный ICS-адрес — это " +
-					"доступ к вашему календарю на ЧТЕНИЕ. Храните его как пароль; он лежит локально в data.json.",
+					"доступ к вашему календарю на ЧТЕНИЕ. Храните его как пароль; он лежит локально в data.json. " +
+					"CalDAV-аккаунты, в отличие от ICS, хранят учётные данные в SecretStorage.",
 			);
 		urlSetting.addText((t) => {
 			t.setPlaceholder("https://…/basic.ics");
@@ -764,6 +908,404 @@ export class GtdSettingsTab extends PluginSettingTab {
 			});
 		});
 		urlSetting.settingEl.style.paddingTop = "0";
+	}
+
+	// ── CalDAV-аккаунты (§9 CalDAV-заказа) ─────────────────────────────────
+
+	/**
+	 * Реестр CalDAV-аккаунтов: заголовок, гейт по наличию SecretStorage-рантайма,
+	 * строки аккаунтов и инлайн-форма добавления. Ничего секретного сюда не
+	 * попадает — только origin (не identity-bearing) и opaque secretRef.
+	 */
+	private renderCaldavAccountsSection(el: HTMLElement): void {
+		new Setting(el)
+			.setName("CalDAV-аккаунты (read-only)")
+			.setHeading()
+			.setDesc(
+				"Учётные данные хранятся в Obsidian SecretStorage (НЕ в data.json), " +
+					"настраиваются отдельно на каждом устройстве; события импортируются только на чтение.",
+			);
+
+		const credentials = this.plugin.caldavCredentials;
+		if (credentials === null) {
+			new Setting(el)
+				.setName("CalDAV недоступен")
+				.setDesc("Нужен Obsidian 1.11.4+ (SecretStorage) и desktop-сборка плагина.");
+			return;
+		}
+
+		for (const account of this.plugin.settings.caldavAccounts) {
+			this.renderCaldavAccountRow(el, account, credentials);
+		}
+
+		if (this.addingCaldavAccount) {
+			this.renderCaldavAccountDraft(el, credentials, null);
+			return;
+		}
+		new Setting(el).addButton((b) =>
+			b
+				.setButtonText("Добавить CalDAV-аккаунт")
+				.setCta()
+				.onClick(() => {
+					this.addingCaldavAccount = true;
+					this.display();
+				}),
+		);
+	}
+
+	private renderCaldavAccountRow(
+		el: HTMLElement,
+		account: CalDavAccount,
+		credentials: SecretStorageCredentials,
+	): void {
+		const hasCredential = credentials.get(account.id) !== null;
+		const row = new Setting(el)
+			.setName(account.serverOrigin)
+			.setDesc(
+				`секрет: ${account.secretRef} · ` +
+					(hasCredential
+						? "учётные данные заданы"
+						: "⚠ учётные данные не заданы на этом устройстве"),
+			);
+		row.addExtraButton((b) =>
+			b
+				.setIcon("search")
+				.setTooltip("Обнаружить календари")
+				.onClick(() =>
+					this.reportAction("не удалось обнаружить календари", async () => {
+						await this.discoverCaldavCalendars(account, credentials);
+					}),
+				),
+		);
+		row.addExtraButton((b) =>
+			b
+				.setIcon("trash")
+				.setTooltip("Отключить аккаунт")
+				.onClick(() =>
+					this.reportAction("аккаунт не отключён", async () => {
+						await this.disconnectCaldavAccount(account, credentials);
+					}),
+				),
+		);
+
+		if (this.editingCaldavCredentialsFor === account.id) {
+			this.renderCaldavAccountDraft(el, credentials, account);
+		} else {
+			new Setting(el).addButton((b) =>
+				b.setButtonText("Обновить учётные данные").onClick(() => {
+					this.editingCaldavCredentialsFor = account.id;
+					this.display();
+				}),
+			);
+		}
+
+		for (const calendar of this.discovered.get(account.id) ?? []) {
+			this.renderDiscoveredCalendarRow(el, account, calendar);
+		}
+	}
+
+	/**
+	 * Общая инлайн-форма (НЕ модал) добавления нового аккаунта / обновления
+	 * учётных данных существующего. `target === null` — новый аккаунт (просит
+	 * ещё и origin); иначе — только логин/токен для уже существующего.
+	 * Токен идёт ТОЛЬКО через SecretComponent (masked) и никогда не эхается —
+	 * после успешного сохранения виджет сбрасывается setValue("").
+	 */
+	private renderCaldavAccountDraft(
+		el: HTMLElement,
+		credentials: SecretStorageCredentials,
+		target: CalDavAccount | null,
+	): void {
+		let originValue = "";
+		let username = "";
+		let token = "";
+		let secretComponent: SecretComponent | null = null;
+
+		new Setting(el).setName(
+			target === null
+				? "Новый CalDAV-аккаунт"
+				: `Обновить учётные данные: ${target.serverOrigin}`,
+		);
+
+		if (target === null) {
+			new Setting(el).setName("Адрес сервера (https-origin)").addText((t) => {
+				t.setPlaceholder("https://caldav.example.com");
+				t.onChange((v) => {
+					originValue = v;
+				});
+			});
+		}
+
+		new Setting(el).setName("Логин").addText((t) => {
+			t.setPlaceholder("username");
+			t.onChange((v) => {
+				username = v;
+			});
+		});
+
+		new Setting(el).setName("OAuth-токен (пароль)").addComponent((containerEl) => {
+			const component = new SecretComponent(this.app, containerEl);
+			component.onChange((v) => {
+				token = v;
+			});
+			secretComponent = component;
+			return component;
+		});
+
+		new Setting(el)
+			.addButton((b) =>
+				b
+					.setButtonText("Сохранить аккаунт")
+					.setCta()
+					.onClick(() =>
+						this.reportAction("аккаунт не сохранён", async () => {
+							const ok =
+								target === null
+									? await this.commitNewCaldavAccount(
+											originValue,
+											username,
+											token,
+											credentials,
+										)
+									: await this.commitCaldavCredentialUpdate(
+											target,
+											username,
+											token,
+											credentials,
+										);
+							if (!ok) return;
+							secretComponent?.setValue("");
+							if (target === null) this.addingCaldavAccount = false;
+							else this.editingCaldavCredentialsFor = null;
+							this.display();
+						}),
+					),
+			)
+			.addButton((b) =>
+				b.setButtonText("Отмена").onClick(() => {
+					if (target === null) this.addingCaldavAccount = false;
+					else this.editingCaldavCredentialsFor = null;
+					this.display();
+				}),
+			);
+	}
+
+	/**
+	 * Валидация + запись нового аккаунта (§9): origin невалиден или логин/токен
+	 * пусты → безопасный Notice, БЕЗ мутации. setPayload бросает (SecretStorage
+	 * недоступен) → Notice, БЕЗ мутации settings — секрет и запись аккаунта
+	 * коммитятся только вместе.
+	 */
+	private async commitNewCaldavAccount(
+		originRaw: string,
+		username: string,
+		token: string,
+		credentials: SecretStorageCredentials,
+	): Promise<boolean> {
+		const origin = originRaw.trim();
+		if (!isValidCaldavOrigin(origin)) {
+			new Notice(
+				"GTD Flow: некорректный адрес сервера — нужен голый https-адрес без пути и параметров",
+			);
+			return false;
+		}
+		if (username.trim() === "" || token === "") {
+			new Notice("GTD Flow: укажите логин и токен");
+			return false;
+		}
+		const accountId = genCaldavAccountId();
+		const secretRef = `gtd-flow-caldav-${accountId}`;
+		try {
+			credentials.setPayload(secretRef, { username: username.trim(), token });
+		} catch {
+			new Notice("GTD Flow: SecretStorage недоступен");
+			return false;
+		}
+		this.plugin.settings.caldavAccounts.push({
+			id: accountId,
+			serverOrigin: origin,
+			secretRef,
+		});
+		await this.save();
+		return true;
+	}
+
+	/**
+	 * Обновление логина/токена существующего аккаунта: PRESERVES текущий кэш
+	 * collections/principalPath (читаем текущий payload через get() и
+	 * сливаем) — иначе перезапись потеряла бы кэш href, обнаруженный
+	 * «Обнаружить календари» ранее.
+	 */
+	private async commitCaldavCredentialUpdate(
+		account: CalDavAccount,
+		username: string,
+		token: string,
+		credentials: SecretStorageCredentials,
+	): Promise<boolean> {
+		if (username.trim() === "" || token === "") {
+			new Notice("GTD Flow: укажите логин и токен");
+			return false;
+		}
+		const existing = credentials.get(account.id);
+		try {
+			credentials.setPayload(account.secretRef, {
+				username: username.trim(),
+				token,
+				collections: existing?.collections,
+				principalPath: existing?.principalPath,
+			});
+		} catch {
+			new Notice("GTD Flow: SecretStorage недоступен");
+			return false;
+		}
+		return true;
+	}
+
+	/**
+	 * «Обнаружить календари» (§6/§9): гейт credential_missing БЕЗ сети; caldav-
+	 * модули — динамический import (SettingsTab живёт в универсальном бандле,
+	 * см. main.ts). Успех — сохранить результат в this.discovered И обновить
+	 * кэш href в SecretStorage (href живёт ТОЛЬКО там, §5.1); отказ — безопасный
+	 * Notice по коду, сырой текст ошибки никогда не показывается.
+	 */
+	private async discoverCaldavCalendars(
+		account: CalDavAccount,
+		credentials: SecretStorageCredentials,
+	): Promise<void> {
+		const credential = credentials.get(account.id);
+		if (credential === null) {
+			new Notice(`GTD Flow: ⚠ ${describeSyncErrorCode("credential_missing")}`);
+			return;
+		}
+		const [{ discoverCalendars }, { createNodeHttpAdapter }] = await Promise.all([
+			import("../sync/caldav/protocol"),
+			import("../sync/caldav/nodeHttpAdapter"),
+		]);
+		let result: readonly DiscoveredCalendar[];
+		try {
+			result = await discoverCalendars(
+				{ id: account.id, serverOrigin: account.serverOrigin },
+				credential,
+				createNodeHttpAdapter(),
+				{ deadlineAt: Date.now() + 60_000 },
+			);
+		} catch (error) {
+			const code = error instanceof ExternalSyncError ? error.code : "unknown";
+			new Notice(`GTD Flow: ⚠ ${describeSyncErrorCode(code)}`);
+			return;
+		}
+		this.discovered.set(account.id, result);
+		const collections: Record<string, string> = { ...credential.collections };
+		for (const calendar of result) collections[calendar.collectionKey] = calendar.href;
+		try {
+			credentials.setPayload(account.secretRef, { ...credential, collections });
+		} catch {
+			// Кэш href — best-effort ускоритель следующего REPORT, не источник истины;
+			// discovery уже успешно, отказ кэширования не должен прятать результат.
+		}
+		this.display();
+	}
+
+	/** Одна обнаруженная коллекция: чекбокс подписки. Рендерит ТОЛЬКО displayName
+	 *  и opaque collectionKey — href сюда не попадает никогда (§9). */
+	private renderDiscoveredCalendarRow(
+		el: HTMLElement,
+		account: CalDavAccount,
+		calendar: DiscoveredCalendar,
+	): void {
+		const existingSub = this.plugin.settings.externalCalendars.find(
+			(sub): sub is CalDavCalendarSub =>
+				sub.kind === "caldav" &&
+				sub.accountId === account.id &&
+				sub.collectionKey === calendar.collectionKey,
+		);
+		new Setting(el)
+			.setName(calendar.displayName.trim() === "" ? "(без имени)" : calendar.displayName)
+			.setDesc(`коллекция ${calendar.collectionKey}`)
+			.addToggle((toggle) => {
+				toggle.setValue(existingSub !== undefined);
+				toggle.onChange((value) =>
+					this.reportChange(async () => {
+						if (value) {
+							if (existingSub !== undefined) return;
+							this.plugin.settings.externalCalendars.push({
+								kind: "caldav",
+								id: genSubId(),
+								name:
+									calendar.displayName.trim() === ""
+										? "Календарь"
+										: calendar.displayName,
+								accountId: account.id,
+								collectionKey: calendar.collectionKey,
+								privacy: "unconfigured",
+								enabled: false,
+								scopeId: null,
+								pendingRedaction: false,
+								lastSyncAt: null,
+								lastError: null,
+								errorCode: null,
+							});
+							await this.save();
+						} else {
+							if (existingSub === undefined) return;
+							await this.removeActiveSub(existingSub);
+						}
+						this.display();
+					}),
+				);
+			});
+	}
+
+	/**
+	 * Отключить CalDAV-аккаунт (§4.1): каскад через removeCaldavAccount с
+	 * подтверждением, если есть ссылающиеся подписки. После успешного отключения
+	 * ОТДЕЛЬНО (второй confirm) спрашивает про очистку секрета — осиротевшие
+	 * секреты стираются только явным действием пользователя.
+	 */
+	private async disconnectCaldavAccount(
+		account: CalDavAccount,
+		credentials: SecretStorageCredentials,
+	): Promise<void> {
+		const sync = this.plugin.desktopCalendarSync();
+		const referencingCount = this.plugin.settings.externalCalendars.filter(
+			(sub) => sub.kind === "caldav" && sub.accountId === account.id,
+		).length;
+		const result = await removeCaldavAccount(this.plugin.settings, account.id, {
+			confirmCascade: () =>
+				confirm(
+					this.app,
+					"Отключить CalDAV-аккаунт?",
+					`С аккаунтом «${account.serverOrigin}» связано подписок: ${referencingCount}. ` +
+						"Их зеркала уйдут в корзину (восстановимо), а сами записи будут удалены.",
+					"Отключить",
+				),
+			removeSubscription: (sub) => sync.removeSubscription(sub),
+			rollbackRemoval: (id) => sync.rollbackSubscriptionRemoval(id),
+			save: () => this.save(),
+		});
+		if (result.status === "refused-active-subscriptions") {
+			new Notice("GTD Flow: аккаунт не отключён");
+			return;
+		}
+		if (this.editingCaldavCredentialsFor === account.id)
+			this.editingCaldavCredentialsFor = null;
+		this.discovered.delete(account.id);
+
+		const wipeSecret = await confirm(
+			this.app,
+			"Стереть секрет из SecretStorage?",
+			`Учётные данные аккаунта «${account.serverOrigin}» будут перезаписаны пустым значением. ` +
+				"Obsidian не удаляет сам идентификатор секрета — id останется в списке.",
+			"Стереть",
+		);
+		if (wipeSecret) {
+			try {
+				credentials.clearPayload(account.secretRef);
+			} catch {
+				new Notice("GTD Flow: не удалось стереть секрет");
+			}
+		}
+		this.display();
 	}
 
 	// ── Отложенные ──────────────────────────────────────────────────────────
@@ -1032,6 +1574,12 @@ export class GtdSettingsTab extends PluginSettingTab {
 /** Короткий стабильный id новой подписки (время + случайный хвост). */
 function genSubId(): string {
 	return `ext-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** Slug id нового CalDAV-аккаунта: строчные буквы/цифры/дефис — контракт
+ *  SecretStorage-ключей (см. SecretStorageCredentials.SECRET_REF_PATTERN). */
+function genCaldavAccountId(): string {
+	return `caldav-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
 /**

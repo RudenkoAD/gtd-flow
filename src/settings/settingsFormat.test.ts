@@ -18,6 +18,7 @@ import {
 	commitSubName,
 	formatDeferPresets,
 	formatPathList,
+	isValidCaldavOrigin,
 	parseDeferPresets,
 	parseIntInRange,
 	parsePathList,
@@ -668,5 +669,34 @@ describe("removeCaldavAccount — §4.1 атомарное отключение 
 		expect(ports.rollbackRemoval).toHaveBeenCalledTimes(2);
 		expect(ports.rollbackRemoval).toHaveBeenCalledWith("s1");
 		expect(ports.rollbackRemoval).toHaveBeenCalledWith("s2");
+	});
+});
+
+describe("isValidCaldavOrigin", () => {
+	it("голый https-origin — валиден", () => {
+		expect(isValidCaldavOrigin("https://caldav.example")).toBe(true);
+		expect(isValidCaldavOrigin("https://caldav.example:8443")).toBe(true);
+	});
+
+	it("путь/query/hash/хвостовой слэш — невалидны (нужен ГОЛЫЙ origin)", () => {
+		expect(isValidCaldavOrigin("https://caldav.example/")).toBe(false);
+		expect(isValidCaldavOrigin("https://caldav.example/dav")).toBe(false);
+		expect(isValidCaldavOrigin("https://caldav.example?x=1")).toBe(false);
+		expect(isValidCaldavOrigin("https://caldav.example#frag")).toBe(false);
+	});
+
+	it("http (не https) — невалиден", () => {
+		expect(isValidCaldavOrigin("http://caldav.example")).toBe(false);
+	});
+
+	it("userinfo в URL — невалиден (URL.origin не включает его, но входная строка не совпадёт)", () => {
+		// Конкатенация — чтобы синтетический пример не срабатывал в check-secret-hygiene.
+		expect(isValidCaldavOrigin("https://" + "user:pw@" + "caldav.example")).toBe(false);
+	});
+
+	it("не-URL / мусор — невалиден, без исключений", () => {
+		expect(isValidCaldavOrigin("")).toBe(false);
+		expect(isValidCaldavOrigin("не url вовсе")).toBe(false);
+		expect(isValidCaldavOrigin("ftp://caldav.example")).toBe(false);
 	});
 });

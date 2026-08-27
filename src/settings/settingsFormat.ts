@@ -360,6 +360,24 @@ export type AccountRemovalResult =
  *   4) вернуть {status:"removed", removedSubscriptionIds}.
  * - Подписки ДРУГИХ аккаунтов и ics-подписки не трогаются никогда.
  */
+/**
+ * https-origin без пути/query/фрагмента и credentials-в-URL — тот же контракт,
+ * что и схема caldavAccountSchema (см. mergeSettings.ts isHttpsOrigin):
+ * протокол строго "https:", а URL.origin совпадает с исходной строкой
+ * буква-в-букву (значит нет пути, query, userinfo или хвостового слэша).
+ * Используется формой добавления CalDAV-аккаунта (§9 CalDAV-заказа) ДО того,
+ * как значение попадёт в settings.caldavAccounts — та же проверка, что и на
+ * загрузке data.json, просто раньше по конвейеру.
+ */
+export function isValidCaldavOrigin(value: string): boolean {
+	try {
+		const url = new URL(value);
+		return url.protocol === "https:" && url.origin === value;
+	} catch {
+		return false;
+	}
+}
+
 export async function removeCaldavAccount(
 	settings: Pick<GtdFlowSettings, "externalCalendars" | "caldavAccounts">,
 	accountId: string,

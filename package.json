@@ -1,6 +1,6 @@
 {
   "name": "gtd-flow",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "private": true,
   "description": "GTD workflow plugin for Obsidian: inbox, kanban, calendar, tickler, recurring tasks, and project graphs over plain Markdown tasks.",
   "main": "main.js",

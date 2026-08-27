@@ -34,6 +34,36 @@
   vault before dispatching the plugin handler.
 - Unknown targets fail closed and must not change the workspace.
 
+## CalDAV external calendars
+
+- CalDAV is read-only. The plugin never writes back to a CalDAV server; a
+  collection is only ever imported into a local mirror file.
+- CalDAV network access is desktop-only, enforced by a runtime gate, not by the
+  manifest: `manifest.json` stays universal (`isDesktopOnly: false`) and Android
+  still renders mirrors delivered by vault sync, it just never dials the server
+  itself.
+- CalDAV credentials live only in Obsidian SecretStorage, per device. `data.json`
+  holds nothing but an opaque account id, a `secretRef`, and the https server
+  origin — never a username, token, or collection href.
+- A discovered collection's href is never persisted in `data.json`. It lives only
+  inside the SecretStorage payload's `collections` cache or is re-obtained by
+  running discovery again.
+- Privacy mode is never pre-selected. A newly discovered collection starts in the
+  `unconfigured` draft state, which blocks sync until the user makes an explicit
+  `details`/`busy` choice.
+- Tightening privacy (`details` → `busy`) is fail-closed through a durable
+  `pendingRedaction` marker: the subscription stays fenced off from sync until the
+  detailed mirror is actually trashed and the marker is durably cleared, surviving
+  a crash or restart in between.
+- CalDAV mirror `🆔` identity is namespaced by `accountId` + `collectionKey`, so
+  swapping the underlying account/collection under the same subscription cannot
+  collide with a previous mirror's ids. Legacy ICS `🆔` values are namespace-free
+  and stay unchanged forever — that scheme is never retrofitted onto them.
+- Corporate hostnames and credentials must never reach the public repository,
+  including as UI preset values, fixtures, or examples — only placeholder
+  addresses (e.g. `https://caldav.example.com`) are allowed anywhere in tracked
+  files.
+
 ## Android plugin surface
 
 - The release manifest is universal (`isDesktopOnly: false`), but Android registers

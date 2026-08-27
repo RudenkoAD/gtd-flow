@@ -321,6 +321,29 @@ describe("mergeSettings", () => {
 		expect(diagnostics.join("\n")).not.toContain("calendar.example");
 	});
 
+	describe("calendarFontSize", () => {
+		it("валидное значение проходит round-trip", () => {
+			const merged = mergeSettings(DEFAULT_SETTINGS, { calendarFontSize: "large" });
+			expect(merged.calendarFontSize).toBe("large");
+		});
+
+		it("неверное значение откатывается к дефолту со стандартной диагностикой", () => {
+			const { settings, diagnostics } = mergeSettingsWithDiagnostics(DEFAULT_SETTINGS, {
+				calendarFontSize: "huge",
+			});
+			expect(settings.calendarFontSize).toBe("standard");
+			expect(diagnostics).toContain("calendarFontSize: invalid; default used");
+		});
+
+		it("отсутствующее поле — дефолт без диагностики", () => {
+			const { settings, diagnostics } = mergeSettingsWithDiagnostics(DEFAULT_SETTINGS, {
+				settingsVersion: SETTINGS_FORMAT_VERSION,
+			});
+			expect(settings.calendarFontSize).toBe("standard");
+			expect(diagnostics).toEqual([]);
+		});
+	});
+
 	it("каждая загрузка получает независимые ссылки на все изменяемые дефолты", () => {
 		const one = mergeSettings(DEFAULT_SETTINGS, null);
 		const two = mergeSettings(DEFAULT_SETTINGS, null);

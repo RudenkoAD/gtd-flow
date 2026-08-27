@@ -512,11 +512,11 @@
 	}
 	.gtd-tg-quickadd-input {
 		width: 100%;
-		font-size: var(--font-ui-smaller, 0.85em);
+		font-size: calc(var(--font-ui-smaller, 0.85em) * var(--gtd-cal-font-scale, 1));
 	}
 	/* поле «Место» — компактнее и приглушённее названия (необязательное) */
 	.gtd-tg-quickadd-loc {
-		font-size: var(--font-ui-smaller, 0.8em);
+		font-size: calc(var(--font-ui-smaller, 0.8em) * var(--gtd-cal-font-scale, 1));
 		color: var(--text-muted);
 	}
 	/* Линия текущего времени: тонкая горизонталь через колонку сегодня, точка +
@@ -545,7 +545,7 @@
 	}
 	.gtd-tg-now-label {
 		flex: none;
-		font-size: var(--font-ui-smaller, 0.7em);
+		font-size: calc(var(--font-ui-smaller, 0.7em) * var(--gtd-cal-font-scale, 1));
 		font-variant-numeric: tabular-nums;
 		line-height: 1;
 		color: var(--color-red, var(--interactive-accent));
@@ -573,7 +573,7 @@
 		position: absolute;
 		top: 1px;
 		left: 4px;
-		font-size: var(--font-ui-smaller, 0.8em);
+		font-size: calc(var(--font-ui-smaller, 0.8em) * var(--gtd-cal-font-scale, 1));
 		color: var(--text-on-accent, var(--text-normal));
 		font-variant-numeric: tabular-nums;
 		white-space: nowrap;

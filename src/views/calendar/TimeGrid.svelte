@@ -265,7 +265,7 @@
 		padding: 1px 6px 0 0;
 		text-align: right;
 		color: var(--text-muted);
-		font-size: var(--font-ui-smaller, 0.85em);
+		font-size: calc(var(--font-ui-smaller, 0.85em) * var(--gtd-cal-font-scale, 1));
 		font-variant-numeric: tabular-nums;
 		border-top: 1px solid transparent; /* компенсация 1px линий часов колонок */
 	}

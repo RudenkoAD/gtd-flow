@@ -13,6 +13,20 @@ export type DurationLongStyle = "whole-days";
  *  союза живёт здесь — настройка lastQuickAddKind его же и хранит. */
 export type QuickAddKind = "task" | "event";
 
+/** Размер шрифта календаря: пресеты масштаба относительно UI-шрифта Obsidian
+ *  (--font-ui-smaller). «standard» — прежний вид без изменений. */
+export type CalendarFontSize = "small" | "standard" | "large" | "x-large";
+
+/** Масштаб для каждого пресета: применяется CSS-переменной
+ *  --gtd-cal-font-scale на корне календаря — иерархия размеров внутри вида
+ *  сохраняется (все font-size умножаются на общий множитель). */
+export const CALENDAR_FONT_SCALE: Record<CalendarFontSize, number> = {
+	small: 0.85,
+	standard: 1,
+	large: 1.15,
+	"x-large": 1.3,
+};
+
 /**
  * Версия формата data.json.  Она отделена от версии плагина: формат настроек
  * меняется только когда требуется миграция сохранённых пользовательских данных.
@@ -189,6 +203,8 @@ export interface GtdFlowSettings {
 	 *  последний выбор пользователя переживает перезапуск. В UI настроек НЕ показывается —
 	 *  меняется только кликом по переключателю в сетке. Дефолт — «Задача». */
 	lastQuickAddKind: QuickAddKind;
+	/** Размер шрифта вида «Календарь» (пресет масштаба; дефолт — standard). */
+	calendarFontSize: CalendarFontSize;
 	/** Подписки на внешние календари (§внешние календари). Слияние — по
 	 *  записям: битая запись деградирует в InvalidCalendarSub, соседние
 	 *  подписки сохраняются (см. mergeSettings). Пусто — фича неактивна. */
@@ -247,6 +263,7 @@ export function createDefaultSettings(): GtdFlowSettings {
 		dayStatusFile: "GTD/DayStatus.md",
 		onboarded: false,
 		lastQuickAddKind: "task",
+		calendarFontSize: "standard",
 		externalCalendars: [],
 		caldavAccounts: [],
 		externalSyncIntervalMin: 5,

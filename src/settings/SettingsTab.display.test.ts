@@ -490,6 +490,28 @@ describe("GtdSettingsTab display", () => {
 		expect(settingProbe.names).not.toContain("Возврат отложенной задачи");
 	});
 
+	it("renders the calendar font size dropdown with all four presets", () => {
+		const plugin = {
+			settings: createDefaultSettings(),
+			scopes: emptyScopes(),
+			ai: null,
+		};
+		const tab = new GtdSettingsTab({} as never, plugin as never);
+
+		tab.display();
+
+		expect(settingProbe.names).toContain("Размер шрифта календаря");
+		const fontSize = settingProbe.dropdowns.find((d) => d.name === "Размер шрифта календаря");
+		expect(fontSize).toBeDefined();
+		expect(fontSize?.value).toBe("standard");
+		expect(fontSize?.options).toEqual([
+			{ value: "small", label: "Мелкий" },
+			{ value: "standard", label: "Стандартный" },
+			{ value: "large", label: "Крупный" },
+			{ value: "x-large", label: "Очень крупный" },
+		]);
+	});
+
 	it("updates the inbox path on Android without touching desktop calendar sync", async () => {
 		const settings = createDefaultSettings();
 		const saveSettings = vi.fn(async () => undefined);

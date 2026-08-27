@@ -3,7 +3,11 @@
 	import { get, type Readable } from "svelte/store";
 	import type { IsoDate, Task } from "../../core/model/Task";
 	import type { IntentDispatcher } from "../../services/WritebackService";
-	import type { GtdFlowSettings, QuickAddKind } from "../../settings/Settings";
+	import {
+		CALENDAR_FONT_SCALE,
+		type GtdFlowSettings,
+		type QuickAddKind,
+	} from "../../settings/Settings";
 	import { calendarRangeStore } from "../../stores/derived/queryStore";
 	import type { TaskStore } from "../../stores/taskStore";
 	import { addDaysIso } from "../common/dates";
@@ -135,6 +139,16 @@
 			if (s.anchor !== undefined) anchor = s.anchor;
 		}),
 	);
+
+	// Масштаб шрифта календаря (пресет настроек) → CSS-переменная на корне
+	// .gtd-cal; иерархия размеров внутри вида сохраняется (каждый font-size
+	// умножается на общий множитель через calc()). settings мутируется на
+	// месте — пересчёт форсируется через settingsRevision, как у прочих
+	// производных ниже.
+	const calendarFontScale = $derived.by(() => {
+		void $settingsRevision;
+		return CALENDAR_FONT_SCALE[settings.calendarFontSize] ?? 1;
+	});
 
 	const grid = $derived.by(() => {
 		void $settingsRevision;
@@ -428,7 +442,7 @@
 	}
 </script>
 
-<div class="gtd-cal">
+<div class="gtd-cal" style="--gtd-cal-font-scale: {calendarFontScale}">
 	<CalendarToolbar
 		{title}
 		{mode}
@@ -576,7 +590,7 @@
 	.gtd-cal-weekday {
 		text-align: center;
 		color: var(--text-muted);
-		font-size: var(--font-ui-smaller, 0.85em);
+		font-size: calc(var(--font-ui-smaller, 0.85em) * var(--gtd-cal-font-scale, 1));
 	}
 	.gtd-cal-grid {
 		flex: 1 1 auto;
@@ -601,7 +615,7 @@
 	}
 	.gtd-cal-agenda-head {
 		font-weight: 600;
-		font-size: var(--font-ui-smaller, 0.85em);
+		font-size: calc(var(--font-ui-smaller, 0.85em) * var(--gtd-cal-font-scale, 1));
 		color: var(--text-muted);
 		padding: 2px 0;
 	}

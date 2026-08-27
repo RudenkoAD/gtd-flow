@@ -264,7 +264,7 @@
 		flex: none;
 		padding: 0 4px;
 		color: var(--text-muted);
-		font-size: var(--font-ui-smaller, 0.85em);
+		font-size: calc(var(--font-ui-smaller, 0.85em) * var(--gtd-cal-font-scale, 1));
 		font-variant-numeric: tabular-nums;
 		line-height: 1.2;
 		background: var(--background-secondary);

@@ -15,6 +15,7 @@ import type {
 	CalDavAccount,
 	CalDavCalendarSub,
 	CalendarField,
+	CalendarFontSize,
 	IcsCalendarSub,
 	InvalidCalendarSub,
 } from "./Settings";
@@ -45,6 +46,14 @@ const CALENDAR_FIELD_LABEL: Record<CalendarField, string> = {
 	due: "Срок (📅 due)",
 	scheduled: "Запланировано (⏳ scheduled)",
 	start: "Старт (🛫 start)",
+};
+
+const CALENDAR_FONT_SIZES: readonly CalendarFontSize[] = ["small", "standard", "large", "x-large"];
+const CALENDAR_FONT_SIZE_LABEL: Record<CalendarFontSize, string> = {
+	small: "Мелкий",
+	standard: "Стандартный",
+	large: "Крупный",
+	"x-large": "Очень крупный",
 };
 
 /** Пн…Вс в порядке отображения; значение — как в модели (0=вс … 6=сб). */
@@ -524,6 +533,22 @@ export class GtdSettingsTab extends PluginSettingTab {
 				}),
 			);
 		});
+
+		new Setting(el)
+			.setName("Размер шрифта календаря")
+			.setDesc("Масштаб текста в виде «Календарь» относительно шрифта интерфейса.")
+			.addDropdown((dd) => {
+				for (const size of CALENDAR_FONT_SIZES)
+					dd.addOption(size, CALENDAR_FONT_SIZE_LABEL[size]);
+				dd.setValue(this.plugin.settings.calendarFontSize);
+				dd.onChange((value) =>
+					this.reportChange(async () => {
+						const size = CALENDAR_FONT_SIZES.find((s) => s === value) ?? "standard";
+						this.plugin.settings.calendarFontSize = size;
+						await this.save();
+					}),
+				);
+			});
 
 		new Setting(el)
 			.setName("Файл повторяющихся событий")

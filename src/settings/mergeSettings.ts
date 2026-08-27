@@ -199,6 +199,7 @@ export const PersistedSettingsSchema = z
 		dayStatusFile: pathString(),
 		onboarded: z.boolean(),
 		lastQuickAddKind: z.enum(["task", "event"]),
+		calendarFontSize: z.enum(["small", "standard", "large", "x-large"]),
 		// На MCP trust boundary записи подписок/аккаунтов НЕ валидируются
 		// строго: они никогда не являются write-target'ами MCP, а строгая
 		// проверка здесь превращала одну битую запись в отказ всех девяти
@@ -364,6 +365,13 @@ export function mergeSettingsWithDiagnostics(
 	assignIfValid(settings, "dayStatusFile", pathString(), data, diagnostics);
 	assignIfValid(settings, "onboarded", z.boolean(), data, diagnostics);
 	assignIfValid(settings, "lastQuickAddKind", z.enum(["task", "event"]), data, diagnostics);
+	assignIfValid(
+		settings,
+		"calendarFontSize",
+		z.enum(["small", "standard", "large", "x-large"]),
+		data,
+		diagnostics,
+	);
 	mergeExternalCalendars(settings, data, diagnostics);
 	mergeCaldavAccounts(settings, data, diagnostics);
 	assignIfValid(settings, "externalSyncIntervalMin", clampedInt(1, 1_440), data, diagnostics);

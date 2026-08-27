@@ -136,7 +136,7 @@
 		.gtd-cal-modes button {
 			min-width: 0;
 			padding-inline: 3px;
-			font-size: var(--font-ui-smaller, 0.85em);
+			font-size: calc(var(--font-ui-smaller, 0.85em) * var(--gtd-cal-font-scale, 1));
 			white-space: normal;
 		}
 	}

@@ -49,7 +49,7 @@
 	}
 	.gtd-qa-kind button {
 		padding: 0 6px;
-		font-size: var(--font-ui-smaller, 0.8em);
+		font-size: calc(var(--font-ui-smaller, 0.8em) * var(--gtd-cal-font-scale, 1));
 		line-height: 1.4;
 		height: auto;
 		box-shadow: none;

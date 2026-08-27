@@ -379,7 +379,7 @@
 		outline-offset: -2px;
 	}
 	.gtd-cal-statusband-label {
-		font-size: var(--font-ui-smaller, 0.75em);
+		font-size: calc(var(--font-ui-smaller, 0.75em) * var(--gtd-cal-font-scale, 1));
 		line-height: 1;
 		color: var(--text-muted);
 		white-space: nowrap;
@@ -397,7 +397,7 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		color: var(--text-muted);
-		font-size: var(--font-ui-smaller, 0.85em);
+		font-size: calc(var(--font-ui-smaller, 0.85em) * var(--gtd-cal-font-scale, 1));
 		padding: 0 4px;
 		border-radius: var(--radius-s, 4px);
 	}
@@ -432,7 +432,7 @@
 	}
 	.gtd-now-label {
 		flex: none;
-		font-size: var(--font-ui-smaller, 0.75em);
+		font-size: calc(var(--font-ui-smaller, 0.75em) * var(--gtd-cal-font-scale, 1));
 		font-variant-numeric: tabular-nums;
 		line-height: 1;
 		font-weight: 600;
@@ -452,11 +452,11 @@
 	}
 	.gtd-cal-quickadd {
 		width: 100%;
-		font-size: var(--font-ui-smaller, 0.85em);
+		font-size: calc(var(--font-ui-smaller, 0.85em) * var(--gtd-cal-font-scale, 1));
 	}
 	/* поле «Место» — компактнее и приглушённее названия (необязательное) */
 	.gtd-cal-quickadd-loc {
-		font-size: var(--font-ui-smaller, 0.8em);
+		font-size: calc(var(--font-ui-smaller, 0.8em) * var(--gtd-cal-font-scale, 1));
 		color: var(--text-muted);
 	}
 </style>

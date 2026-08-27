@@ -260,7 +260,7 @@
 		padding: 1px 4px;
 		border-radius: var(--radius-s, 4px);
 		background: var(--background-secondary);
-		font-size: var(--font-ui-smaller, 0.85em);
+		font-size: calc(var(--font-ui-smaller, 0.85em) * var(--gtd-cal-font-scale, 1));
 		cursor: pointer;
 	}
 	.gtd-cal-chip:hover {

@@ -228,7 +228,7 @@
 		min-width: 0;
 		padding: 1px 4px;
 		border-radius: var(--radius-s, 4px);
-		font-size: var(--font-ui-smaller, 0.85em);
+		font-size: calc(var(--font-ui-smaller, 0.85em) * var(--gtd-cal-font-scale, 1));
 		cursor: default;
 		border: 1px dashed var(--background-modifier-border);
 		background: var(--background-secondary-alt, var(--background-secondary));

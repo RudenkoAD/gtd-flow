@@ -73,7 +73,7 @@
     "zod": "^4.4.3"
   },
   "dependencies": {
-    "@xyflow/svelte": "^1.6.0",
+    "@xyflow/svelte": "^1.6.5",
     "ical.js": "^2.2.1",
     "saxes": "6.0.0"
   }
